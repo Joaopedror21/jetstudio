@@ -1,0 +1,13 @@
+[package]
+name = "jet-model"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+
+[lints]
+workspace = true
+
+[dependencies]
+jet-time = { path = "../jet-time" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"

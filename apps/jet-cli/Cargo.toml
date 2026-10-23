@@ -1,0 +1,13 @@
+[package]
+name = "jet-cli"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+jet-model = { path = "../../crates/jet-model" }
+jet-format = { path = "../../crates/jet-format" }
+jet-engine = { path = "../../crates/jet-engine" }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
