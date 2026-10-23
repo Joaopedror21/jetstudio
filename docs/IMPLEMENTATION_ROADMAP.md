@@ -61,3 +61,7 @@ O cenário sintético é: Channel Rack com 64 canais × 64 passos visíveis, mai
 - Uma superfície nova só começa depois que o R0 tiver os cenários dela **roteirizados**. A captura pode vir depois, mas o roteiro e os comportamentos a observar vêm antes.
 - Cada incremento termina com um handoff (`COLLABORATION.md` §7) e uma revisão do Claude.
 - Nenhum marco é "concluído" com testes vermelhos ou ignorados sem um registro em gaps.
+
+## Estado em 23/10/2026
+
+O primeiro executável desktop do M1 compila e abre no Windows; `cargo xtask ci` passa os gates atualmente implementados. M1.0 e M1.1 têm núcleo funcional, mas suas portas aprovadas ainda dependem de `parity`, testes de propriedade e revisão do Claude. M1.2 a M1.7 estão parcialmente implementados. R0/M1.8 dependem de capturas calibradas da referência e do harness visual. Detalhes, testes e lacunas estão em [MILESTONE_1_REPORT.md](MILESTONE_1_REPORT.md).
