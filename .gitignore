@@ -1,0 +1,6 @@
+# Artefatos locais e capturas de referência.
+target/
+reference/
+references/comparisons/
+*.local.*
+.env
