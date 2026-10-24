@@ -134,6 +134,25 @@ pub fn build(kind: &FxKind, rate: u32, tempo_bpm: f64) -> Box<dyn Effect> {
                 right: Biquad::new(kind, f64::from(*cutoff_hz), q, 0.0, rate_f),
             })
         }
+        FxKind::StereoShaper {
+            r_to_l,
+            left,
+            right,
+            l_to_r,
+            delay_ms,
+            pre,
+        } => {
+            let gain = |g: i16| f32::from(g) / 1000.0;
+            let frames = (f64::from(delay_ms.unsigned_abs()) * 0.001 * rate_f).round() as usize;
+            Box::new(StereoShaper {
+                matrix: [gain(*r_to_l), gain(*left), gain(*right), gain(*l_to_r)],
+                delay_right: *delay_ms > 0,
+                line: vec![0.0; frames.max(1)],
+                frames,
+                pos: 0,
+                pre: *pre,
+            })
+        }
     }
 }
 
@@ -736,9 +755,103 @@ impl Effect for Gate {
     }
 }
 
+/// A stereo mixer matrix (out L = L x left + R x r_to_l; out R = R x right + L x l_to_r; mid/side
+/// processing is the textbook use) and a delay of one channel (a Haas-style pseudo-stereo).
+pub struct StereoShaper {
+    /// [r_to_l, left, right, l_to_r].
+    matrix: [f32; 4],
+    delay_right: bool,
+    line: Vec<f32>,
+    frames: usize,
+    pos: usize,
+    pre: bool,
+}
+
+impl StereoShaper {
+    #[inline]
+    fn delay(&mut self, l: &mut f32, r: &mut f32) {
+        if self.frames == 0 {
+            return;
+        }
+        let side = if self.delay_right { r } else { l };
+        let out = self.line[self.pos];
+        self.line[self.pos] = *side;
+        self.pos = (self.pos + 1) % self.frames;
+        *side = out;
+    }
+}
+
+impl Effect for StereoShaper {
+    fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let [r_to_l, gl, gr, l_to_r] = self.matrix;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            if self.pre {
+                self.delay(l, r);
+            }
+            let (x, y) = (*l, *r);
+            *l = x * gl + y * r_to_l;
+            *r = y * gr + x * l_to_r;
+            if !self.pre {
+                self.delay(l, r);
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.line.iter_mut().for_each(|v| *v = 0.0);
+        self.pos = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stereo_shaper_matrix_and_delay() {
+        let shaper = |r_to_l: i16, left: i16, right: i16, l_to_r: i16, delay_ms: i16, pre: bool| {
+            build(
+                &FxKind::StereoShaper {
+                    r_to_l,
+                    left,
+                    right,
+                    l_to_r,
+                    delay_ms,
+                    pre,
+                },
+                48_000,
+                120.0,
+            )
+        };
+        // Side only (L - R into the left, R - L into the right): a mono signal cancels.
+        let mut fx = shaper(-1000, 1000, 1000, -1000, 0, false);
+        let (mut l, mut r) = (vec![0.5_f32; 64], vec![0.5_f32; 64]);
+        fx.process(&mut l, &mut r);
+        assert!(l.iter().chain(&r).all(|v| v.abs() < 1e-7));
+        // Swap: only the cross gains.
+        let mut fx = shaper(1000, 0, 0, 1000, 0, false);
+        let (mut l, mut r) = (vec![1.0_f32; 4], vec![0.25_f32; 4]);
+        fx.process(&mut l, &mut r);
+        assert_eq!((l[0], r[0]), (0.25, 1.0));
+        // +10 ms delays the right channel by 480 frames.
+        let mut fx = shaper(0, 1000, 1000, 0, 10, false);
+        let mut l = vec![0.0_f32; 1000];
+        let mut r = vec![0.0_f32; 1000];
+        l[0] = 1.0;
+        r[0] = 1.0;
+        fx.process(&mut l, &mut r);
+        assert_eq!(l[0], 1.0);
+        assert_eq!(r[0], 0.0);
+        assert_eq!(r[480], 1.0);
+        // Pre: the delay happens before the matrix, so the swapped left carries the delay.
+        let mut fx = shaper(1000, 0, 0, 1000, 10, true);
+        let mut l = vec![0.0_f32; 1000];
+        let mut r = vec![0.0_f32; 1000];
+        l[0] = 1.0;
+        r[0] = 1.0;
+        fx.process(&mut l, &mut r);
+        assert_eq!((l[0], l[480], r[0]), (0.0, 1.0, 1.0));
+    }
 
     fn sine(n: usize, amp: f32) -> Vec<f32> {
         (0..n).map(|i| amp * (i as f32 * 0.05).sin()).collect()

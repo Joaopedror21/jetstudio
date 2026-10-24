@@ -16,11 +16,11 @@ Legenda: ✅ disponível e testado · 🟡 parcial (o que falta está ao lado) �
 | Playlist (PL) | 17 | 5 | 9 | 3 | 0 |
 | Mixer (MX) | 17 | 10 | 3 | 4 | 0 |
 | Motor de áudio (AE) | 15 | 9 | 2 | 4 | 0 |
-| Efeitos (FX) | 14 | 9 | 1 | 4 | 0 |
+| Efeitos (FX) | 14 | 10 | 2 | 2 | 0 |
 | Plugins externos (PLG) | 4 | 0 | 0 | 4 | 0 |
 | Browser e arquivos (BR/FILE) | 12 | 2 | 5 | 4 | 1 |
 | Automação, MIDI, gravação (AUT/MIDI/REC) | 10 | 0 | 4 | 6 | 0 |
-| **Total** | **192** | **77** | **56** | **57** | **2** |
+| **Total** | **192** | **78** | **57** | **55** | **2** |
 
 As contagens foram geradas por script a partir da coluna Estado do inventário: ✅ = Testado; 🟡 = Implementado ou Parcialmente compatível; ⬜ = Pesquisado ou Especificado; ⛔ = Bloqueado. 
 
@@ -65,7 +65,8 @@ As contagens foram geradas por script a partir da coluna Estado do inventário: 
 | Mixer: fader, pan, mute/solo, meters | sim, mais invert, swap L/R e stereo sep | 🟡 | fader H-MIX-1 |
 | EQ integrado de 3 bandas | gráfico no inspector, depois dos FX | ✅ | MX-013: `track_eq_shapes_the_mixer_output`, `mixer_eq_handles_...` (H-MIX-3) |
 | Sends pós-fader, Route to Master | sim, sem ciclos | ✅ | `sends_route_post_fader...` |
-| 10 FX slots | 11 efeitos próprios, mix, enable, mover | ✅ | `effects_keep_their_state_across_plan_swaps` |
+| 10 FX slots | 12 efeitos próprios (com Stereo shaper), mix, enable, mover | ✅ | `effects_keep_their_state_across_plan_swaps`, `stereo_shaper_matrix_and_delay` |
+| Analisador | espectro e vectorscope da faixa selecionada no Mixer | 🟡 | FX-013: não é plugin de slot |
 | Export WAV 16/24/32 | Song/Pattern, Tail leave/cut/wrap | ✅ | `offline_render_leaves_the_remainder...` |
 | Export MP3/OGG/FLAC | — | ⬜ | AE-007 (encoder com licença compatível) |
 | Render == playback | mesmo renderizador | ✅ | `offline_render_..._matches_live_playback` |

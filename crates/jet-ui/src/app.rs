@@ -2431,7 +2431,20 @@ impl JetApp {
                 })
             })
             .collect();
-        MixerView { tracks }
+        // The analyzer reads the selected track (the tap is an atomic in the shared meters).
+        let analyzer = self.audio.as_ref().map(|host| {
+            let meters = host.output.meters();
+            meters.set_tap(Some(usize::from(self.mixer.selected)));
+            let mut left = vec![0.0; jet_audio_graph::TAP_LEN];
+            let mut right = vec![0.0; jet_audio_graph::TAP_LEN];
+            meters.read_tap(&mut left, &mut right);
+            (left, right)
+        });
+        MixerView {
+            tracks,
+            analyzer,
+            rate: self.audio.as_ref().map_or(48_000, |h| h.output.rate()),
+        }
     }
 
     fn rack_view(&self) -> RackView {

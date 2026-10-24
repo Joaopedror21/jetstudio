@@ -54,6 +54,10 @@ pub struct MixerTrackView {
 
 pub struct MixerView {
     pub tracks: Vec<MixerTrackView>,
+    /// Latest post-fader frames (left, right) of the selected track, for the analyzer; `None`
+    /// without an audio device.
+    pub analyzer: Option<(Vec<f32>, Vec<f32>)>,
+    pub rate: u32,
 }
 
 pub enum MixerAction {
@@ -575,6 +579,21 @@ pub fn fx_params(kind: &FxKind) -> Vec<(&'static str, i32, i32, i32)> {
             ("Cutoff (Hz)", i32::from(*cutoff_hz), 20, 20_000),
             ("Resonance", i32::from(*resonance), 0, 1000),
         ],
+        FxKind::StereoShaper {
+            r_to_l,
+            left,
+            right,
+            l_to_r,
+            delay_ms,
+            pre,
+        } => vec![
+            ("Right into left", i32::from(*r_to_l), -1000, 1000),
+            ("Left volume", i32::from(*left), -1000, 1000),
+            ("Right volume", i32::from(*right), -1000, 1000),
+            ("Left into right", i32::from(*l_to_r), -1000, 1000),
+            ("Delay (ms, + = right)", i32::from(*delay_ms), -500, 500),
+            ("Effects pre (1) / post (0)", i32::from(*pre), 0, 1),
+        ],
     }
 }
 
@@ -680,6 +699,21 @@ pub fn with_param(kind: &FxKind, index: usize, value: i32) -> FxKind {
             1 => *cutoff_hz = u16v.clamp(20, 20_000),
             _ => *resonance = u16v,
         },
+        FxKind::StereoShaper {
+            r_to_l,
+            left,
+            right,
+            l_to_r,
+            delay_ms,
+            pre,
+        } => match index {
+            0 => *r_to_l = i16v.clamp(-1000, 1000),
+            1 => *left = i16v.clamp(-1000, 1000),
+            2 => *right = i16v.clamp(-1000, 1000),
+            3 => *l_to_r = i16v.clamp(-1000, 1000),
+            4 => *delay_ms = i16v.clamp(-500, 500),
+            _ => *pre = value > 0,
+        },
     }
     next
 }
@@ -697,6 +731,7 @@ fn fx_label(kind: &FxKind) -> &'static str {
         FxKind::Flanger { .. } => "Flanger",
         FxKind::Phaser { .. } => "Phaser",
         FxKind::Filter { .. } => "Filter",
+        FxKind::StereoShaper { .. } => "Stereo shaper",
     }
 }
 
@@ -910,6 +945,15 @@ fn paint_inspector(
     let graph = Rect::from_min_size(pos2(rect.left() + 10.0, y), vec2(rect.width() - 20.0, 96.0));
     paint_track_eq(paint, painter, state, track, graph, actions);
     y += 102.0;
+    // Analyzer of the selected track (our own; FL's category is Wave Candy [Manual:
+    // effects_plugins, "Wave Candy - A flexible audio analysis and Visualization tool"]).
+    let spectrum = Rect::from_min_size(
+        pos2(rect.left() + 10.0, y),
+        vec2(rect.width() - 116.0, 90.0),
+    );
+    let vector = Rect::from_min_size(pos2(spectrum.right() + 6.0, y), vec2(90.0, 90.0));
+    paint_analyzer(paint, painter, view, spectrum, vector);
+    y += 96.0;
     // Parameters of the selected effect.
     let Some(slot) = state.selected_slot else {
         return;
@@ -1272,5 +1316,81 @@ fn paint_track_eq(
             state.eq_drag = None;
             actions.push(MixerAction::EndGesture);
         }
+    }
+}
+
+/// Spectrum (log frequency 20 Hz-20 kHz, -90..0 dBFS) and vectorscope (mono is a vertical line)
+/// of the selected track's post-fader output.
+fn paint_analyzer(
+    paint: &mut PaintCtx<'_>,
+    painter: &egui::Painter,
+    view: &MixerView,
+    spectrum: Rect,
+    vector: Rect,
+) {
+    let t = *paint.tokens;
+    for r in [spectrum, vector] {
+        framed(
+            painter,
+            r,
+            2.0,
+            theme::shade(t.rack_bg, 0.4),
+            theme::shade(t.rack_bg, 0.3),
+        );
+    }
+    let _ = paint.hit(
+        "mixer.analyzer",
+        spectrum,
+        "analyzer",
+        true,
+        "Spectrum of the selected track (20 Hz - 20 kHz, -90 to 0 dBFS)",
+    );
+    let _ = paint.hit(
+        "mixer.vectorscope",
+        vector,
+        "analyzer",
+        true,
+        "Vectorscope: mono is vertical, wide stereo spreads sideways",
+    );
+    let Some((left, right)) = &view.analyzer else {
+        painter.text(
+            spectrum.center(),
+            Align2::CENTER_CENTER,
+            "No audio device",
+            theme::regular(12.0),
+            t.hint_text,
+        );
+        return;
+    };
+    // Spectrum of the mono sum.
+    let mono: Vec<f32> = left.iter().zip(right).map(|(l, r)| (l + r) * 0.5).collect();
+    let db = jet_dsp::spectrum::spectrum_db(&mono);
+    if !db.is_empty() {
+        let n = mono.len() as f32;
+        let span = (20_000.0_f32 / 20.0).ln();
+        let points: Vec<Pos2> = (0..spectrum.width() as i32)
+            .map(|dx| {
+                let x = spectrum.left() + dx as f32;
+                let hz = 20.0 * ((dx as f32 / spectrum.width()) * span).exp();
+                let bin = ((hz * n / view.rate.max(1) as f32) as usize).min(db.len() - 1);
+                let level = (db[bin].clamp(-90.0, 0.0) + 90.0) / 90.0;
+                pos2(x, spectrum.bottom() - level * spectrum.height())
+            })
+            .collect();
+        painter
+            .with_clip_rect(spectrum)
+            .add(egui::Shape::line(points, Stroke::new(1.0, t.step_on)));
+    }
+    // Vectorscope: x = side, y = mid.
+    let vp = painter.with_clip_rect(vector);
+    let c = vector.center();
+    let half = vector.width() / 2.0;
+    for (l, r) in left.iter().zip(right).step_by(2) {
+        let (mid, side) = ((l + r) * 0.5, (l - r) * 0.5);
+        let p = pos2(
+            c.x + side.clamp(-1.0, 1.0) * half,
+            c.y - mid.clamp(-1.0, 1.0) * half,
+        );
+        vp.rect_filled(Rect::from_center_size(p, vec2(1.0, 1.0)), 0.0, t.step_on);
     }
 }

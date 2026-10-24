@@ -921,6 +921,10 @@ impl Renderer {
             let index = usize::from(track.index).min(TRACK_COUNT - 1);
             self.meters
                 .record(index, &track.left[..frames], &track.right[..frames]);
+            if self.meters.tap_track() == Some(index) {
+                self.meters
+                    .record_tap(&track.left[..frames], &track.right[..frames]);
+            }
             if track.mute {
                 continue;
             }

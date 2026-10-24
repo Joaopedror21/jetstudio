@@ -268,10 +268,10 @@
 | FX-007 | Chorus | Fruity Chorus | Delay modulado em quadratura | S | P2 | Implementado | — |
 | FX-008 | Noise gate | Fruity Gate | Limiar e release | S | P2 | Testado | `gate_silences_signal_below_threshold` |
 | FX-009 | Flanger, Phaser | Fruity Flanger / Phaser | Flanger: delay curto (0,5–5 ms) modulado com feedback; Phaser: 6 all-pass de 1ª ordem varridos de 200 Hz a ~5 kHz | S | P2 | Testado | `flanger_and_phaser_change_the_signal_and_stay_finite` |
-| FX-010 | Stereo shaper / enhancer | Fruity Stereo Shaper | — | S | P2 | Pesquisado | — |
+| FX-010 | Stereo shaper / enhancer | Fruity Stereo Shaper (categoria) [Manual: plugins/Fruity Stereo Shaper: matriz "Right into Left", "Left", "Right", "Left into Right" com fase; "Delay ... up to 500 ms"; "Pre / Post"] | Matriz estéreo L/R (mid/side de livro) e atraso de um lado (Haas), antes ou depois da matriz | S | P2 | Testado: efeito próprio "Stereo shaper" nos slots, parâmetros no inspector; faltam o all-pass "Phase" e a saída de diferença para sidechain | `stereo_shaper_matrix_and_delay` |
 | FX-011 | Filtro | Fruity Filter / Love Philter | Biquad RBJ LP/HP/BP com ressonância | S | P2 | Testado | `filter_effect_cuts_highs_in_low_pass_mode` |
 | FX-012 | Pitch shifter | Pitcher / Pitch Shifter | — | L | P3 | Pesquisado | — |
-| FX-013 | Analisadores (espectro, osciloscópio) | Wave Candy | — | M | P2 | Pesquisado | — |
+| FX-013 | Analisadores (espectro, osciloscópio) | Wave Candy | FFT radix-2 (Cooley-Tukey) com janela Hann; vectorscope mid/side | M | P2 | Parcialmente compatível: analisador próprio no inspector do Mixer para a faixa selecionada (espectro 20 Hz-20 kHz em dBFS e vectorscope), lendo a saída pós-fader por um tap sem alocação no áudio; o osciloscópio do Master fica no toolbar; não é um plugin de slot como o Wave Candy; sem device de áudio mostra "No audio device" | `a_full_scale_sine_peaks_at_its_bin_near_zero_db`, `the_analyzer_tap_records_the_chosen_track_only` |
 | FX-014 | Vocoder | Vocodex | — | L | P3 | Pesquisado | — |
 
 ## 11. Plugins externos (PLG)

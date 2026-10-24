@@ -12,6 +12,7 @@ pub mod ins;
 pub mod level;
 pub mod sample;
 pub mod sampler;
+pub mod spectrum;
 pub mod synth;
 
 pub use level::{

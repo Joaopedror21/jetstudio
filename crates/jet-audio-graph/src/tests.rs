@@ -594,3 +594,29 @@ fn an_offline_range_renders_only_that_section() {
     assert_eq!(out.len(), 48_000 * 2);
     assert_eq!(onsets(&out), vec![24_000]);
 }
+
+#[test]
+fn the_analyzer_tap_records_the_chosen_track_only() {
+    let project = project(&[0]);
+    let meters = Arc::new(Meters::default());
+    let mut renderer = Renderer::new(
+        Box::new(plan(&project, dc_sample(20_000))),
+        Arc::new(AtomicU64::new(0)),
+        Arc::clone(&meters),
+    );
+    renderer.sync(TransportSync {
+        playing: true,
+        anchor_tick: 0,
+        anchor_frame: 0,
+    });
+    // Insert 5 carries nothing; the Master carries the step.
+    meters.set_tap(Some(5));
+    run(&mut renderer, 512, 256);
+    let (mut l, mut r) = (vec![0.0; 256], vec![0.0; 256]);
+    meters.read_tap(&mut l, &mut r);
+    assert!(l.iter().chain(&r).all(|v| *v == 0.0));
+    meters.set_tap(Some(0));
+    run(&mut renderer, 512, 256);
+    meters.read_tap(&mut l, &mut r);
+    assert!(l.iter().all(|v| *v > 0.1) && r.iter().all(|v| *v > 0.1));
+}

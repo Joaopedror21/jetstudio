@@ -1198,11 +1198,23 @@ pub enum FxKind {
         cutoff_hz: u16,
         resonance: u16,
     },
+    /// Our stereo shaper (category of Fruity Stereo Shaper): a L/R mixer matrix, each gain
+    /// -1000..=1000 (negative = phase-inverted), and a delay of one side (positive delays the
+    /// right channel), before (`pre`) or after the matrix.
+    StereoShaper {
+        r_to_l: i16,
+        left: i16,
+        right: i16,
+        l_to_r: i16,
+        /// -500..=500 ms.
+        delay_ms: i16,
+        pre: bool,
+    },
 }
 
 impl FxKind {
     /// Stable identifiers used by commands and the UI.
-    pub const NAMES: [&'static str; 11] = [
+    pub const NAMES: [&'static str; 12] = [
         "eq",
         "delay",
         "reverb",
@@ -1214,6 +1226,7 @@ impl FxKind {
         "flanger",
         "phaser",
         "filter",
+        "stereo-shaper",
     ];
 
     pub fn default_for(name: &str) -> Option<Self> {
@@ -1291,6 +1304,14 @@ impl FxKind {
                 cutoff_hz: 2000,
                 resonance: 300,
             },
+            "stereo-shaper" => Self::StereoShaper {
+                r_to_l: 0,
+                left: 1000,
+                right: 1000,
+                l_to_r: 0,
+                delay_ms: 0,
+                pre: false,
+            },
             _ => return None,
         })
     }
@@ -1308,6 +1329,7 @@ impl FxKind {
             Self::Flanger { .. } => "flanger",
             Self::Phaser { .. } => "phaser",
             Self::Filter { .. } => "filter",
+            Self::StereoShaper { .. } => "stereo-shaper",
         }
     }
 
@@ -1382,6 +1404,19 @@ impl FxKind {
                 cutoff_hz,
                 resonance,
             } => *mode <= 2 && (20..=20_000).contains(cutoff_hz) && *resonance <= 1000,
+            Self::StereoShaper {
+                r_to_l,
+                left,
+                right,
+                l_to_r,
+                delay_ms,
+                ..
+            } => {
+                [*r_to_l, *left, *right, *l_to_r]
+                    .iter()
+                    .all(|g| i32::from(*g).abs() <= 1000)
+                    && i32::from(*delay_ms).abs() <= 500
+            }
         }
     }
 }

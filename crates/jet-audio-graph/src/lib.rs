@@ -19,6 +19,8 @@ pub const MAX_BLOCK: usize = 1024;
 
 /// Samples kept for the oscilloscope (mono sum of the Master output).
 pub const SCOPE_LEN: usize = 2048;
+/// Frames kept from the analyzer's tapped track.
+pub const TAP_LEN: usize = 2048;
 
 /// Peak meters per mixer track, the Master oscilloscope and the voice count, written by the
 /// audio thread and read by the UI.
@@ -27,6 +29,10 @@ pub struct Meters {
     scope: Vec<AtomicU32>,
     scope_pos: AtomicUsize,
     voices: AtomicU32,
+    /// Mixer index whose post-fader output the analyzer reads (`usize::MAX` = none).
+    tap_track: AtomicUsize,
+    tap: Vec<[AtomicU32; 2]>,
+    tap_pos: AtomicUsize,
 }
 
 impl Default for Meters {
@@ -38,6 +44,11 @@ impl Default for Meters {
             scope: (0..SCOPE_LEN).map(|_| AtomicU32::new(0)).collect(),
             scope_pos: AtomicUsize::new(0),
             voices: AtomicU32::new(0),
+            tap_track: AtomicUsize::new(usize::MAX),
+            tap: (0..TAP_LEN)
+                .map(|_| [AtomicU32::new(0), AtomicU32::new(0)])
+                .collect(),
+            tap_pos: AtomicUsize::new(0),
         }
     }
 }
@@ -62,6 +73,40 @@ impl Meters {
         for (i, value) in out.iter_mut().take(n).enumerate() {
             let index = end.wrapping_sub(n).wrapping_add(i) % SCOPE_LEN;
             *value = f32::from_bits(self.scope[index].load(Ordering::Relaxed));
+        }
+    }
+
+    /// Choose the mixer track the analyzer reads (`None` stops the tap).
+    pub fn set_tap(&self, track: Option<usize>) {
+        self.tap_track
+            .store(track.unwrap_or(usize::MAX), Ordering::Relaxed);
+    }
+
+    pub fn tap_track(&self) -> Option<usize> {
+        let track = self.tap_track.load(Ordering::Relaxed);
+        (track != usize::MAX).then_some(track)
+    }
+
+    /// Append frames of the tapped track (audio thread; no allocation).
+    pub fn record_tap(&self, left: &[f32], right: &[f32]) {
+        let mut pos = self.tap_pos.load(Ordering::Relaxed);
+        for (l, r) in left.iter().zip(right) {
+            let slot = &self.tap[pos % TAP_LEN];
+            slot[0].store(l.to_bits(), Ordering::Relaxed);
+            slot[1].store(r.to_bits(), Ordering::Relaxed);
+            pos = pos.wrapping_add(1);
+        }
+        self.tap_pos.store(pos, Ordering::Release);
+    }
+
+    /// The latest `left.len()` tapped frames, oldest first.
+    pub fn read_tap(&self, left: &mut [f32], right: &mut [f32]) {
+        let end = self.tap_pos.load(Ordering::Acquire);
+        let n = left.len().min(right.len()).min(TAP_LEN);
+        for i in 0..n {
+            let slot = &self.tap[end.wrapping_sub(n).wrapping_add(i) % TAP_LEN];
+            left[i] = f32::from_bits(slot[0].load(Ordering::Relaxed));
+            right[i] = f32::from_bits(slot[1].load(Ordering::Relaxed));
         }
     }
 
