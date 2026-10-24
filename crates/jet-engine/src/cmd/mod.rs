@@ -834,7 +834,7 @@ static SPECS: &[CommandSpec] = &[
         "Add Audio Clip",
         "",
         None,
-        "{path:string,track:uint,start:int}",
+        "{path:string,track?:uint,start:int}",
         Step
     ),
     spec!(

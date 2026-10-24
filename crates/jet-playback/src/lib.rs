@@ -5,6 +5,7 @@
 //! it through pre-allocated single-producer/single-consumer queues (ADR-006), and retired
 //! plans travel back so they are dropped off the audio thread.
 
+pub mod input;
 pub mod midi;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};

@@ -796,3 +796,32 @@ fn autosave_backs_up_changes_and_revert_restores_them() {
         .unwrap();
     assert!(dir.join("Beat (autosave).jetproj").is_file());
 }
+
+#[test]
+fn audio_clips_without_a_track_go_to_the_first_track_with_room() {
+    let mut session = session_120();
+    let wav = temp("take.wav");
+    write_wav(&wav, 48_000, 1, &vec![0.25; 48_000], WavFormat::Float32).unwrap();
+    for _ in 0..2 {
+        session
+            .execute("playlist.audio.add", json!({"path": wav, "start": 0}))
+            .unwrap();
+    }
+    session
+        .execute("playlist.audio.add", json!({"path": wav, "start": 384}))
+        .unwrap();
+    let arrangement = &session.project().arrangements[0];
+    assert_eq!(
+        arrangement.tracks.len(),
+        2,
+        "the overlapping take needed a new track"
+    );
+    let tracks: Vec<u64> = arrangement.clips.iter().map(|c| c.track.0).collect();
+    let first = arrangement.tracks[0].id.0;
+    let second = arrangement.tracks[1].id.0;
+    assert_eq!(
+        tracks,
+        vec![first, second, first],
+        "later take fits on the first track"
+    );
+}

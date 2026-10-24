@@ -41,6 +41,14 @@ struct AudioHost {
     midi: Option<jet_playback::midi::MidiInputs>,
 }
 
+/// Audio being captured while recording.
+struct Take {
+    start_tick: i64,
+    song: bool,
+    rate: u32,
+    samples: Vec<f32>,
+}
+
 /// Typing keyboard to piano [Manual: menu_options, "Typing to piano keyboard (Ctrl+T)"].
 /// Hypothesis H-KB-1: the manual shows no key map; we use the common two-row layout (Z row is
 /// the lower octave, Q row the upper; the rows above hold the black keys).
@@ -109,6 +117,10 @@ pub struct JetApp {
     pending_focus: Option<WindowKind>,
     /// Last autosave check [Manual: envsettings_files, "Regularly (every 5 minutes)"].
     last_autosave: std::time::Instant,
+    /// Audio recording [Manual: recording_audio]: the input opens when armed.
+    armed: bool,
+    input: Option<jet_playback::input::AudioInput>,
+    take: Option<Take>,
     typing: bool,
     /// Octave of the Z row in FL naming (C5 = key 60); Alt+NumPad 2-6 changes it.
     typing_octave: u8,
@@ -145,6 +157,9 @@ impl Default for JetApp {
             pending_show: Vec::new(),
             pending_focus: None,
             last_autosave: std::time::Instant::now(),
+            armed: false,
+            input: None,
+            take: None,
             typing: false,
             typing_octave: 4,
             typing_held: Vec::new(),
@@ -161,6 +176,7 @@ enum UiAction {
     Mixer(MixerAction),
     Settings(SettingsAction),
     AudioSettings(AudioSettingsAction),
+    ToggleRecord,
     ToggleTyping,
     OpenProject,
     SaveProject,
@@ -779,6 +795,133 @@ impl JetApp {
         }
     }
 
+    /// Arm or disarm recording. The input device is opened only while armed.
+    fn toggle_record(&mut self) {
+        if self.armed {
+            self.armed = false;
+            self.finish_take();
+            self.input = None;
+            return;
+        }
+        self.armed = true;
+        if !self.hardware_audio {
+            return;
+        }
+        match jet_playback::input::AudioInput::open() {
+            Ok(input) => {
+                self.audio_status = Some(format!(
+                    "Record armed - input: {} ({} Hz)",
+                    input.name, input.rate
+                ));
+                self.input = Some(input);
+            }
+            Err(error) => {
+                self.armed = false;
+                self.last_error = Some(format!("No audio input: {error}"));
+            }
+        }
+    }
+
+    /// "Arm record mode and press Play to start recording" [Manual: recording_audio].
+    fn pump_recording(&mut self, playing: bool) {
+        let Some(input) = &mut self.input else {
+            return;
+        };
+        match (&mut self.take, playing) {
+            (None, true) => {
+                input.discard();
+                let snapshot = self.session.transport_snapshot();
+                self.take = Some(Take {
+                    start_tick: snapshot.position.0,
+                    song: snapshot.mode == PlayMode::Song,
+                    rate: input.rate,
+                    samples: Vec::new(),
+                });
+            }
+            (Some(take), true) => input.drain(&mut take.samples),
+            (Some(take), false) => {
+                input.drain(&mut take.samples);
+                self.finish_take();
+            }
+            (None, false) => input.discard(),
+        }
+    }
+
+    /// Write the take to a WAV file and, in Song mode, place it as an Audio Clip.
+    fn finish_take(&mut self) {
+        let Some(mut take) = self.take.take() else {
+            return;
+        };
+        // "Latency compensation ... removes an amount of time equal to the audio device latency
+        // (buffer length) from the start of the recording" [Manual: recording_audio].
+        let output_frames = self.audio.as_ref().map_or(0, |h| {
+            u64::from(
+                h.output
+                    .stats()
+                    .last_buffer_frames
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ) * u64::from(take.rate)
+                / u64::from(h.output.rate().max(1))
+        });
+        let input_frames = self.input.as_ref().map_or(0, |i| {
+            u64::from(i.buffer_frames.load(std::sync::atomic::Ordering::Relaxed))
+        });
+        let skip = ((output_frames + input_frames) as usize * 2).min(take.samples.len());
+        take.samples.drain(..skip);
+        if take.samples.len() < 2 {
+            return;
+        }
+        let folder = self
+            .session
+            .path()
+            .and_then(std::path::Path::parent)
+            .map(|dir| dir.join("Recordings"))
+            .or_else(|| {
+                std::env::var_os("USERPROFILE")
+                    .or_else(|| std::env::var_os("HOME"))
+                    .map(|h| {
+                        std::path::PathBuf::from(h)
+                            .join("Documents")
+                            .join("JetStudio Projects")
+                            .join("Recordings")
+                    })
+            });
+        let Some(folder) = folder else {
+            return;
+        };
+        if let Err(error) = std::fs::create_dir_all(&folder) {
+            self.last_error = Some(format!("Could not create {}: {error}", folder.display()));
+            return;
+        }
+        let path = (1..)
+            .map(|n| folder.join(format!("Recording {n}.wav")))
+            .find(|p| !p.exists())
+            .unwrap_or_else(|| folder.join("Recording.wav"));
+        if let Err(error) = jet_media::write_wav(
+            &path,
+            take.rate,
+            2,
+            &take.samples,
+            jet_media::WavFormat::Float32,
+        ) {
+            self.last_error = Some(error.to_string());
+            return;
+        }
+        if take.song {
+            self.execute(
+                "playlist.audio.add",
+                json!({"path": path, "start": take.start_tick.max(0)}),
+            );
+            self.audio_status = Some(format!("Recorded {}", path.display()));
+        } else {
+            // "Automatic Audio Clip placement only works in Song mode" [Manual: recording_audio].
+            self.audio_status = Some(format!(
+                "Recorded {} (Audio Clips are placed automatically only in Song mode)",
+                path.display()
+            ));
+        }
+    }
+
     /// Typing keyboard: key presses become live notes on the selected channel.
     fn typing_keys(&mut self, ctx: &egui::Context) {
         let Some(channel) = self.selected_channel_id() else {
@@ -913,6 +1056,7 @@ impl JetApp {
             UiAction::Piano(action) => self.run_piano(action),
             UiAction::Mixer(action) => self.run_mixer(action),
             UiAction::AudioSettings(action) => self.run_audio_settings(action),
+            UiAction::ToggleRecord => self.toggle_record(),
             UiAction::Settings(action) => match action {
                 SettingsAction::Engine {
                     id,
@@ -1220,6 +1364,10 @@ impl JetApp {
                 WsAction::Maximize(WindowKind::Playlist)
             }));
         }
+        // "Record (R) - Switches between record and play mode" [Manual: toolbar_panels].
+        if letters && pressed(Key::R) && !modifiers.any() {
+            actions.push(UiAction::ToggleRecord);
+        }
         if letters && pressed(Key::L) && !modifiers.any() {
             actions.push(UiAction::Engine("transport.mode.toggle", json!({})));
         }
@@ -1310,6 +1458,8 @@ impl JetApp {
                 .map_or_else(Vec::new, |host| host.scope.clone()),
             typing_keyboard: self.typing,
             metronome: self.session.metronome(),
+            armed: self.armed,
+            recording: self.take.is_some(),
         }
     }
 
@@ -1786,6 +1936,7 @@ impl JetApp {
             self.run_action(action, desktop, &ctx);
         }
         self.pump_audio();
+        self.pump_recording(toolbar_view.playing);
         // Autosave every 5 minutes "UNLESS FL Studio is playing, then the autosave is postponed
         // until the project is stopped" [Manual: envsettings_files, "Regularly"].
         if self.last_autosave.elapsed() >= Duration::from_secs(300) && !toolbar_view.playing {
@@ -1820,6 +1971,7 @@ impl From<ToolbarAction> for UiAction {
             ToolbarAction::ExportMidi => Self::ExportMidi,
             ToolbarAction::AddChannel(kind) => Self::AddChannel(kind),
             ToolbarAction::ToggleTyping => Self::ToggleTyping,
+            ToolbarAction::ToggleRecord => Self::ToggleRecord,
             ToolbarAction::Minimize => Self::Minimize,
             ToolbarAction::Maximize => Self::Maximize,
             ToolbarAction::Quit => Self::Quit,
@@ -2714,5 +2866,34 @@ mod tests {
         click(&mut app, &ctx, apply);
         assert_eq!(app.audio_request.rate, Some(48_000));
         assert!(app.audio.is_none(), "tests never open audio hardware");
+    }
+
+    #[test]
+    fn r_arms_recording_and_a_finished_take_becomes_an_audio_clip() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        toggle(&mut app, &ctx, Key::R);
+        assert!(app.armed, "R arms recording");
+        toggle(&mut app, &ctx, Key::R);
+        assert!(!app.armed, "R again disarms");
+        // A saved project keeps its takes in a Recordings folder beside it.
+        let dir = std::env::temp_dir().join(format!("jet-ui-take-{}", std::process::id()));
+        let project = dir.join("Take test.jetproj");
+        app.execute("file.save_as", json!({"path": project}));
+        app.take = Some(Take {
+            start_tick: 384,
+            song: true,
+            rate: 48_000,
+            samples: vec![0.5; 2 * 4_800],
+        });
+        app.finish_take();
+        let wav = dir.join("Recordings").join("Recording 1.wav");
+        assert!(wav.is_file());
+        let clips = &app.session.project().arrangements[0].clips;
+        assert_eq!(clips.len(), 1);
+        assert_eq!(clips[0].start.0, 384);
+        assert!(matches!(clips[0].source, ClipSource::Audio(_)));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

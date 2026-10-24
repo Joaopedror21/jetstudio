@@ -54,6 +54,7 @@
 | H-AUT-2 | Formas das 10 curvas | Fórmulas próprias (potência 8^tensão, S, degraus, pulso, seno) | O manual dá só os nomes | `jet-seq/src/automation.rs` |
 | H-AUT-3 | Taxa de controle | Uma avaliação por bloco (até 1024 frames) | Não documentado | `jet-audio-graph/src/render.rs` |
 | H-KB-1 | Mapa do teclado de digitação | Duas fileiras: Z…M + teclas pretas em S, D, G, H, J (oitava inferior); Q…P + 2, 3, 5, 6, 7, 9 (superior); Z = C4 | O manual menciona "Standard keyboard layouts" sem mostrar o mapa | `jet-ui/src/app.rs` |
+| H-REC-1 | Início da take | A take começa na posição do transporte no primeiro quadro de UI depois do Play (granularidade de ~30 ms) | O FL usa os relógios do driver | `jet-ui/src/app.rs` |
 | H-UI-1 | Sensibilidade dos knobs e faders | 200 px por curso de knob; 150 px por curso de fader; 6 px por insert | Não medido | `jet-ui` |
 
 ## 3. Interface e controles globais (GLB)
@@ -299,7 +300,7 @@
 | AUT-005 | Internal controllers | [Manual: automation_internal] | M | P3 | Pesquisado |
 | MIDI-001 | Entrada MIDI (midir), omni, typing keyboard | [Manual: envsettings_midi]; [menu_options] "Typing to piano keyboard (Ctrl+T)" | M | P1 | Parcialmente compatível: todas as portas abertas, notas no canal selecionado por fila direta ao áudio; teclado de digitação (H-KB-1, Alt+NumPad 2–6); faltam escolha de dispositivo, CC/controles, gravação. Testes: `parses_note_on_off_and_running_zero_velocity`, `typing_keyboard_plays_notes_and_blocks_letter_shortcuts` |
 | MIDI-002 | MIDI clock sync | idem | M | P3 | Pesquisado |
-| REC-001 | Gravação de áudio (arm, pickup, takes, monitoramento) | [Manual: recording_audio] | L | P2 | Pesquisado |
+| REC-001 | Gravação de áudio (arm, pickup, takes, monitoramento) | [Manual: recording_audio]: "Arm record mode and press Play"; Audio Clip automática "only ... in Song mode" na "first track with enough room"; compensação de latência = buffer | L | P2 | Parcialmente compatível: R/botão armam (a entrada padrão só abre armada), Play grava, Stop salva `Recordings/Recording N.wav` (32-bit float) e cria a clip; compensação = buffer de saída + entrada; alinhamento ao bloco de UI (H-REC-1); faltam escolha de entrada por mixer track, pickup, monitoramento, takes/loop. Testes: `r_arms_recording_and_a_finished_take_becomes_an_audio_clip`, `audio_clips_without_a_track_go_to_the_first_track_with_room`. A captura cpal não foi exercitada no hardware (não liguei o microfone sem pedir). |
 | REC-002 | Gravação de notas no Piano roll | [Manual: recording_scores] | M | P2 | Pesquisado |
 | REC-003 | Comping de takes | [Manual: recording_audio "Audition takes"] | L | P3 | Pesquisado |
 

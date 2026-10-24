@@ -52,7 +52,10 @@ struct IdParams {
 #[serde(deny_unknown_fields)]
 struct AddAudio {
     path: std::path::PathBuf,
-    track: u64,
+    /// Omitted: "the first track with enough room to fit the Audio Clip, without overlap"
+    /// [Manual: recording_audio, "Audio Clip placement"].
+    #[serde(default)]
+    track: Option<u64>,
     start: i64,
 }
 #[derive(Deserialize)]
@@ -161,13 +164,36 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                     .push(jet_model::Channel::audio_clip(channel, name, resource));
                 let active = project.active_arrangement;
                 let clip = project.ids.clip();
+                let new_track = project.ids.track();
                 let arrangement = arrangement_mut(project, active)?;
-                if !arrangement.tracks.iter().any(|t| t.id == TrackId(p.track)) {
-                    return Err(CmdError::Failed("track does not exist".into()));
-                }
+                let track = match p.track {
+                    Some(track) => {
+                        if !arrangement.tracks.iter().any(|t| t.id == TrackId(track)) {
+                            return Err(CmdError::Failed("track does not exist".into()));
+                        }
+                        TrackId(track)
+                    }
+                    None => {
+                        let (from, to) = (p.start, p.start + length);
+                        let free = arrangement.tracks.iter().map(|t| t.id).find(|id| {
+                            !arrangement
+                                .clips
+                                .iter()
+                                .any(|c| c.track == *id && c.start.0 < to && c.end().0 > from)
+                        });
+                        match free {
+                            Some(id) => id,
+                            None => {
+                                let name = format!("Track {}", arrangement.tracks.len() + 1);
+                                arrangement.tracks.push(PlaylistTrack::new(new_track, name));
+                                new_track
+                            }
+                        }
+                    }
+                };
                 arrangement.clips.push(ClipInstance {
                     id: clip,
-                    track: TrackId(p.track),
+                    track,
                     start: Tick(p.start),
                     length: Tick(length),
                     offset: Tick(0),

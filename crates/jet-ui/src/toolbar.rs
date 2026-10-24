@@ -35,6 +35,9 @@ pub struct ToolbarView {
     pub scope: Vec<f32>,
     pub typing_keyboard: bool,
     pub metronome: bool,
+    /// Recording armed; `recording` once audio is being captured.
+    pub armed: bool,
+    pub recording: bool,
 }
 
 pub enum ToolbarAction {
@@ -47,6 +50,7 @@ pub enum ToolbarAction {
     ExportMidi,
     AddChannel(&'static str),
     ToggleTyping,
+    ToggleRecord,
     Minimize,
     Maximize,
     Quit,
@@ -272,16 +276,33 @@ pub fn paint_toolbar(
 
     // Record [W circle centred at 419,20, r 13].
     let rec = r(o, 405.0, 7.0, 433.0, 34.0);
-    let _ = paint.hit(
+    let record = paint.hit(
         "toolbar.record",
         rec,
         "button",
-        false,
-        "Record - arrives with audio/MIDI input",
+        true,
+        if view.recording {
+            "Recording audio (stop to place the take)"
+        } else if view.armed {
+            "Record armed: press Play to record audio (R)"
+        } else {
+            "Record (R): arm audio recording from the default input"
+        },
     );
     painter.circle_filled(rec.center(), 13.5, t.btn_outer);
     painter.circle_filled(rec.center(), 12.0, t.record_ring);
-    painter.circle_filled(rec.center(), 4.5, t.record_dot);
+    painter.circle_filled(
+        rec.center(),
+        if view.armed { 7.5 } else { 4.5 },
+        if view.armed {
+            egui::Color32::from_rgb(0xF0, 0x40, 0x30)
+        } else {
+            t.record_dot
+        },
+    );
+    if record.clicked() {
+        actions.push(ToolbarAction::ToggleRecord);
+    }
 
     // Tempo LCD [W 437-490, 8-33]: integer part large, decimals small.
     let tempo_rect = r(o, 437.0, 8.0, 491.0, 33.0);
@@ -1009,6 +1030,7 @@ fn paint_menu(
                 ToolbarAction::ExportMidi => ToolbarAction::ExportMidi,
                 ToolbarAction::AddChannel(kind) => ToolbarAction::AddChannel(kind),
                 ToolbarAction::ToggleTyping => ToolbarAction::ToggleTyping,
+                ToolbarAction::ToggleRecord => ToolbarAction::ToggleRecord,
                 ToolbarAction::Minimize => ToolbarAction::Minimize,
                 ToolbarAction::Maximize => ToolbarAction::Maximize,
                 ToolbarAction::Quit => ToolbarAction::Quit,
