@@ -9,18 +9,18 @@ Legenda: ✅ disponível e testado · 🟡 parcial (o que falta está ao lado) �
 
 | Sistema | Itens catalogados | ✅ | 🟡 | ⬜ | ⛔ |
 |---|---:|---:|---:|---:|---:|
-| Interface e controles globais (GLB) | 23 | 7 | 7 | 9 | 0 |
+| Interface e controles globais (GLB) | 23 | 7 | 9 | 7 | 0 |
 | Channel Rack e Step Sequencer (CR) | 33 | 14 | 9 | 9 | 1 |
-| Sampler e instrumentos (SMP/INS) | 19 | 6 | 2 | 11 | 0 |
-| Piano Roll (PR) | 27 | 7 | 8 | 12 | 0 |
-| Playlist (PL) | 17 | 4 | 5 | 8 | 0 |
-| Mixer (MX) | 17 | 6 | 8 | 3 | 0 |
-| Motor de áudio (AE) | 15 | 7 | 3 | 5 | 0 |
-| Efeitos (FX) | 14 | 7 | 1 | 6 | 0 |
+| Sampler e instrumentos (SMP/INS) | 20 | 8 | 3 | 9 | 0 |
+| Piano Roll (PR) | 27 | 9 | 11 | 7 | 0 |
+| Playlist (PL) | 17 | 5 | 8 | 4 | 0 |
+| Mixer (MX) | 17 | 8 | 5 | 4 | 0 |
+| Motor de áudio (AE) | 15 | 9 | 2 | 4 | 0 |
+| Efeitos (FX) | 14 | 9 | 1 | 4 | 0 |
 | Plugins externos (PLG) | 4 | 0 | 0 | 4 | 0 |
-| Browser e arquivos (BR/FILE) | 12 | 2 | 3 | 6 | 1 |
-| Automação, MIDI, gravação (AUT/MIDI/REC) | 10 | 0 | 0 | 10 | 0 |
-| **Total** | **191** | **60** | **46** | **83** | **2** |
+| Browser e arquivos (BR/FILE) | 12 | 2 | 4 | 5 | 1 |
+| Automação, MIDI, gravação (AUT/MIDI/REC) | 10 | 0 | 3 | 7 | 0 |
+| **Total** | **192** | **71** | **55** | **64** | **2** |
 
 As contagens foram geradas por script a partir da coluna Estado do inventário: ✅ = Testado; 🟡 = Implementado ou Parcialmente compatível; ⬜ = Pesquisado ou Especificado; ⛔ = Bloqueado. 
 
@@ -39,37 +39,41 @@ As contagens foram geradas por script a partir da coluna Estado do inventário: 
 | Roteamento canal → mixer, Ctrl+L | arrastar o seletor; insert livre | ✅ | `mixer_routing_faders...` |
 | Step sequencer (clique, pintura) | sim | ✅ | `channel_rack_steps_render_at_the_step_grid` |
 | Graph editor | engine aplica note, vel, pan, pitch, shift | 🟡 | falta o editor visual e "Rep" |
-| Swing global/canal | engine | 🟡 | H-SEQ-1; falta o knob |
-| Comprimento do pattern | engine | 🟡 | falta o controle na UI |
+| Swing global/canal | knob global no cabeçalho do rack | 🟡 | H-SEQ-1; swing por canal só por comando |
+| Comprimento do pattern | LCD no cabeçalho do rack | ✅ | CR-014 |
 | Fill each 2/4/8 | menu do canal | ✅ | `context_menu_fill_each_four_steps_sets_real_steps` |
 | Cut groups / cut itself | engine e menu | ✅ | `cut_groups_choke_the_cut_by_channel` |
 | Sampler: carregar wav/mp3/ogg/flac | decodificação Symphonia | ✅ | `wav_round_trips_through_the_decoder` |
 | Sampler: nível padrão −8,2 dB | medido no render | ✅ | `default_sampler_plays_8_2_db_under_the_recorded_level` |
-| Sampler: loop points, start offset, envelopes | — | ⬜ | SMP-005/008 |
+| Sampler: loop points, start offset, envelopes | Channel Settings | 🟡 | SMP-005 ✅; SMP-008 só envelope de volume; falta LFO, Porta e Slide |
 | Sintetizador | próprio (2 osc, ADSR, SVF) | ✅ | `sine_voice_plays_the_requested_frequency` |
 | Piano roll: Draw/Paint/Delete/Mute/Select | sim | ✅ | `piano_roll_click_adds_a_note...` |
 | Piano roll: mover/redimensionar/snap | sim | ✅ | `piano_roll_editing_tools` (engine) |
 | Quantize, chop, glue, duplicate, transpose, discard lengths | sim | ✅ | `piano_roll_editing_tools` |
 | Editor de eventos | só velocity | 🟡 | pan, release, Mod X/Y, pitch |
 | Teclado de preview | notas ao vivo | ✅ | `live_notes_sound_until_note_off` |
-| Copy/Paste de notas | — | ⬜ | PR-020 |
-| Playlist: pattern clips | criar por clique; tocar no modo Song | 🟡 | mover, redimensionar e apagar só por comando |
-| Playlist: audio clips | — | ⬜ | PL-003 |
-| Playlist: automation clips | — | ⬜ | PL-004 / AUT-001 |
+| Copy/Paste de notas | Ctrl+C/X/V | ✅ | PR-020 |
+| Chord stamp, snap to scale, flip, strum, limit, arpeggiate | menu Tools e seletores | 🟡 | `piano_roll_tools_flip_strum_limit_stamp_arpeggiate_and_snap`; faltam diálogos com parâmetros, Flam, Randomize, Articulate |
+| Import/Export MIDI | SMF tipo 0/1 | ✅ | AE-008 |
+| Playlist: pattern clips | criar, mover, redimensionar, apagar, mutar | 🟡 | PL-005: faltam Slip, Slice, seleção de timeline |
+| Playlist: audio clips | soltar arquivo, waveform, offset | 🟡 | PL-003: faltam ganho, fades e stretch |
+| Playlist: automation clips | criar pelo knob, editar pontos e curvas | 🟡 | PL-004 / AUT-001: faltam LFO e gravação |
+| Arranjos e time markers | menu do título, Alt+T | 🟡 | PL-008/009: faltam Merge e os tipos de marcador |
 | Mute de faixa/clip | engine | ✅ | `song_mode_places_clip_windows...` |
-| Mixer: fader, pan, mute/solo, meters | sim | 🟡 | fader H-MIX-1 |
+| Mixer: fader, pan, mute/solo, meters | sim, mais invert, swap L/R e stereo sep | 🟡 | fader H-MIX-1 |
 | Sends pós-fader, Route to Master | sim, sem ciclos | ✅ | `sends_route_post_fader...` |
-| 10 FX slots | 8 efeitos próprios, mix, enable, mover | ✅ | `effects_keep_their_state_across_plan_swaps` |
+| 10 FX slots | 11 efeitos próprios, mix, enable, mover | ✅ | `effects_keep_their_state_across_plan_swaps` |
 | Export WAV 16/24/32 | Song/Pattern, Tail leave/cut/wrap | ✅ | `offline_render_leaves_the_remainder...` |
-| Export MP3/OGG/FLAC/MIDI | — | ⬜ | AE-007/008 |
+| Export MP3/OGG/FLAC | — | ⬜ | AE-007 (encoder com licença compatível) |
 | Render == playback | mesmo renderizador | ✅ | `offline_render_..._matches_live_playback` |
 | Callback sem alocação | assert_no_alloc | ✅ | `processing_a_busy_project_does_not_allocate` |
 | Browser: pastas, preview, arrastar | sim | 🟡 | busca, favoritos, abas |
 | Projeto: salvar/abrir com samples relativos | sim | ✅ | `save_and_load_keep_samples_and_render_identically` |
-| Autosave/backups | — | ⬜ | FILE-003 |
-| Entrada MIDI | renderizador pronto | ⬜ | MIDI-001 |
+| Autosave/backups | a cada 5 min e ao salvar; revert | 🟡 | FILE-003: faltam os outros modos |
+| Entrada MIDI e typing keyboard | todas as portas, Ctrl+T | 🟡 | MIDI-001: faltam escolha de dispositivo, CC, gravação de notas |
+| Configurações de áudio (F10) | dispositivo, taxa, buffer | 🟡 | AE-004 ✅ no hardware; GLB-021: faltam as outras abas |
 | VST3/CLAP | — | ⬜ | PLG-001/002 (licença do VST3 resolvida: MIT desde a 3.8) |
-| Gravação de áudio | — | ⬜ | REC-001 |
+| Gravação de áudio | R arma, Play grava, take vira Audio Clip | 🟡 | REC-001: não exercitado no microfone do usuário; faltam pickup, takes e monitoramento |
 
 ## 3. Itens bloqueados
 
