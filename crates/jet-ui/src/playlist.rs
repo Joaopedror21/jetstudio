@@ -67,6 +67,9 @@ pub struct AutomationView {
     pub id: u64,
     pub points: Vec<jet_model::AutoPoint>,
     pub offset: i64,
+    /// Min/Max/Time/LFO, for the preview drawn in the clip.
+    pub settings: jet_model::AutoSettings,
+    pub beat_ticks: i64,
 }
 
 /// Curve types in the order of the manual's Curve Type Menu [Manual: playlist_automationclip].
@@ -165,6 +168,8 @@ pub struct PlaylistState {
     point_drag: Option<(u64, usize, i64, u16)>,
     /// Control point menu: (automation id, point index, where it opened).
     point_menu: Option<(u64, usize, egui::Pos2)>,
+    /// Tension handle drag: (automation id, point index, tension at the start, tension now).
+    tension_drag: Option<(u64, usize, i16, i16)>,
     /// Audio Clip handle drag: (clip id, handle, value being set).
     audio_drag: Option<(u64, AudioHandle, i32)>,
     /// Audio Clip menu: (clip id, where it opened).
@@ -197,6 +202,7 @@ impl Default for PlaylistState {
             drag: None,
             point_drag: None,
             point_menu: None,
+            tension_drag: None,
             audio_drag: None,
             audio_menu: None,
             arrangement_menu: None,
@@ -305,6 +311,12 @@ pub enum PlaylistAction {
         id: u64,
         index: usize,
         shape: jet_model::CurveShape,
+    },
+    /// Tension of the segment ending at point `index`.
+    AutoTension {
+        id: u64,
+        index: usize,
+        tension: i16,
     },
 }
 
@@ -1691,17 +1703,71 @@ fn automation_body(
         point.value = value;
         points.sort_by_key(|p| p.at);
     }
-    // Envelope polyline, sampled every 2 px.
+    // Tension drag preview.
+    if let Some((id, index, _, tension)) = state.tension_drag
+        && id == auto.id
+        && let Some(point) = points.get_mut(index)
+    {
+        point.tension = tension;
+    }
+    // Envelope polyline, sampled every 2 px; with LFO mode or Min/Max/Time the clip previews the
+    // output ("LFO Switch - Enables and shows a preview of the LFO ... inside clips").
     let clip_painter = painter.with_clip_rect(body);
+    let output = |tick: i64| {
+        let lane = jet_seq::automation::AutoLane {
+            target: jet_model::AutoTarget::MixerVolume(0),
+            segments: vec![jet_seq::automation::AutoSegment {
+                start: 0,
+                end: i64::MAX,
+                offset: 0,
+                automation: jet_model::AutomationId(auto.id),
+            }],
+            points: vec![(
+                jet_model::AutomationId(auto.id),
+                points.clone(),
+                auto.settings,
+            )],
+            beat_ticks: auto.beat_ticks,
+        };
+        lane.value_at(tick)
+    };
+    let shaped = auto.settings != jet_model::AutoSettings::default();
     let mut line = Vec::new();
+    let mut preview = Vec::new();
     let mut x = body.left();
     while x <= body.right() {
-        if let Some(v) = jet_seq::automation::value_at(&points, tick_at(x)) {
+        let tick = tick_at(x);
+        if let Some(v) = jet_seq::automation::value_at(&points, tick) {
             line.push(pos2(x, inner.bottom() - v as f32 * inner.height()));
+        }
+        if shaped && let Some(v) = output(tick.max(0)) {
+            preview.push(pos2(x, inner.bottom() - v as f32 * inner.height()));
         }
         x += 2.0;
     }
+    if shaped {
+        clip_painter.add(egui::Shape::line(
+            preview,
+            Stroke::new(1.0, theme::shade(t.picker_text, 0.75)),
+        ));
+    }
     clip_painter.add(egui::Shape::line(line, Stroke::new(1.5, t.picker_text)));
+    // Tension handles: a small circle in the middle of each segment [Manual:
+    // playlist_automationclip, "Change envelope curve - Left-click a tension handle and move
+    // up/down ... Right-Click the tension handle to reset curve tension"].
+    let handles: Vec<(usize, egui::Pos2)> = (1..points.len())
+        .map(|i| {
+            let mid = (points[i - 1].at.0 + points[i].at.0) / 2;
+            let v = jet_seq::automation::value_at(&points, mid).unwrap_or(0.0);
+            (
+                i,
+                pos2(x_of(mid), inner.bottom() - v as f32 * inner.height()),
+            )
+        })
+        .collect();
+    for (_, at) in &handles {
+        clip_painter.circle_filled(*at, 2.5, t.picker_text);
+    }
     for point in &points {
         clip_painter.circle_stroke(
             pos2(x_of(point.at.0), y_of(point.value)),
@@ -1735,6 +1801,12 @@ fn automation_body(
             .find(|(_, pt)| pos2(x_of(pt.at.0), y_of(pt.value)).distance(p) <= 6.0)
             .map(|(i, _)| i)
     };
+    let near_handle = |p: egui::Pos2| {
+        handles
+            .iter()
+            .find(|(_, at)| at.distance(p) <= 6.0)
+            .map(|(i, _)| *i)
+    };
     if response.hovered() {
         *paint.hint = "Right-click adds a point; drag a point to move it; Alt+click deletes; right-click a point for curve types".to_owned();
     }
@@ -1743,6 +1815,15 @@ fn automation_body(
     {
         match near(p) {
             Some(index) => state.point_menu = Some((auto.id, index, p)),
+            None if near_handle(p).is_some() => {
+                if let Some(index) = near_handle(p) {
+                    actions.push(PlaylistAction::AutoTension {
+                        id: auto.id,
+                        index,
+                        tension: 0,
+                    });
+                }
+            }
             None => {
                 let at = (tick_at(p.x) + snap / 2).div_euclid(snap.max(1)) * snap.max(1);
                 actions.push(PlaylistAction::AutoAddPoint {
@@ -1764,6 +1845,28 @@ fn automation_body(
     {
         let point = &auto.points[index];
         state.point_drag = Some((auto.id, index, point.at.0, point.value));
+    } else if response.drag_started_by(PointerButton::Primary)
+        && let Some(index) = origin.and_then(near_handle)
+    {
+        let tension = auto.points[index].tension;
+        state.tension_drag = Some((auto.id, index, tension, tension));
+    }
+    // Up raises the curve's middle: positive tension for a rising segment, negative for a
+    // falling one (8 units per pixel, ours).
+    if response.dragged()
+        && let (Some(p), Some(o), Some(drag)) = (pointer, origin, state.tension_drag.as_mut())
+        && drag.0 == auto.id
+    {
+        let rising = auto.points[drag.1].value >= auto.points[drag.1 - 1].value;
+        let delta = ((o.y - p.y) * 8.0) as i32 * if rising { -1 } else { 1 };
+        drag.3 = (i32::from(drag.2) + delta).clamp(-1000, 1000) as i16;
+        *paint.hint = format!("Tension: {:+.0}%", f32::from(drag.3) / 10.0);
+    }
+    if response.drag_stopped()
+        && let Some((id, index, _, tension)) = state.tension_drag.take()
+        && id == auto.id
+    {
+        actions.push(PlaylistAction::AutoTension { id, index, tension });
     }
     if response.dragged()
         && let (Some(p), Some(drag)) = (pointer, state.point_drag.as_mut())

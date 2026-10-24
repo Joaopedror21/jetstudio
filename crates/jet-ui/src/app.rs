@@ -1911,6 +1911,18 @@ impl JetApp {
                 PlaylistAction::AutoDeletePoint { id, index } => {
                     self.execute("automation.point.delete", json!({"id": id, "index": index}))
                 }
+                PlaylistAction::AutoTension { id, index, tension } => {
+                    let shape = self
+                        .session
+                        .project()
+                        .automation(jet_model::AutomationId(id))
+                        .and_then(|a| a.points.get(index))
+                        .map_or(jet_model::CurveShape::SingleCurve, |p| p.shape);
+                    self.execute(
+                        "automation.point.shape.set",
+                        json!({"id": id, "index": index, "shape": shape, "tension": tension}),
+                    );
+                }
                 PlaylistAction::AutoShape { id, index, shape } => {
                     let tension = self
                         .session
@@ -2598,6 +2610,8 @@ impl JetApp {
                                     id: a.id.0,
                                     points: a.points.clone(),
                                     offset: clip.offset.0,
+                                    settings: a.settings,
+                                    beat_ticks: project.settings.beat_ticks().unwrap_or(96),
                                 }),
                             )
                         }
@@ -5186,6 +5200,54 @@ mod tests {
             .collect();
         starts.sort_unstable();
         assert_eq!(starts, vec![0, 384], "Verse appended after the first bar");
+    }
+
+    #[test]
+    fn automation_tension_handles_bend_and_reset_a_segment() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("channel.add", json!({"name": "Pad"}));
+        app.execute("automation.create", json!({"target": {"ChannelVolume": 1}}));
+        let auto = &app.session.project().automations[0];
+        let (id, end) = (auto.id.0, auto.points[1].at.0);
+        // A rising segment: 0 to 100%.
+        app.execute(
+            "automation.point.move",
+            json!({"id": id, "index": 0, "at": 0, "value": 0}),
+        );
+        app.execute(
+            "automation.point.move",
+            json!({"id": id, "index": 1, "at": end, "value": 1000}),
+        );
+        run_frame(&mut app, &ctx, Vec::new());
+        let body = app.probe().entries()[&format!("playlist.automation.{id}")].rect;
+        let inner = body.shrink2(vec2(0.0, 3.0));
+        let px_per_tick = app.layout.bar_w * app.playlist.zoom / 384.0;
+        let handle = pos2(
+            body.left() + (end / 2) as f32 * px_per_tick,
+            inner.center().y,
+        );
+        drag(&mut app, &ctx, handle, handle - vec2(0.0, 20.0));
+        let tension = app.session.project().automations[0].points[1].tension;
+        assert!(
+            tension < 0,
+            "dragging up bends the rising segment upward: {tension}"
+        );
+        let mid =
+            jet_seq::automation::value_at(&app.session.project().automations[0].points, end / 2)
+                .unwrap();
+        assert!(mid > 0.5, "{mid}");
+        // Right-click on the (moved) handle resets the tension.
+        run_frame(&mut app, &ctx, Vec::new());
+        let raised = pos2(handle.x, inner.bottom() - mid as f32 * inner.height());
+        click_button(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(raised, vec2(1.0, 1.0)),
+            PointerButton::Secondary,
+        );
+        assert_eq!(app.session.project().automations[0].points[1].tension, 0);
     }
 
     #[test]
