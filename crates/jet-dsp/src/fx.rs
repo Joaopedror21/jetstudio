@@ -93,6 +93,179 @@ pub fn build(kind: &FxKind, rate: u32, tempo_bpm: f64) -> Box<dyn Effect> {
             f64::from(*release_ms),
             rate_f,
         )),
+        FxKind::Flanger {
+            rate_milli_hz,
+            depth,
+            feedback,
+            mix,
+        } => Box::new(Flanger::new(
+            f64::from(*rate_milli_hz) / 1000.0,
+            f64::from(*depth) / 1000.0,
+            f32::from(*feedback) / 1000.0,
+            f32::from(*mix) / 1000.0,
+            rate_f,
+        )),
+        FxKind::Phaser {
+            rate_milli_hz,
+            depth,
+            feedback,
+            mix,
+        } => Box::new(Phaser::new(
+            f64::from(*rate_milli_hz) / 1000.0,
+            f64::from(*depth) / 1000.0,
+            f32::from(*feedback) / 1000.0,
+            f32::from(*mix) / 1000.0,
+            rate_f,
+        )),
+        FxKind::Filter {
+            mode,
+            cutoff_hz,
+            resonance,
+        } => {
+            let kind = match mode {
+                1 => BiquadKind::HighPass,
+                2 => BiquadKind::BandPass,
+                _ => BiquadKind::LowPass,
+            };
+            // Resonance 0..1 maps to Q 0.5..20 (our mapping).
+            let q = 0.5 + (f64::from(*resonance) / 1000.0).powi(2) * 19.5;
+            Box::new(Filter {
+                left: Biquad::new(kind, f64::from(*cutoff_hz), q, 0.0, rate_f),
+                right: Biquad::new(kind, f64::from(*cutoff_hz), q, 0.0, rate_f),
+            })
+        }
+    }
+}
+
+/// Flanger: a short (0.5 to ~5 ms) delay swept by a sine LFO with feedback.
+pub struct Flanger {
+    left: Vec<f32>,
+    right: Vec<f32>,
+    write: usize,
+    phase: f64,
+    increment: f64,
+    base: f64,
+    depth: f64,
+    feedback: f32,
+    mix: f32,
+}
+
+impl Flanger {
+    pub fn new(rate_hz: f64, depth: f64, feedback: f32, mix: f32, rate: f64) -> Self {
+        let size = (rate * 0.012) as usize + 4;
+        Self {
+            left: vec![0.0; size],
+            right: vec![0.0; size],
+            write: 0,
+            phase: 0.0,
+            increment: rate_hz.clamp(0.01, 10.0) / rate,
+            base: rate * 0.0005,
+            depth: rate * 0.0045 * depth.clamp(0.0, 1.0),
+            feedback: feedback.clamp(0.0, 0.95),
+            mix: mix.clamp(0.0, 1.0),
+        }
+    }
+}
+
+impl Effect for Flanger {
+    fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let tau = std::f64::consts::TAU;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let lfo = 0.5 - 0.5 * (tau * self.phase).cos();
+            let delay = self.base + self.depth * lfo;
+            let wl = Chorus::tap(&self.left, self.write, delay);
+            let wr = Chorus::tap(&self.right, self.write, delay);
+            self.left[self.write] = *l + wl * self.feedback;
+            self.right[self.write] = *r + wr * self.feedback;
+            *l = *l * (1.0 - self.mix * 0.5) + wl * self.mix * 0.5;
+            *r = *r * (1.0 - self.mix * 0.5) + wr * self.mix * 0.5;
+            self.write = (self.write + 1) % self.left.len();
+            self.phase = (self.phase + self.increment) % 1.0;
+        }
+    }
+
+    fn reset(&mut self) {
+        self.left.fill(0.0);
+        self.right.fill(0.0);
+    }
+}
+
+/// Phaser: six first-order all-pass stages whose break frequency an LFO sweeps between
+/// 200 Hz and ~5 kHz (exponentially), with feedback.
+pub struct Phaser {
+    state: [[f32; 6]; 2],
+    last: [f32; 2],
+    phase: f64,
+    increment: f64,
+    depth: f64,
+    feedback: f32,
+    mix: f32,
+    rate: f64,
+}
+
+impl Phaser {
+    pub fn new(rate_hz: f64, depth: f64, feedback: f32, mix: f32, rate: f64) -> Self {
+        Self {
+            state: [[0.0; 6]; 2],
+            last: [0.0; 2],
+            phase: 0.0,
+            increment: rate_hz.clamp(0.01, 10.0) / rate,
+            depth: depth.clamp(0.0, 1.0),
+            feedback: feedback.clamp(0.0, 0.95),
+            mix: mix.clamp(0.0, 1.0),
+            rate,
+        }
+    }
+}
+
+impl Effect for Phaser {
+    fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let tau = std::f64::consts::TAU;
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let lfo = 0.5 - 0.5 * (tau * self.phase).cos();
+            let freq = 200.0 * 25f64.powf(lfo * self.depth);
+            let t = (std::f64::consts::PI * freq / self.rate).tan();
+            let coeff = ((t - 1.0) / (t + 1.0)) as f32;
+            for (side, sample) in [l, r].into_iter().enumerate() {
+                let mut x = *sample + self.last[side] * self.feedback;
+                for z in &mut self.state[side] {
+                    // y = c*x + z;  z' = x - c*y  (first-order all-pass, transposed form)
+                    let y = coeff * x + *z;
+                    *z = x - coeff * y;
+                    x = y;
+                }
+                self.last[side] = x;
+                *sample = *sample * (1.0 - self.mix * 0.5) + x * self.mix * 0.5;
+            }
+            self.phase = (self.phase + self.increment) % 1.0;
+        }
+    }
+
+    fn reset(&mut self) {
+        self.state = [[0.0; 6]; 2];
+        self.last = [0.0; 2];
+    }
+}
+
+/// Resonant filter (RBJ biquad) as an insert effect.
+pub struct Filter {
+    left: Biquad,
+    right: Biquad,
+}
+
+impl Effect for Filter {
+    fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        for sample in left.iter_mut() {
+            *sample = self.left.process(*sample);
+        }
+        for sample in right.iter_mut() {
+            *sample = self.right.process(*sample);
+        }
+    }
+
+    fn reset(&mut self) {
+        self.left.reset();
+        self.right.reset();
     }
 }
 
@@ -610,6 +783,46 @@ mod tests {
         let late: f32 = l[40_000..44_000].iter().map(|v| v * v).sum();
         assert!(early > 0.0 && late < early);
         assert!(l.iter().all(|v| v.is_finite()));
+    }
+
+    fn energy(data: &[f32]) -> f32 {
+        data.iter().map(|v| v * v).sum()
+    }
+
+    #[test]
+    fn filter_effect_cuts_highs_in_low_pass_mode() {
+        let mut fx = build(
+            &FxKind::Filter {
+                mode: 0,
+                cutoff_hz: 300,
+                resonance: 0,
+            },
+            48_000,
+            120.0,
+        );
+        // 5 kHz tone.
+        let mut l: Vec<f32> = (0..4800)
+            .map(|i| (i as f32 * std::f32::consts::TAU * 5000.0 / 48_000.0).sin())
+            .collect();
+        let before = energy(&l);
+        let mut r = l.clone();
+        fx.process(&mut l, &mut r);
+        assert!(energy(&l[480..]) < before * 0.01);
+    }
+
+    #[test]
+    fn flanger_and_phaser_change_the_signal_and_stay_finite() {
+        for name in ["flanger", "phaser"] {
+            let kind = FxKind::default_for(name).unwrap();
+            let mut fx = build(&kind, 48_000, 120.0);
+            let dry = sine(48_000, 0.5);
+            let mut l = dry.clone();
+            let mut r = dry.clone();
+            fx.process(&mut l, &mut r);
+            assert!(l.iter().all(|v| v.is_finite()), "{name}");
+            let diff: f32 = l.iter().zip(&dry).map(|(a, b)| (a - b).abs()).sum();
+            assert!(diff > 1.0, "{name} must alter the signal");
+        }
     }
 
     #[test]

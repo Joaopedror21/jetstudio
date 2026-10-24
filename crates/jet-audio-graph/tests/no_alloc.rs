@@ -52,14 +52,17 @@ fn processing_a_busy_project_does_not_allocate() {
             );
         }
     }
-    for name in FxKind::NAMES {
-        project.mixer.master.fx.push(FxSlot {
+    // Every effect type, split over the Master and insert 1 (ten slots per track).
+    for (i, name) in FxKind::NAMES.iter().enumerate() {
+        let slot = FxSlot {
             kind: FxKind::default_for(name).unwrap(),
             enabled: true,
             mix: 700,
-        });
-        if project.mixer.master.fx.len() == 8 {
-            break;
+        };
+        if i < 8 {
+            project.mixer.master.fx.push(slot);
+        } else {
+            project.mixer.track_mut(1).unwrap().fx.push(slot);
         }
     }
     project

@@ -838,11 +838,29 @@ pub enum FxKind {
         threshold_db_tenths: i16,
         release_ms: u16,
     },
+    Flanger {
+        rate_milli_hz: u32,
+        depth: u16,
+        feedback: u16,
+        mix: u16,
+    },
+    Phaser {
+        rate_milli_hz: u32,
+        depth: u16,
+        feedback: u16,
+        mix: u16,
+    },
+    /// 0 = low-pass, 1 = high-pass, 2 = band-pass.
+    Filter {
+        mode: u8,
+        cutoff_hz: u16,
+        resonance: u16,
+    },
 }
 
 impl FxKind {
     /// Stable identifiers used by commands and the UI.
-    pub const NAMES: [&'static str; 8] = [
+    pub const NAMES: [&'static str; 11] = [
         "eq",
         "delay",
         "reverb",
@@ -851,6 +869,9 @@ impl FxKind {
         "distortion",
         "chorus",
         "gate",
+        "flanger",
+        "phaser",
+        "filter",
     ];
 
     pub fn default_for(name: &str) -> Option<Self> {
@@ -911,6 +932,23 @@ impl FxKind {
                 threshold_db_tenths: -500,
                 release_ms: 80,
             },
+            "flanger" => Self::Flanger {
+                rate_milli_hz: 250,
+                depth: 600,
+                feedback: 500,
+                mix: 500,
+            },
+            "phaser" => Self::Phaser {
+                rate_milli_hz: 400,
+                depth: 700,
+                feedback: 400,
+                mix: 500,
+            },
+            "filter" => Self::Filter {
+                mode: 0,
+                cutoff_hz: 2000,
+                resonance: 300,
+            },
             _ => return None,
         })
     }
@@ -925,6 +963,9 @@ impl FxKind {
             Self::Distortion { .. } => "distortion",
             Self::Chorus { .. } => "chorus",
             Self::Gate { .. } => "gate",
+            Self::Flanger { .. } => "flanger",
+            Self::Phaser { .. } => "phaser",
+            Self::Filter { .. } => "filter",
         }
     }
 
@@ -977,6 +1018,28 @@ impl FxKind {
                 threshold_db_tenths,
                 release_ms,
             } => (-900..=0).contains(threshold_db_tenths) && *release_ms <= 5000,
+            Self::Flanger {
+                rate_milli_hz,
+                depth,
+                feedback,
+                mix,
+            }
+            | Self::Phaser {
+                rate_milli_hz,
+                depth,
+                feedback,
+                mix,
+            } => {
+                (10..=10_000).contains(rate_milli_hz)
+                    && *depth <= 1000
+                    && *feedback <= 950
+                    && *mix <= 1000
+            }
+            Self::Filter {
+                mode,
+                cutoff_hz,
+                resonance,
+            } => *mode <= 2 && (20..=20_000).contains(cutoff_hz) && *resonance <= 1000,
         }
     }
 }

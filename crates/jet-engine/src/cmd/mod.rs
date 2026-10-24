@@ -705,7 +705,7 @@ static SPECS: &[CommandSpec] = &[
         "Add effect",
         "",
         None,
-        "{track:uint,kind:eq|delay|reverb|compressor|limiter|distortion|chorus|gate}",
+        "{track:uint,kind:eq|delay|reverb|compressor|limiter|distortion|chorus|gate|flanger|phaser|filter}",
         Step
     ),
     spec!(

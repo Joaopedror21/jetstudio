@@ -255,9 +255,9 @@
 | FX-006 | Distortion | Fruity Blood Overdrive / WaveShaper | Waveshaper tanh normalizado | S | P2 | Testado (via mixer) | `mixer_routing_faders...` |
 | FX-007 | Chorus | Fruity Chorus | Delay modulado em quadratura | S | P2 | Implementado | — |
 | FX-008 | Noise gate | Fruity Gate | Limiar e release | S | P2 | Testado | `gate_silences_signal_below_threshold` |
-| FX-009 | Flanger, Phaser | Fruity Flanger / Phaser | — | S | P2 | Pesquisado | — |
+| FX-009 | Flanger, Phaser | Fruity Flanger / Phaser | Flanger: delay curto (0,5–5 ms) modulado com feedback; Phaser: 6 all-pass de 1ª ordem varridos de 200 Hz a ~5 kHz | S | P2 | Testado | `flanger_and_phaser_change_the_signal_and_stay_finite` |
 | FX-010 | Stereo shaper / enhancer | Fruity Stereo Shaper | — | S | P2 | Pesquisado | — |
-| FX-011 | Filtro | Fruity Filter / Love Philter | SVF existente | S | P2 | Pesquisado (o SVF já existe em `jet-dsp`) | `svf_lowpass_settles_to_dc_input` |
+| FX-011 | Filtro | Fruity Filter / Love Philter | Biquad RBJ LP/HP/BP com ressonância | S | P2 | Testado | `filter_effect_cuts_highs_in_low_pass_mode` |
 | FX-012 | Pitch shifter | Pitcher / Pitch Shifter | — | L | P3 | Pesquisado | — |
 | FX-013 | Analisadores (espectro, osciloscópio) | Wave Candy | — | M | P2 | Pesquisado | — |
 | FX-014 | Vocoder | Vocodex | — | L | P3 | Pesquisado | — |

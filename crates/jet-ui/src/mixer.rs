@@ -509,6 +509,32 @@ pub fn fx_params(kind: &FxKind) -> Vec<(&'static str, i32, i32, i32)> {
             ),
             ("Release ms", i32::from(*release_ms), 0, 5000),
         ],
+        FxKind::Flanger {
+            rate_milli_hz,
+            depth,
+            feedback,
+            mix,
+        }
+        | FxKind::Phaser {
+            rate_milli_hz,
+            depth,
+            feedback,
+            mix,
+        } => vec![
+            ("Rate (mHz)", *rate_milli_hz as i32, 10, 10_000),
+            ("Depth", i32::from(*depth), 0, 1000),
+            ("Feedback", i32::from(*feedback), 0, 950),
+            ("Mix", i32::from(*mix), 0, 1000),
+        ],
+        FxKind::Filter {
+            mode,
+            cutoff_hz,
+            resonance,
+        } => vec![
+            ("Type (LP/HP/BP)", i32::from(*mode), 0, 2),
+            ("Cutoff (Hz)", i32::from(*cutoff_hz), 20, 20_000),
+            ("Resonance", i32::from(*resonance), 0, 1000),
+        ],
     }
 }
 
@@ -588,6 +614,32 @@ pub fn with_param(kind: &FxKind, index: usize, value: i32) -> FxKind {
             0 => *threshold_db_tenths = i16v,
             _ => *release_ms = u16v,
         },
+        FxKind::Flanger {
+            rate_milli_hz,
+            depth,
+            feedback,
+            mix,
+        }
+        | FxKind::Phaser {
+            rate_milli_hz,
+            depth,
+            feedback,
+            mix,
+        } => match index {
+            0 => *rate_milli_hz = value.max(10) as u32,
+            1 => *depth = u16v,
+            2 => *feedback = u16v.min(950),
+            _ => *mix = u16v,
+        },
+        FxKind::Filter {
+            mode,
+            cutoff_hz,
+            resonance,
+        } => match index {
+            0 => *mode = value.clamp(0, 2) as u8,
+            1 => *cutoff_hz = u16v.clamp(20, 20_000),
+            _ => *resonance = u16v,
+        },
     }
     next
 }
@@ -602,6 +654,9 @@ fn fx_label(kind: &FxKind) -> &'static str {
         FxKind::Distortion { .. } => "Distortion",
         FxKind::Chorus { .. } => "Chorus",
         FxKind::Gate { .. } => "Noise gate",
+        FxKind::Flanger { .. } => "Flanger",
+        FxKind::Phaser { .. } => "Phaser",
+        FxKind::Filter { .. } => "Filter",
     }
 }
 
