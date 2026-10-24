@@ -2360,7 +2360,11 @@ mod tests {
         let with_ctrl = |app: &mut JetApp, mut events: Vec<Event>| {
             events.insert(0, Event::ModifiersChanged(ctrl));
             run_frame(app, &ctx, events);
-            run_frame(app, &ctx, vec![Event::ModifiersChanged(Modifiers::default())]);
+            run_frame(
+                app,
+                &ctx,
+                vec![Event::ModifiersChanged(Modifiers::default())],
+            );
         };
         with_ctrl(&mut app, vec![key(Key::T, true, ctrl)]);
         with_ctrl(&mut app, vec![key(Key::T, false, ctrl)]);
