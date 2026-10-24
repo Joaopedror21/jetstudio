@@ -560,3 +560,79 @@ fn automation_clips_drive_parameters_in_song_mode() {
         "deleting the clip restores the knob value"
     );
 }
+
+#[test]
+fn sampler_settings_and_polyphony_shape_the_output() {
+    let mut session = session_120();
+    let wav = temp("long.wav");
+    // Two seconds of a constant level: overlapping notes add up unless polyphony limits them.
+    write_wav(&wav, 48_000, 1, &vec![0.5; 96_000], WavFormat::Float32).unwrap();
+    session
+        .execute("channel.add", json!({"name": "Pad"}))
+        .unwrap();
+    session
+        .execute("channel.sample.load", json!({"id": 1, "path": wav}))
+        .unwrap();
+    for index in [0, 4] {
+        session
+            .execute(
+                "step.set",
+                json!({"pattern":1,"channel":1,"index":index,"on":true}),
+            )
+            .unwrap();
+    }
+    let (left, _) = export(&mut session, "pattern");
+    let single = left[1_000];
+    let stacked = left[30_000];
+    assert!(
+        (stacked - 2.0 * single).abs() < 1e-4,
+        "two voices overlap: {single} {stacked}"
+    );
+    // Max poly 1: the second note cuts the first (10 ms declick).
+    session
+        .execute(
+            "channel.polyphony.set",
+            json!({"id": 1, "max": 1, "mono": false}),
+        )
+        .unwrap();
+    let (left, _) = export(&mut session, "pattern");
+    assert!(
+        (left[30_000] - single).abs() < 1e-4,
+        "only one voice sounds"
+    );
+    // Start offset at 75%: each note plays the last quarter (0.5 s = 24 000 frames).
+    session
+        .execute(
+            "channel.polyphony.set",
+            json!({"id": 1, "max": 0, "mono": false}),
+        )
+        .unwrap();
+    session
+        .execute(
+            "channel.sampler.set",
+            json!({"id": 1, "settings": {"start": 750, "looping": "Off", "loop_start": 0,
+                "loop_end": 1000, "reverse": false, "envelope": null}}),
+        )
+        .unwrap();
+    let (left, _) = export(&mut session, "pattern");
+    // The second note starts at frame 24 000 and lasts 24 000 frames as well.
+    assert!(left[47_000].abs() > 0.0);
+    assert_eq!(
+        left[48_000 + 200],
+        0.0,
+        "each note plays only the last quarter"
+    );
+    // Volume envelope with a short release: a step note (one step gate) stops soon after it.
+    session
+        .execute(
+            "channel.sampler.set",
+            json!({"id": 1, "settings": {"start": 0, "looping": "Off", "loop_start": 0,
+                "loop_end": 1000, "reverse": false,
+                "envelope": {"attack_ms": 0, "decay_ms": 0, "sustain": 1000, "release_ms": 20}}}),
+        )
+        .unwrap();
+    let (left, _) = export(&mut session, "pattern");
+    // One step = 6000 frames; plus 20 ms (960 frames) of release.
+    assert!(left[3_000].abs() > 0.0);
+    assert_eq!(left[6_000 + 960 + 100], 0.0, "released by the envelope");
+}

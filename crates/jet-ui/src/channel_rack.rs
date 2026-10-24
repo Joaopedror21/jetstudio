@@ -80,6 +80,8 @@ pub enum RackAction {
         gesture: bool,
     },
     SelectChannel(u64),
+    /// Left-click on the Channel button: select it and open/close Channel Settings.
+    OpenSettings(u64),
     SetMute {
         channel: u64,
         muted: bool,
@@ -508,7 +510,7 @@ pub fn paint_channel_rack(
         );
         if response.clicked() {
             state.selected_channel = Some(channel.id);
-            actions.push(RackAction::SelectChannel(channel.id));
+            actions.push(RackAction::OpenSettings(channel.id));
         }
         if response.secondary_clicked() {
             state.selected_channel = Some(channel.id);

@@ -43,6 +43,8 @@ struct Voice {
     /// Absolute frame of note-off.
     release_frame: u64,
     released: bool,
+    /// Cut by Max poly; it is fading out and no longer counts toward the limit.
+    stolen: bool,
     cut_by: u8,
     age: u64,
 }
@@ -277,7 +279,12 @@ impl Renderer {
                 let pitch = channel.auto_pitch.unwrap_or(channel.pitch_cents);
                 let cents = f64::from(pitch) + f64::from(event.fine_pitch);
                 let mut voice = SamplerVoice::default();
-                voice.start(Arc::clone(sample), cents_ratio(semis * 100.0 + cents), rate);
+                voice.start_with(
+                    Arc::clone(sample),
+                    cents_ratio(semis * 100.0 + cents),
+                    rate,
+                    channel.sampler,
+                );
                 VoiceKind::Sampler(voice)
             }
             Instrument::Synth(params) => {
@@ -299,6 +306,43 @@ impl Renderer {
         };
         let cut = channel.cut;
         let cut_by = channel.cut_by;
+        let polyphony = channel.polyphony;
+        // Mono "triggers the current release state of notes"; Max poly "causes a forced
+        // 'release' of oldest notes over the poly limit. Notes stop playing immediately"
+        // [Manual: chansettings_misc, "Polyphony"].
+        if polyphony.mono {
+            for voice in &mut self.voices {
+                if voice.active() && voice.channel == event.channel && !voice.released {
+                    voice.release_frame = voice.release_frame.min(start_frame);
+                }
+            }
+        } else if polyphony.max > 0 {
+            loop {
+                let sounding = self
+                    .voices
+                    .iter()
+                    .filter(|v| v.active() && v.channel == event.channel && !v.stolen)
+                    .count();
+                if sounding < usize::from(polyphony.max) {
+                    break;
+                }
+                let Some(oldest) = self
+                    .voices
+                    .iter_mut()
+                    .filter(|v| v.active() && v.channel == event.channel && !v.stolen)
+                    .min_by_key(|v| v.age)
+                else {
+                    break;
+                };
+                oldest.stolen = true;
+                oldest.released = true;
+                match &mut oldest.kind {
+                    VoiceKind::Sampler(v) => v.cut(),
+                    VoiceKind::Synth(v) => v.cut(rate),
+                    VoiceKind::Idle => {}
+                }
+            }
+        }
         // Cut groups: this note silences channels whose "cut by" matches its "cut"
         // [Manual: chansettings_misc, "Cut Groups"].
         if cut != 0 {
@@ -337,6 +381,7 @@ impl Renderer {
             start_frame,
             release_frame,
             released: false,
+            stolen: false,
             cut_by,
             age: self.age,
         };
@@ -522,8 +567,10 @@ impl Renderer {
             voice.released = true;
             // Samplers without a volume envelope keep playing after note-off
             // [Manual: chansettings_sampler, "samples will continue to play after note release"].
-            if let VoiceKind::Synth(v) = &mut voice.kind {
-                v.release();
+            match &mut voice.kind {
+                VoiceKind::Synth(v) => v.release(),
+                VoiceKind::Sampler(v) => v.release(),
+                VoiceKind::Idle => {}
             }
         }
     }

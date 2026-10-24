@@ -76,6 +76,19 @@ struct SynthSetParams {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct SamplerParams {
+    id: u64,
+    settings: jet_model::SamplerSettings,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolyParams {
+    id: u64,
+    max: u16,
+    mono: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct KindParams {
     id: u64,
     kind: String,
@@ -311,6 +324,31 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
             let kind = kind_for(id, Some(&p.kind))?;
             session.edit_project(|project| {
                 channel_mut(project, p.id)?.kind = kind;
+                Ok(())
+            })
+        }
+        // Sampler playback settings [Manual: chansettings_sampler, "Playback"].
+        "channel.sampler.set" => {
+            let p: SamplerParams = parse(id, params)?;
+            if !p.settings.valid() {
+                return Err(invalid(id, "sampler settings out of range"));
+            }
+            session.edit_project(|project| {
+                channel_mut(project, p.id)?.sampler = p.settings;
+                Ok(())
+            })
+        }
+        // [Manual: chansettings_misc, "Polyphony"].
+        "channel.polyphony.set" => {
+            let p: PolyParams = parse(id, params)?;
+            if p.max > 256 {
+                return Err(invalid(id, "max polyphony must be 0 (unrestricted)..=256"));
+            }
+            session.edit_project(|project| {
+                channel_mut(project, p.id)?.polyphony = jet_model::Polyphony {
+                    max: p.max,
+                    mono: p.mono,
+                };
                 Ok(())
             })
         }

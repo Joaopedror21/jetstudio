@@ -13,6 +13,7 @@ use crate::browser::{BrowserState, paint_browser};
 use crate::channel_rack::{
     ChannelView, RackAction, RackMenu, RackState, RackView, paint_channel_rack,
 };
+use crate::channel_settings::{ChannelSettingsData, SettingsAction, paint_channel_settings};
 use crate::icons;
 use crate::mixer::{MixerAction, MixerState, MixerTrackView, MixerView, paint_mixer};
 use crate::piano_roll::{NoteView, PianoAction, PianoRollState, PianoRollView, paint_piano_roll};
@@ -40,6 +41,8 @@ struct AudioHost {
 
 pub struct JetApp {
     session: Session,
+    /// Waveform columns per decoded resource, computed once (drawing only).
+    waveforms: std::collections::HashMap<jet_model::ResourceId, Vec<(f32, f32)>>,
     audio: Option<AudioHost>,
     audio_status: Option<String>,
     piano: PianoRollState,
@@ -57,12 +60,14 @@ pub struct JetApp {
     static_capture: bool,
     fonts_installed: bool,
     pending_show: Vec<WindowKind>,
+    pending_focus: Option<WindowKind>,
 }
 
 impl Default for JetApp {
     fn default() -> Self {
         Self {
             session: Session::new_default(),
+            waveforms: std::collections::HashMap::new(),
             audio: None,
             audio_status: None,
             piano: PianoRollState::default(),
@@ -80,6 +85,7 @@ impl Default for JetApp {
             static_capture: false,
             fonts_installed: false,
             pending_show: Vec::new(),
+            pending_focus: None,
         }
     }
 }
@@ -91,6 +97,7 @@ enum UiAction {
     Playlist(PlaylistAction),
     Piano(PianoAction),
     Mixer(MixerAction),
+    Settings(SettingsAction),
     OpenProject,
     SaveProject,
     SaveProjectAs,
@@ -220,6 +227,33 @@ impl JetApp {
             RackAction::SelectChannel(id) => {
                 self.rack.selected_channel = Some(id);
                 self.execute("channel.select", json!({"id": id}));
+            }
+            // "Left-click - Opens/Closes the Channel Settings window" [Manual: channelrack, §9].
+            RackAction::OpenSettings(id) => {
+                let was = self.selected_channel_id();
+                self.rack.selected_channel = Some(id);
+                self.execute("channel.select", json!({"id": id}));
+                let visible = self
+                    .workspace
+                    .as_ref()
+                    .and_then(|ws| ws.window(WindowKind::ChannelSettings))
+                    .is_some_and(|w| w.visible);
+                if !visible || was != Some(id) {
+                    if visible {
+                        self.pending_focus = Some(WindowKind::ChannelSettings);
+                    } else {
+                        self.pending_show.push(WindowKind::ChannelSettings);
+                    }
+                } else if let Some(ws) = &mut self.workspace {
+                    let desktop = ws
+                        .window(WindowKind::ChannelSettings)
+                        .map_or(Rect::NOTHING, |w| w.rect);
+                    let _ = ws.apply(
+                        WsAction::Close(WindowKind::ChannelSettings),
+                        desktop,
+                        self.layout.snap_distance,
+                    );
+                }
             }
             RackAction::SetMute { channel, muted } => {
                 self.execute("channel.mute.set", json!({"id": channel, "mute": muted}));
@@ -583,6 +617,18 @@ impl JetApp {
             UiAction::Rack(action) => self.run_rack(action),
             UiAction::Piano(action) => self.run_piano(action),
             UiAction::Mixer(action) => self.run_mixer(action),
+            UiAction::Settings(action) => match action {
+                SettingsAction::Engine {
+                    id,
+                    params,
+                    gesture,
+                } => match gesture {
+                    Some(key) => self.gesture(&key, id, params),
+                    None => self.execute(id, params),
+                },
+                SettingsAction::EndGesture => self.session.end_gesture(),
+                SettingsAction::LoadSample(id) => self.rack_menu(id, RackMenu::LoadSample),
+            },
             UiAction::ExportWav => self.export_wav(),
             UiAction::AddChannel(kind) => {
                 let name = if kind == "synth" { "Synth" } else { "Sampler" };
@@ -913,6 +959,66 @@ impl JetApp {
         }
     }
 
+    /// Peak columns for every decoded sample, computed once per resource.
+    fn cache_waveforms(&mut self) {
+        const COLUMNS: usize = 400;
+        for resource in &self.session.project().resources {
+            if self.waveforms.contains_key(&resource.id) {
+                continue;
+            }
+            let Some(data) = self.session.samples().get(resource.id) else {
+                continue;
+            };
+            let frames = data.frames().max(1);
+            let columns = (0..COLUMNS)
+                .map(|c| {
+                    let a = c * frames / COLUMNS;
+                    let b = ((c + 1) * frames / COLUMNS).max(a + 1).min(frames);
+                    data.left[a.min(frames - 1)..b]
+                        .iter()
+                        .fold((0.0_f32, 0.0_f32), |(lo, hi), v| (lo.min(*v), hi.max(*v)))
+                })
+                .collect();
+            self.waveforms.insert(resource.id, columns);
+        }
+    }
+
+    fn settings_view(&self) -> Option<ChannelSettingsData> {
+        let project = self.session.project();
+        let channel = project.channel(ChannelId(self.selected_channel_id()?))?;
+        let sample = channel.sample();
+        Some(ChannelSettingsData {
+            id: channel.id.0,
+            name: channel.name.clone(),
+            sample_name: sample
+                .and_then(|id| project.resources.iter().find(|r| r.id == id))
+                .and_then(|r| {
+                    std::path::Path::new(&r.path_rel)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                }),
+            waveform: sample
+                .and_then(|id| self.waveforms.get(&id).cloned())
+                .unwrap_or_default(),
+            is_sampler: matches!(channel.kind, ChannelKind::Sampler { .. }),
+            volume: channel.volume,
+            pan: channel.pan,
+            pitch: channel.pitch,
+            root_key: channel.root_key,
+            swing_mix: channel.swing_mix,
+            cut: channel.cut,
+            cut_by: channel.cut_by,
+            mixer_target: channel.mixer_target,
+            poly_max: channel.polyphony.max,
+            mono: channel.polyphony.mono,
+            sampler: channel.sampler,
+            synth: match &channel.kind {
+                ChannelKind::Synth(params) => Some(params.clone()),
+                ChannelKind::Sampler { .. } => None,
+            },
+        })
+    }
+
     fn piano_view(&self) -> PianoRollView {
         let project = self.session.project();
         let channel = self
@@ -1187,6 +1293,13 @@ impl JetApp {
                 let _ = workspace.apply(WsAction::Toggle(kind), desktop, self.layout.snap_distance);
             }
         }
+        if let Some(kind) = self.pending_focus.take()
+            && let Some(workspace) = &mut self.workspace
+        {
+            let _ = workspace.apply(WsAction::Focus(kind), desktop, self.layout.snap_distance);
+        }
+        self.cache_waveforms();
+        let settings_view = self.settings_view();
         let toolbar_view = self.toolbar_view();
         let rack_view = self.rack_view();
         let playlist_view = self.playlist_view();
@@ -1242,6 +1355,7 @@ impl JetApp {
                 piano_view: &piano_view,
                 mixer_state: &mut self.mixer,
                 mixer_view: &mixer_view,
+                settings_view: settings_view.as_ref(),
                 focused,
             };
             for win in windows.iter().filter(|win| win.visible) {
@@ -1327,6 +1441,7 @@ struct Surfaces<'a> {
     piano_view: &'a PianoRollView,
     mixer_state: &'a mut MixerState,
     mixer_view: &'a MixerView,
+    settings_view: Option<&'a ChannelSettingsData>,
     focused: Option<WindowKind>,
 }
 
@@ -1370,7 +1485,10 @@ fn paint_window(
     // Drag area: the title bar minus the tool icons and the window buttons.
     let drag_left = match win.kind {
         WindowKind::Playlist => 250.0,
-        WindowKind::ChannelRack | WindowKind::PianoRoll | WindowKind::Mixer => 22.0,
+        WindowKind::ChannelRack
+        | WindowKind::PianoRoll
+        | WindowKind::Mixer
+        | WindowKind::ChannelSettings => 22.0,
     };
     let title_drag = Rect::from_min_max(
         pos2(title.left() + drag_left, title.top()),
@@ -1440,8 +1558,12 @@ fn paint_window(
                     .map(UiAction::Rack),
             );
         }
-        WindowKind::PianoRoll | WindowKind::Mixer => {
-            let label = if win.kind == WindowKind::PianoRoll {
+        WindowKind::PianoRoll | WindowKind::Mixer | WindowKind::ChannelSettings => {
+            let label = if win.kind == WindowKind::ChannelSettings {
+                surfaces
+                    .settings_view
+                    .map_or_else(|| "Channel settings".to_owned(), |c| c.name.clone())
+            } else if win.kind == WindowKind::PianoRoll {
                 let target = surfaces
                     .piano_view
                     .channel
@@ -1532,6 +1654,14 @@ fn paint_window(
                 paint_mixer(paint, surfaces.mixer_state, surfaces.mixer_view, content)
                     .into_iter()
                     .map(UiAction::Mixer),
+            );
+        }
+        WindowKind::ChannelSettings => {
+            let content = Rect::from_min_max(pos2(rect.left(), title.bottom()), rect.max);
+            actions.extend(
+                paint_channel_settings(paint, surfaces.settings_view, content)
+                    .into_iter()
+                    .map(UiAction::Settings),
             );
         }
     }
@@ -2021,6 +2151,49 @@ mod tests {
             points[1].value > 800,
             "near the top of the clip: {}",
             points[1].value
+        );
+    }
+
+    #[test]
+    fn channel_button_opens_settings_whose_controls_edit_the_channel() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        open_rack(&mut app, &ctx);
+        let add = app.probe().entries()["channel-rack.add"].rect;
+        click(&mut app, &ctx, add);
+        run_frame(&mut app, &ctx, Vec::new());
+        let button = app.probe().entries()["channel-rack.channel.1"].rect;
+        click(&mut app, &ctx, button);
+        run_frame(&mut app, &ctx, Vec::new());
+        assert!(
+            app.probe()
+                .entries()
+                .contains_key("channel-settings.window")
+        );
+        // Max polyphony slider: clicking near its right end sets a high value.
+        let poly = app.probe().entries()["channel-settings.poly"].rect;
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(pos2(poly.right() - 2.0, poly.center().y), vec2(1.0, 1.0)),
+        );
+        assert!(app.session.project().channels[0].polyphony.max >= 30);
+        let mono = app.probe().entries()["channel-settings.mono"].rect;
+        click(&mut app, &ctx, mono);
+        assert!(app.session.project().channels[0].polyphony.mono);
+        // Volume envelope toggle on the Sampler.
+        let envelope = app.probe().entries()["channel-settings.envelope"].rect;
+        click(&mut app, &ctx, envelope);
+        assert!(app.session.project().channels[0].sampler.envelope.is_some());
+        // Clicking the Channel button again closes the window.
+        let button = app.probe().entries()["channel-rack.channel.1"].rect;
+        click(&mut app, &ctx, button);
+        run_frame(&mut app, &ctx, Vec::new());
+        assert!(
+            !app.probe()
+                .entries()
+                .contains_key("channel-settings.window")
         );
     }
 }

@@ -35,6 +35,8 @@ pub struct ChannelPlan {
     pub track_slot: usize,
     pub cut: u8,
     pub cut_by: u8,
+    pub sampler: jet_dsp::sampler::SamplerOptions,
+    pub polyphony: jet_model::Polyphony,
 }
 
 pub struct FxInstance {
@@ -148,6 +150,29 @@ fn topological(project: &Project, used: &[bool; TRACK_COUNT]) -> Vec<u16> {
     order
 }
 
+fn sampler_options(settings: &jet_model::SamplerSettings) -> jet_dsp::sampler::SamplerOptions {
+    use jet_dsp::sampler::{LoopMode, SamplerOptions};
+    SamplerOptions {
+        start: f64::from(settings.start) / 1000.0,
+        loop_mode: match settings.looping {
+            jet_model::SampleLoop::Off => LoopMode::Off,
+            jet_model::SampleLoop::Forward => LoopMode::Forward,
+            jet_model::SampleLoop::PingPong => LoopMode::PingPong,
+        },
+        loop_start: f64::from(settings.loop_start) / 1000.0,
+        loop_end: f64::from(settings.loop_end) / 1000.0,
+        reverse: settings.reverse,
+        envelope: settings.envelope.map(|e| {
+            (
+                f32::from(e.attack_ms),
+                f32::from(e.decay_ms),
+                f32::from(e.sustain) / 1000.0,
+                f32::from(e.release_ms),
+            )
+        }),
+    }
+}
+
 /// Compile `project` for `source`. `sample` resolves decoded resources.
 pub fn build_plan(
     project: &Project,
@@ -257,6 +282,8 @@ pub fn build_plan(
                 .unwrap_or(master_slot),
             cut: channel.cut,
             cut_by: channel.cut_by,
+            sampler: sampler_options(&channel.sampler),
+            polyphony: channel.polyphony,
         })
         .collect();
     let mut channel_index: Vec<(ChannelId, usize)> = channels

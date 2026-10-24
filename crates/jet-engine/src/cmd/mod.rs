@@ -371,6 +371,22 @@ static SPECS: &[CommandSpec] = &[
         Step
     ),
     spec!(
+        "channel.sampler.set",
+        "Sampler settings",
+        "",
+        None,
+        "{id:uint,settings:SamplerSettings}",
+        Coalesce
+    ),
+    spec!(
+        "channel.polyphony.set",
+        "Polyphony",
+        "",
+        None,
+        "{id:uint,max:uint,mono:bool}",
+        Step
+    ),
+    spec!(
         "channel.synth.set",
         "Synth parameters",
         "",

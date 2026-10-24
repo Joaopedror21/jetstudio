@@ -233,6 +233,83 @@ impl SynthParams {
     }
 }
 
+/// Volume envelope; times in ms, sustain 0..=1000.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Envelope {
+    pub attack_ms: u16,
+    pub decay_ms: u16,
+    pub sustain: u16,
+    pub release_ms: u16,
+}
+
+impl Default for Envelope {
+    fn default() -> Self {
+        Self {
+            attack_ms: 0,
+            decay_ms: 200,
+            sustain: 1000,
+            release_ms: 100,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SampleLoop {
+    #[default]
+    Off,
+    Forward,
+    PingPong,
+}
+
+/// Sampler playback settings [Manual: chansettings_sampler, "Playback", "Precomputed"].
+/// Positions are fractions of the sample, 0..=1000.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SamplerSettings {
+    pub start: u16,
+    pub looping: SampleLoop,
+    pub loop_start: u16,
+    pub loop_end: u16,
+    pub reverse: bool,
+    /// `Some` when the volume envelope is active.
+    pub envelope: Option<Envelope>,
+}
+
+impl Default for SamplerSettings {
+    fn default() -> Self {
+        Self {
+            start: 0,
+            looping: SampleLoop::Off,
+            loop_start: 0,
+            loop_end: 1000,
+            reverse: false,
+            envelope: None,
+        }
+    }
+}
+
+impl SamplerSettings {
+    pub fn valid(&self) -> bool {
+        self.start <= 1000
+            && self.loop_start < self.loop_end
+            && self.loop_end <= 1000
+            && self.envelope.is_none_or(|e| {
+                e.sustain <= 1000
+                    && e.attack_ms <= 10_000
+                    && e.decay_ms <= 10_000
+                    && e.release_ms <= 10_000
+            })
+    }
+}
+
+/// [Manual: chansettings_misc, "Polyphony"]: "MAX ... If the LCD displays dashes, it indicates
+/// that polyphony is unrestricted"; "Mono mode overrides the 'Max poly' option".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Polyphony {
+    /// Zero means unrestricted.
+    pub max: u16,
+    pub mono: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChannelKind {
     Sampler { sample: Option<ResourceId> },
@@ -268,6 +345,11 @@ pub struct Channel {
     /// Cut-by group; 0 means none.
     #[serde(default)]
     pub cut_by: u8,
+    /// Used when the channel holds a Sampler.
+    #[serde(default)]
+    pub sampler: SamplerSettings,
+    #[serde(default)]
+    pub polyphony: Polyphony,
 }
 
 fn default_root_key() -> u8 {
@@ -303,6 +385,8 @@ impl Channel {
             swing_mix: 1000,
             cut: 0,
             cut_by: 0,
+            sampler: SamplerSettings::default(),
+            polyphony: Polyphony::default(),
         }
     }
 
@@ -1180,6 +1264,8 @@ impl Project {
                 || i32::from(channel.pitch).abs() > 4800
                 || channel.root_key > MAX_KEY
                 || channel.swing_mix > 1000
+                || !channel.sampler.valid()
+                || channel.polyphony.max > 256
             {
                 return Err(ModelError::InvalidValue("channel"));
             }

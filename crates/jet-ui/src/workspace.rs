@@ -6,6 +6,7 @@ pub enum WindowKind {
     Playlist,
     PianoRoll,
     Mixer,
+    ChannelSettings,
 }
 
 impl WindowKind {
@@ -15,6 +16,7 @@ impl WindowKind {
             Self::Playlist => "Playlist",
             Self::PianoRoll => "Piano roll",
             Self::Mixer => "Mixer",
+            Self::ChannelSettings => "Channel settings",
         }
     }
 
@@ -24,6 +26,7 @@ impl WindowKind {
             Self::Playlist => "playlist",
             Self::PianoRoll => "piano-roll",
             Self::Mixer => "mixer",
+            Self::ChannelSettings => "channel-settings",
         }
     }
 }
@@ -126,6 +129,21 @@ impl Workspace {
                             (desktop.height() - 100.0).max(160.0),
                         ),
                     ),
+                    visible: false,
+                    maximized: false,
+                    restore_rect: None,
+                },
+                WinState {
+                    kind: WindowKind::ChannelSettings,
+                    // Right-aligned inside the desktop so it never starts off screen.
+                    rect: {
+                        let size = vec2(
+                            460.0_f32.min(desktop.width() - 40.0).max(240.0),
+                            (desktop.height() - 80.0).clamp(160.0, 760.0),
+                        );
+                        let x = (desktop.right() - size.x - 20.0).max(desktop.left());
+                        Rect::from_min_size(pos2(x, desktop.top() + 40.0), size)
+                    },
                     visible: false,
                     maximized: false,
                     restore_rect: None,

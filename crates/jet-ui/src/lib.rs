@@ -3,6 +3,7 @@
 mod app;
 mod browser;
 mod channel_rack;
+mod channel_settings;
 pub mod demo;
 mod icons;
 mod mixer;

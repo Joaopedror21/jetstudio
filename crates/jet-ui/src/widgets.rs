@@ -395,3 +395,105 @@ impl PaintCtx<'_> {
         result
     }
 }
+
+/// Result of a [`PaintCtx::param_row`] frame.
+pub struct ParamEdit {
+    /// New value while dragging.
+    pub value: Option<i32>,
+    /// The drag ended this frame (end the undo gesture).
+    pub ended: bool,
+}
+
+impl PaintCtx<'_> {
+    /// Labelled horizontal value bar: drag horizontally to set `min..=max`. Our own control
+    /// for settings that have no measured FL geometry yet (UNMEASURED).
+    #[allow(clippy::too_many_arguments)]
+    pub fn param_row(
+        &mut self,
+        id: &str,
+        row: Rect,
+        label: &str,
+        value: i32,
+        min: i32,
+        max: i32,
+        display: &str,
+    ) -> ParamEdit {
+        let t = *self.tokens;
+        let painter = self.painter();
+        let label_w = (row.width() * 0.42).min(150.0);
+        let bar = Rect::from_min_max(
+            pos2(row.left() + label_w, row.top() + 3.0),
+            pos2(row.right(), row.bottom() - 3.0),
+        );
+        painter.text(
+            pos2(row.left(), row.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            crate::theme::regular(13.0),
+            t.title_text,
+        );
+        framed(
+            &painter,
+            bar,
+            2.0,
+            crate::theme::shade(t.rack_bg, 0.5),
+            crate::theme::shade(t.rack_bg, 0.35),
+        );
+        let span = (max - min).max(1) as f32;
+        let frac = ((value - min) as f32 / span).clamp(0.0, 1.0);
+        painter.rect_filled(
+            Rect::from_min_max(bar.min, pos2(bar.left() + frac * bar.width(), bar.bottom())),
+            2.0,
+            t.step_on,
+        );
+        painter.text(
+            bar.center(),
+            egui::Align2::CENTER_CENTER,
+            display,
+            crate::theme::regular(12.0),
+            t.menu_text,
+        );
+        let response = self.hit(id, bar, "slider", true, &format!("{label}: {display}"));
+        let mut edit = ParamEdit {
+            value: None,
+            ended: response.drag_stopped(),
+        };
+        if (response.dragged() || response.clicked())
+            && let Some(p) = self.ui.input(|i| i.pointer.interact_pos())
+        {
+            let f = ((p.x - bar.left()) / bar.width()).clamp(0.0, 1.0);
+            let next = min + (span * f).round() as i32;
+            if next != value {
+                edit.value = Some(next);
+            }
+            if response.clicked() {
+                edit.ended = true;
+            }
+        }
+        edit
+    }
+
+    /// Small toggle button; returns true when clicked.
+    pub fn toggle(&mut self, id: &str, rect: Rect, label: &str, on: bool, hint: &str) -> bool {
+        let t = *self.tokens;
+        let painter = self.painter();
+        let response = self.hit(id, rect, "toggle", true, hint);
+        if on {
+            lit_face(&painter, rect, &t);
+        } else {
+            button_face(&painter, rect, &t, response.hovered(), false);
+        }
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            crate::theme::regular(12.0),
+            if on {
+                crate::theme::shade(t.lit_edge, 0.5)
+            } else {
+                t.menu_text
+            },
+        );
+        response.clicked()
+    }
+}
