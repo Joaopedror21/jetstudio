@@ -5,6 +5,7 @@
 //! position, which keeps live playback and offline rendering identical.
 
 use jet_model::{AutoPoint, AutoTarget, AutomationId, ClipSource, CurveShape, Project};
+use jet_time::Tick;
 use std::f64::consts::PI;
 
 /// Repetitions for the periodic shapes, from the tension (2..=16).
@@ -158,6 +159,105 @@ pub fn lfo_wave(lfo: jet_model::AutoLfo, phase: f64) -> f64 {
     let i = (at.floor() as usize).min(2);
     let f = at - i as f64;
     shapes[i] * (1.0 - f) + shapes[i + 1] * f
+}
+
+/// The id under which a pattern's event data joins the lanes (outside the real ids' range).
+pub fn event_id(pattern: jet_model::PatternId) -> AutomationId {
+    AutomationId(u64::MAX - pattern.0)
+}
+
+/// Automation for what plays from `source`: in Song mode the Automation Clips and the event data
+/// of the Pattern Clips; in Pattern mode the pattern's event data ("Event Automation remains active
+/// in either Pattern or Song mode" [Manual: recording_automation]).
+pub fn lanes_for(project: &Project, source: crate::Source) -> Vec<AutoLane> {
+    let mut lanes = match source {
+        crate::Source::Song => lanes(project),
+        crate::Source::Pattern(_) => Vec::new(),
+    };
+    let beat_ticks = project.settings.beat_ticks().unwrap_or(96);
+    let mut add = |pattern: &jet_model::Pattern, segment: AutoSegment| {
+        for lane in &pattern.events {
+            let Some(first) = lane.points.first() else {
+                continue;
+            };
+            let points: Vec<AutoPoint> = std::iter::once((Tick(0), first.1))
+                .chain(lane.points.iter().copied())
+                .map(|(at, value)| AutoPoint {
+                    at,
+                    value,
+                    tension: 0,
+                    shape: CurveShape::Hold,
+                })
+                .collect();
+            let id = segment.automation;
+            match lanes.iter_mut().find(|l| l.target == lane.target) {
+                Some(existing) => {
+                    existing.segments.push(segment.clone());
+                    if !existing.points.iter().any(|(pid, ..)| *pid == id) {
+                        existing
+                            .points
+                            .push((id, points, jet_model::AutoSettings::default()));
+                    }
+                }
+                None => lanes.push(AutoLane {
+                    target: lane.target,
+                    segments: vec![segment.clone()],
+                    points: vec![(id, points, jet_model::AutoSettings::default())],
+                    beat_ticks,
+                }),
+            }
+        }
+    };
+    match source {
+        crate::Source::Pattern(id) => {
+            if let Some(pattern) = project.pattern(id) {
+                let length = crate::pattern_length(project, pattern);
+                add(
+                    pattern,
+                    AutoSegment {
+                        start: 0,
+                        end: length,
+                        offset: 0,
+                        automation: event_id(id),
+                    },
+                );
+            }
+        }
+        crate::Source::Song => {
+            if let Some(arrangement) = project.active() {
+                for clip in &arrangement.clips {
+                    let ClipSource::Pattern(id) = clip.source else {
+                        continue;
+                    };
+                    let muted = clip.muted
+                        || arrangement
+                            .tracks
+                            .iter()
+                            .find(|t| t.id == clip.track)
+                            .is_none_or(|t| t.mute);
+                    if muted {
+                        continue;
+                    }
+                    if let Some(pattern) = project.pattern(id) {
+                        add(
+                            pattern,
+                            AutoSegment {
+                                start: clip.start.0,
+                                end: clip.end().0,
+                                offset: clip.offset.0,
+                                automation: event_id(id),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+    for lane in &mut lanes {
+        lane.segments.sort_by_key(|s| s.start);
+    }
+    lanes.sort_by_key(|l| l.target);
+    lanes
 }
 
 /// Automation lanes for Song mode (Pattern mode plays no Playlist clips).

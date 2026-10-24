@@ -1513,3 +1513,84 @@ fn marker_skip_loop_and_pause_drive_the_song_position_and_audio() {
     assert_eq!(position(&session), 480);
     assert_eq!(session.reached_pause(), None);
 }
+
+#[test]
+fn recorded_automation_events_play_in_pattern_and_song_mode_and_become_a_clip() {
+    let mut session = session_120();
+    let id = add_sampler_with_click(&mut session);
+    for index in [0, 4, 8, 12] {
+        session
+            .execute(
+                "step.set",
+                json!({"pattern": 1, "channel": id, "index": index, "on": true}),
+            )
+            .unwrap();
+    }
+    let peak_at = |left: &[f32], frame: usize| {
+        left[frame..frame + 100]
+            .iter()
+            .fold(0.0_f32, |m, v| m.max(v.abs()))
+    };
+    let target = json!({"ChannelVolume": id});
+    // Volume stays as is for the first half of the bar, then drops to 20%.
+    for (from, at, value) in [(None, 0, 780), (Some(0), 192, 200)] {
+        session
+            .execute(
+                "automation.event.record",
+                json!({"pattern": 1, "target": target, "from": from, "at": at, "value": value}),
+            )
+            .unwrap();
+    }
+    let (left, _) = export(&mut session, "pattern");
+    // Automation applies per audio block, so the click right on the change may still take the
+    // old value; the next one (step 12, frame 72 000) is fully after it.
+    let (first, fourth) = (peak_at(&left, 0), peak_at(&left, 72_000));
+    assert!(
+        fourth < first * 0.5,
+        "the event data lowers the volume: {first} -> {fourth}"
+    );
+    // Song mode: the pattern's clip carries its event data.
+    session
+        .execute("playlist.track.add", json!({"name": "Track 1"}))
+        .unwrap();
+    session
+        .execute(
+            "playlist.clip.add",
+            json!({"track": 1, "pattern": 1, "start": 384, "length": 384}),
+        )
+        .unwrap();
+    let (song, _) = export(&mut session, "song");
+    assert!(peak_at(&song, 96_000 + 72_000) < peak_at(&song, 96_000) * 0.5);
+    // Recording again over 0..288 replaces what was there.
+    for (from, at, value) in [(None, 0, 600), (Some(0), 288, 600)] {
+        session
+            .execute(
+                "automation.event.record",
+                json!({"pattern": 1, "target": target, "from": from, "at": at, "value": value}),
+            )
+            .unwrap();
+    }
+    let lane = &session.project().patterns[0].events[0];
+    assert_eq!(lane.points.len(), 2, "{:?}", lane.points);
+    // A dense ramp becomes a clip with few points.
+    for at in 0..=96 {
+        session
+            .execute(
+                "automation.event.record",
+                json!({"pattern": 1, "target": target, "at": at * 4, "value": 1000 - at * 10}),
+            )
+            .unwrap();
+    }
+    session
+        .execute(
+            "automation.event.to_clip",
+            json!({"pattern": 1, "target": target}),
+        )
+        .unwrap();
+    let project = session.project();
+    assert!(project.patterns[0].events.is_empty());
+    let clip = project.automations.last().unwrap();
+    assert!(clip.points.len() <= 4, "{} points", clip.points.len());
+    let placed = project.active().unwrap().clips.last().unwrap();
+    assert_eq!(placed.start.0, 384, "starts with the pattern's first clip");
+}

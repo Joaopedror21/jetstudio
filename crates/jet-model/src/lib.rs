@@ -767,6 +767,19 @@ pub struct Pattern {
     /// Piano roll scores, kept sorted by (start, key).
     #[serde(default)]
     pub notes: BTreeMap<ChannelId, Vec<Note>>,
+    /// Recorded automation events: "Automation data recorded from live mouse or controller
+    /// movements is recorded into the Event Editor associated with the pattern" [Manual:
+    /// recording_automation]. One lane per target, points sorted by time.
+    #[serde(default)]
+    pub events: Vec<EventLane>,
+}
+
+/// Event data of one automatable control in a pattern; each value holds until the next one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventLane {
+    pub target: AutoTarget,
+    /// (tick in the pattern, value 0..=1000), sorted by tick.
+    pub points: Vec<(Tick, u16)>,
 }
 
 impl Pattern {
@@ -778,6 +791,7 @@ impl Pattern {
             length: PatternLength::Auto,
             steps: BTreeMap::new(),
             notes: BTreeMap::new(),
+            events: Vec::new(),
         }
     }
 

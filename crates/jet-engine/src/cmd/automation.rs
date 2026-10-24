@@ -74,6 +74,59 @@ fn sort(points: &mut [AutoPoint]) {
     points.sort_by_key(|p| p.at);
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventRecord {
+    pattern: u64,
+    target: AutoTarget,
+    /// The previous tick recorded in this gesture: events after it up to `at` are replaced.
+    #[serde(default)]
+    from: Option<i64>,
+    at: i64,
+    value: u16,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EventToClip {
+    pattern: u64,
+    target: AutoTarget,
+}
+
+/// Ramer-Douglas-Peucker reduction of (tick, value) points to those that keep the shape within
+/// `tolerance` value units (textbook polyline simplification).
+fn reduce(points: &[(i64, f64)], tolerance: f64) -> Vec<usize> {
+    fn walk(points: &[(i64, f64)], a: usize, b: usize, tolerance: f64, keep: &mut Vec<usize>) {
+        let (x0, y0) = points[a];
+        let (x1, y1) = points[b];
+        let mut worst = (0.0, a);
+        for (i, (x, y)) in points.iter().enumerate().take(b).skip(a + 1) {
+            let line = if x1 == x0 {
+                y0
+            } else {
+                y0 + (y1 - y0) * (x - x0) as f64 / (x1 - x0) as f64
+            };
+            let d = (y - line).abs();
+            if d > worst.0 {
+                worst = (d, i);
+            }
+        }
+        if worst.0 > tolerance {
+            walk(points, a, worst.1, tolerance, keep);
+            keep.push(worst.1);
+            walk(points, worst.1, b, tolerance, keep);
+        }
+    }
+    if points.len() < 3 {
+        return (0..points.len()).collect();
+    }
+    let mut keep = vec![0];
+    walk(points, 0, points.len() - 1, tolerance, &mut keep);
+    keep.push(points.len() - 1);
+    keep.sort_unstable();
+    keep
+}
+
 pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool, CmdError> {
     match id {
         // "Create automation clip": the clip spans "the entire length containing data" and
@@ -124,6 +177,130 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                     id: clip,
                     track,
                     start: Tick(0),
+                    length: Tick(length),
+                    offset: Tick(0),
+                    source: ClipSource::Automation(automation),
+                    muted: false,
+                    audio: jet_model::AudioClipProps::default(),
+                });
+                Ok(())
+            })
+        }
+        // Live automation recording into the pattern's event data [Manual: recording_automation].
+        "automation.event.record" => {
+            let p: EventRecord = parse(id, params)?;
+            if p.at < 0 || p.value > 1000 {
+                return Err(invalid(id, "at must be >= 0 and value 0..=1000"));
+            }
+            session.edit_project(|project| {
+                if p.target.current(project).is_none() {
+                    return Err(CmdError::Failed("automation target does not exist".into()));
+                }
+                let pattern = project
+                    .patterns
+                    .iter_mut()
+                    .find(|pat| pat.id == jet_model::PatternId(p.pattern))
+                    .ok_or_else(|| CmdError::Failed("pattern does not exist".into()))?;
+                let index = match pattern.events.iter().position(|l| l.target == p.target) {
+                    Some(i) => i,
+                    None => {
+                        pattern.events.push(jet_model::EventLane {
+                            target: p.target,
+                            points: Vec::new(),
+                        });
+                        pattern.events.len() - 1
+                    }
+                };
+                let lane = &mut pattern.events[index];
+                // Moving a control while recording overwrites what was there.
+                let from = p.from.unwrap_or(p.at - 1).min(p.at - 1);
+                lane.points.retain(|(at, _)| at.0 <= from || at.0 > p.at);
+                lane.points.push((Tick(p.at), p.value));
+                lane.points.sort_by_key(|(at, _)| *at);
+                Ok(())
+            })
+        }
+        // "Turn into Automation Clip": the event data becomes a clip, reduced to a manageable
+        // number of points ("live automation generates points equivalent to the PPQ setting ...
+        // That's not a practical number of points to edit"); it starts where the pattern's first
+        // clip does (or at 0) and the event lane is removed (hypothesis H-AUT-5).
+        "automation.event.to_clip" => {
+            let p: EventToClip = parse(id, params)?;
+            session.edit_project(|project| {
+                let pattern_id = jet_model::PatternId(p.pattern);
+                let pattern = project
+                    .patterns
+                    .iter_mut()
+                    .find(|pat| pat.id == pattern_id)
+                    .ok_or_else(|| CmdError::Failed("pattern does not exist".into()))?;
+                let index = pattern
+                    .events
+                    .iter()
+                    .position(|l| l.target == p.target)
+                    .ok_or_else(|| CmdError::Failed("no event data for this control".into()))?;
+                let lane = pattern.events.remove(index);
+                let raw: Vec<(i64, f64)> = lane
+                    .points
+                    .iter()
+                    .map(|(at, v)| (at.0, f64::from(*v)))
+                    .collect();
+                let kept = reduce(&raw, 5.0);
+                let mut points: Vec<AutoPoint> = kept
+                    .into_iter()
+                    .map(|i| AutoPoint {
+                        at: Tick(raw[i].0),
+                        value: raw[i].1 as u16,
+                        tension: 0,
+                        shape: CurveShape::SingleCurve,
+                    })
+                    .collect();
+                if points.first().is_none_or(|p| p.at.0 > 0) {
+                    let value = points.first().map_or(0, |p| p.value);
+                    points.insert(
+                        0,
+                        AutoPoint {
+                            at: Tick(0),
+                            value,
+                            tension: 0,
+                            shape: CurveShape::SingleCurve,
+                        },
+                    );
+                }
+                let length = points.last().map_or(1, |p| p.at.0).max(1);
+                let start = project
+                    .active()
+                    .and_then(|a| {
+                        a.clips
+                            .iter()
+                            .filter(|c| c.source == ClipSource::Pattern(pattern_id))
+                            .map(|c| c.start.0)
+                            .min()
+                    })
+                    .unwrap_or(0);
+                let automation = project.ids.automation();
+                let name = p.target.label(project);
+                let initial = points[0].value;
+                project.automations.push(AutomationClip {
+                    id: automation,
+                    name: name.clone(),
+                    target: p.target,
+                    points,
+                    initial,
+                    settings: jet_model::AutoSettings::default(),
+                });
+                let track = project.ids.track();
+                let clip = project.ids.clip();
+                let active = project.active_arrangement;
+                let arrangement = project
+                    .arrangements
+                    .iter_mut()
+                    .find(|a| a.id == active)
+                    .ok_or_else(|| CmdError::Failed("arrangement does not exist".into()))?;
+                arrangement.tracks.push(PlaylistTrack::new(track, name));
+                arrangement.clips.push(ClipInstance {
+                    id: clip,
+                    track,
+                    start: Tick(start),
                     length: Tick(length),
                     offset: Tick(0),
                     source: ClipSource::Automation(automation),

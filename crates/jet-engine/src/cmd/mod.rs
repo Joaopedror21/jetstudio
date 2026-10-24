@@ -1081,6 +1081,22 @@ static SPECS: &[CommandSpec] = &[
         Coalesce
     ),
     spec!(
+        "automation.event.record",
+        "Record automation event",
+        "",
+        None,
+        "{pattern:uint,target:AutoTarget,from?:int,at:int,value:uint}",
+        Coalesce
+    ),
+    spec!(
+        "automation.event.to_clip",
+        "Turn event data into an automation clip",
+        "",
+        None,
+        "{pattern:uint,target:AutoTarget}",
+        Step
+    ),
+    spec!(
         "automation.settings.set",
         "Automation Clip settings",
         "",

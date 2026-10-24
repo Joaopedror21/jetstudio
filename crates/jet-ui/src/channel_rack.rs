@@ -45,6 +45,8 @@ pub struct RackView {
     pub length_steps: Option<u16>,
     /// Length the pattern plays at, in steps (Auto resolved).
     pub effective_steps: u16,
+    /// Controls with recorded event data in the selected pattern.
+    pub event_targets: Vec<jet_model::AutoTarget>,
 }
 
 pub struct ChannelView {
@@ -121,6 +123,8 @@ pub enum RackAction {
     SetPatternLength(Option<u16>),
     /// "Create automation clip" from a knob's right-click menu [Manual: playlist_automationclip].
     CreateAutomation(u64, KnobParam),
+    /// "Turn into Automation Clip": the knob's recorded event data in the selected pattern.
+    EventsToClip(u64, KnobParam),
 }
 
 /// Swing knob and pattern length display in the Channel rack title bar
@@ -705,17 +709,34 @@ pub fn paint_channel_rack(
     edit_name(paint, state, &mut actions);
     paint_menu(paint, state, view, &mut actions);
     if let Some((channel, param, origin)) = state.knob_menu {
-        let items = [MenuItem {
-            label: "Create automation clip",
-            shortcut: "",
-            enabled: true,
-        }];
+        let target = match param {
+            KnobParam::Volume => {
+                jet_model::AutoTarget::ChannelVolume(jet_model::ChannelId(channel))
+            }
+            KnobParam::Pan => jet_model::AutoTarget::ChannelPan(jet_model::ChannelId(channel)),
+        };
+        let items = [
+            MenuItem {
+                label: "Create automation clip",
+                shortcut: "",
+                enabled: true,
+            },
+            MenuItem {
+                label: "Turn recorded events into automation clip",
+                shortcut: "",
+                enabled: view.event_targets.contains(&target),
+            },
+        ];
         match paint.popup_menu("channel-rack.knob-menu", origin, &items) {
             MenuResult::Open => {}
             MenuResult::Dismissed => state.knob_menu = None,
-            MenuResult::Chosen(_) => {
+            MenuResult::Chosen(choice) => {
                 state.knob_menu = None;
-                actions.push(RackAction::CreateAutomation(channel, param));
+                actions.push(if choice == 0 {
+                    RackAction::CreateAutomation(channel, param)
+                } else {
+                    RackAction::EventsToClip(channel, param)
+                });
             }
         }
     }

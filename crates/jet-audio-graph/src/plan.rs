@@ -380,39 +380,35 @@ pub fn build_plan(
         .map(|(i, channel)| (channel.id, i))
         .collect();
     channel_index.sort_by_key(|(id, _)| *id);
-    let automation = if source == Source::Song {
-        jet_seq::automation::lanes(project)
-            .into_iter()
-            .filter_map(|lane| {
-                use jet_model::AutoTarget;
-                let channel = |id| {
-                    channel_index
-                        .iter()
-                        .find(|(c, _)| *c == id)
-                        .map(|(_, i)| *i)
-                };
-                let track = |index: u16| {
-                    slot_of
-                        .get(usize::from(index))
-                        .copied()
-                        .filter(|s| *s != usize::MAX)
-                };
-                let apply = match lane.target {
-                    AutoTarget::ChannelVolume(id) => AutoApply::ChannelVolume(channel(id)?),
-                    AutoTarget::ChannelPan(id) => AutoApply::ChannelPan(channel(id)?),
-                    AutoTarget::ChannelPitch(id) => AutoApply::ChannelPitch(channel(id)?),
-                    AutoTarget::MixerVolume(index) => AutoApply::TrackVolume(track(index)?),
-                    AutoTarget::MixerPan(index) => AutoApply::TrackPan(track(index)?),
-                    AutoTarget::FxMix { track: index, slot } => {
-                        AutoApply::FxMix(track(index)?, usize::from(slot))
-                    }
-                };
-                Some(PlanLane { lane, apply })
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let automation: Vec<_> = jet_seq::automation::lanes_for(project, source)
+        .into_iter()
+        .filter_map(|lane| {
+            use jet_model::AutoTarget;
+            let channel = |id| {
+                channel_index
+                    .iter()
+                    .find(|(c, _)| *c == id)
+                    .map(|(_, i)| *i)
+            };
+            let track = |index: u16| {
+                slot_of
+                    .get(usize::from(index))
+                    .copied()
+                    .filter(|s| *s != usize::MAX)
+            };
+            let apply = match lane.target {
+                AutoTarget::ChannelVolume(id) => AutoApply::ChannelVolume(channel(id)?),
+                AutoTarget::ChannelPan(id) => AutoApply::ChannelPan(channel(id)?),
+                AutoTarget::ChannelPitch(id) => AutoApply::ChannelPitch(channel(id)?),
+                AutoTarget::MixerVolume(index) => AutoApply::TrackVolume(track(index)?),
+                AutoTarget::MixerPan(index) => AutoApply::TrackPan(track(index)?),
+                AutoTarget::FxMix { track: index, slot } => {
+                    AutoApply::FxMix(track(index)?, usize::from(slot))
+                }
+            };
+            Some(PlanLane { lane, apply })
+        })
+        .collect();
     RenderPlan {
         automation,
         metronome: false,

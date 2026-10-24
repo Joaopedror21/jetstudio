@@ -58,6 +58,8 @@ pub struct MixerView {
     /// without an audio device.
     pub analyzer: Option<(Vec<f32>, Vec<f32>)>,
     pub rate: u32,
+    /// Controls with recorded event data in the selected pattern.
+    pub event_targets: Vec<jet_model::AutoTarget>,
 }
 
 pub enum MixerAction {
@@ -65,6 +67,11 @@ pub enum MixerAction {
     RouteSelected {
         track: u16,
         sequential: bool,
+    },
+    /// "Turn into Automation Clip" for the fader (`true`) or pan of a track.
+    EventsToClip {
+        track: u16,
+        fader: bool,
     },
     /// Track EQ band change (part of a drag gesture).
     Eq {
@@ -1103,19 +1110,38 @@ fn paint_menus(
             }
         }
         MixerMenu::Automate(index, fader) => {
-            let items = [MenuItem {
-                label: "Create automation clip",
-                shortcut: "",
-                enabled: true,
-            }];
+            let target = if fader {
+                jet_model::AutoTarget::MixerVolume(index)
+            } else {
+                jet_model::AutoTarget::MixerPan(index)
+            };
+            let items = [
+                MenuItem {
+                    label: "Create automation clip",
+                    shortcut: "",
+                    enabled: true,
+                },
+                MenuItem {
+                    label: "Turn recorded events into automation clip",
+                    shortcut: "",
+                    enabled: view.event_targets.contains(&target),
+                },
+            ];
             match paint.popup_menu("mixer.automate-menu", origin, &items) {
                 MenuResult::Open => {}
                 MenuResult::Dismissed => state.menu = None,
-                MenuResult::Chosen(_) => {
+                MenuResult::Chosen(choice) => {
                     state.menu = None;
-                    actions.push(MixerAction::CreateAutomation {
-                        track: index,
-                        fader,
+                    actions.push(if choice == 0 {
+                        MixerAction::CreateAutomation {
+                            track: index,
+                            fader,
+                        }
+                    } else {
+                        MixerAction::EventsToClip {
+                            track: index,
+                            fader,
+                        }
                     });
                 }
             }

@@ -19,8 +19,8 @@ Legenda: ✅ disponível e testado · 🟡 parcial (o que falta está ao lado) �
 | Efeitos (FX) | 14 | 10 | 2 | 2 | 0 |
 | Plugins externos (PLG) | 4 | 0 | 0 | 4 | 0 |
 | Browser e arquivos (BR/FILE) | 12 | 2 | 5 | 4 | 1 |
-| Automação, MIDI, gravação (AUT/MIDI/REC) | 10 | 0 | 4 | 6 | 0 |
-| **Total** | **192** | **78** | **58** | **54** | **2** |
+| Automação, MIDI, gravação (AUT/MIDI/REC) | 10 | 0 | 6 | 4 | 0 |
+| **Total** | **192** | **78** | **60** | **52** | **2** |
 
 As contagens foram geradas por script a partir da coluna Estado do inventário: ✅ = Testado; 🟡 = Implementado ou Parcialmente compatível; ⬜ = Pesquisado ou Especificado; ⛔ = Bloqueado. 
 
@@ -76,6 +76,7 @@ As contagens foram geradas por script a partir da coluna Estado do inventário: 
 | Autosave/backups | a cada 5 min e ao salvar; revert | 🟡 | FILE-003: faltam os outros modos |
 | Entrada MIDI e typing keyboard | todas as portas, Ctrl+T | 🟡 | MIDI-001: faltam escolha de dispositivo e CC |
 | Gravação de notas | armado + Play, quantização pelo snap, clip no modo Song | 🟡 | REC-002: `armed_play_records_typed_notes_into_the_pattern`; MIDI real não exercitado |
+| Gravação de automação | knobs gravam event data no pattern; vira Automation Clip | 🟡 | AUT-002/003: falta a janela Event editor |
 | Configurações de áudio (F10) | dispositivo, taxa, buffer | 🟡 | AE-004 ✅ no hardware; GLB-021: faltam as outras abas |
 | VST3/CLAP | — | ⬜ | PLG-001/002 (licença do VST3 resolvida: MIT desde a 3.8) |
 | Gravação de áudio | R arma, Play grava, take vira Audio Clip | 🟡 | REC-001: não exercitado no microfone do usuário; faltam pickup, takes e monitoramento |

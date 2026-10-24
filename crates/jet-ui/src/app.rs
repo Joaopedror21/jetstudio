@@ -178,6 +178,9 @@ pub struct JetApp {
     /// (hypothesis H-REC-2: the manual does not give the default).
     record_audio: bool,
     record_notes: bool,
+    record_automation: bool,
+    /// Control being recorded in the current gesture and the last tick written.
+    automation_take: Option<(jet_model::AutoTarget, i64)>,
     /// Toolbar Global snap [Manual: toolbar_panels, "Global Snap Panel"]; Line by default, as
     /// the reference capture W shows.
     global_snap: crate::snap::SnapValue,
@@ -234,6 +237,8 @@ impl Default for JetApp {
             take: None,
             record_audio: true,
             record_notes: true,
+            record_automation: true,
+            automation_take: None,
             global_snap: crate::snap::SnapValue::Line,
             multi_edit: 0,
             note_take: None,
@@ -265,6 +270,7 @@ enum UiAction {
     ToggleTyping,
     ToggleRecordAudio,
     ToggleRecordNotes,
+    ToggleRecordAutomation,
     SetGlobalSnap(crate::snap::SnapValue),
     PatternClone,
     PatternDelete,
@@ -590,6 +596,13 @@ impl JetApp {
         }
     }
 
+    /// Controls with recorded event data in the selected pattern.
+    fn event_targets(&self) -> Vec<jet_model::AutoTarget> {
+        self.selected_pattern()
+            .map(|p| p.events.iter().map(|l| l.target).collect())
+            .unwrap_or_default()
+    }
+
     /// The selected channels in Channel rack order (the target channel when none is marked).
     fn rack_selection(&self) -> Vec<u64> {
         let project = self.session.project();
@@ -688,22 +701,36 @@ impl JetApp {
                 self.execute("channel.mute.set", json!({"id": channel, "mute": muted}));
             }
             RackAction::Solo(id) => self.execute("channel.solo", json!({"id": id})),
-            RackAction::SetVolume { channel, value } => self.gesture(
-                &format!("rack.volume.{channel}"),
-                "channel.volume.set",
-                json!({"id": channel, "value": value}),
-            ),
-            RackAction::SetPan { channel, value } => self.gesture(
-                &format!("rack.pan.{channel}"),
-                "channel.pan.set",
-                json!({"id": channel, "value": value}),
-            ),
+            RackAction::SetVolume { channel, value } => {
+                let key = format!("rack.volume.{channel}");
+                self.gesture(
+                    &key,
+                    "channel.volume.set",
+                    json!({"id": channel, "value": value}),
+                );
+                self.record_automation(
+                    &key,
+                    jet_model::AutoTarget::ChannelVolume(ChannelId(channel)),
+                );
+            }
+            RackAction::SetPan { channel, value } => {
+                let key = format!("rack.pan.{channel}");
+                self.gesture(
+                    &key,
+                    "channel.pan.set",
+                    json!({"id": channel, "value": value}),
+                );
+                self.record_automation(&key, jet_model::AutoTarget::ChannelPan(ChannelId(channel)));
+            }
             RackAction::SetMixer { channel, value } => self.gesture(
                 &format!("rack.mixer.{channel}"),
                 "channel.mixer_target.set",
                 json!({"id": channel, "value": value}),
             ),
-            RackAction::EndGesture => self.session.end_gesture(),
+            RackAction::EndGesture => {
+                self.automation_take = None;
+                self.session.end_gesture();
+            }
             RackAction::Rename(id, name) => {
                 self.execute("channel.rename", json!({"id": id, "name": name}));
             }
@@ -725,6 +752,17 @@ impl JetApp {
                 }
             }
             RackAction::Menu(id, item) => self.rack_menu(id, item),
+            RackAction::EventsToClip(channel, param) => {
+                let target = match param {
+                    crate::channel_rack::KnobParam::Volume => json!({"ChannelVolume": channel}),
+                    crate::channel_rack::KnobParam::Pan => json!({"ChannelPan": channel}),
+                };
+                let pattern = self.session.selected_pattern().0;
+                self.execute(
+                    "automation.event.to_clip",
+                    json!({"pattern": pattern, "target": target}),
+                );
+            }
             RackAction::CreateAutomation(channel, param) => {
                 let target = match param {
                     crate::channel_rack::KnobParam::Volume => json!({"ChannelVolume": channel}),
@@ -1000,16 +1038,24 @@ impl JetApp {
 
     fn run_mixer(&mut self, action: MixerAction) {
         match action {
-            MixerAction::Volume { track, value } => self.gesture(
-                &format!("mixer.volume.{track}"),
-                "mixer.track.volume.set",
-                json!({"track": track, "value": value}),
-            ),
-            MixerAction::Pan { track, value } => self.gesture(
-                &format!("mixer.pan.{track}"),
-                "mixer.track.pan.set",
-                json!({"track": track, "value": value}),
-            ),
+            MixerAction::Volume { track, value } => {
+                let key = format!("mixer.volume.{track}");
+                self.gesture(
+                    &key,
+                    "mixer.track.volume.set",
+                    json!({"track": track, "value": value}),
+                );
+                self.record_automation(&key, jet_model::AutoTarget::MixerVolume(track));
+            }
+            MixerAction::Pan { track, value } => {
+                let key = format!("mixer.pan.{track}");
+                self.gesture(
+                    &key,
+                    "mixer.track.pan.set",
+                    json!({"track": track, "value": value}),
+                );
+                self.record_automation(&key, jet_model::AutoTarget::MixerPan(track));
+            }
             MixerAction::Mute { track, value } => {
                 self.execute(
                     "mixer.track.mute.set",
@@ -1046,11 +1092,21 @@ impl JetApp {
                 "mixer.fx.enabled.set",
                 json!({"track": track, "slot": slot, "value": value}),
             ),
-            MixerAction::FxMix { track, slot, value } => self.gesture(
-                &format!("mixer.fx-mix.{track}.{slot}"),
-                "mixer.fx.mix.set",
-                json!({"track": track, "slot": slot, "value": value}),
-            ),
+            MixerAction::FxMix { track, slot, value } => {
+                let key = format!("mixer.fx-mix.{track}.{slot}");
+                self.gesture(
+                    &key,
+                    "mixer.fx.mix.set",
+                    json!({"track": track, "slot": slot, "value": value}),
+                );
+                self.record_automation(
+                    &key,
+                    jet_model::AutoTarget::FxMix {
+                        track,
+                        slot: slot as u8,
+                    },
+                );
+            }
             MixerAction::FxSet { track, slot, kind } => self.gesture(
                 &format!("mixer.fx.{track}.{slot}"),
                 "mixer.fx.set",
@@ -1060,7 +1116,10 @@ impl JetApp {
                 "mixer.track.fx_enabled.set",
                 json!({"track": track, "value": value}),
             ),
-            MixerAction::EndGesture => self.session.end_gesture(),
+            MixerAction::EndGesture => {
+                self.automation_take = None;
+                self.session.end_gesture();
+            }
             MixerAction::Invert { track, value } => {
                 self.execute(
                     "mixer.track.invert.set",
@@ -1101,6 +1160,18 @@ impl JetApp {
                 } else {
                     Route::To(track)
                 });
+            }
+            MixerAction::EventsToClip { track, fader } => {
+                let target = if fader {
+                    json!({ "MixerVolume": track })
+                } else {
+                    json!({ "MixerPan": track })
+                };
+                let pattern = self.session.selected_pattern().0;
+                self.execute(
+                    "automation.event.to_clip",
+                    json!({"pattern": pattern, "target": target}),
+                );
             }
             MixerAction::CreateAutomation { track, fader } => {
                 let target = if fader {
@@ -1167,12 +1238,59 @@ impl JetApp {
         }
     }
 
+    /// "Mouse ... any interface control movements made while FL Studio is recording will be
+    /// captured"; "The automation will be recorded into the selected Pattern" [Manual:
+    /// recording_automation]. In Song mode the position is taken inside the selected pattern's
+    /// clip under the playhead (no clip there: nothing is recorded; hypothesis H-AUT-6). Part
+    /// of the control's own undo gesture.
+    fn record_automation(&mut self, key: &str, target: jet_model::AutoTarget) {
+        if !(self.armed && self.record_automation) {
+            return;
+        }
+        let snapshot = self.session.transport_snapshot();
+        if snapshot.state != TransportState::Playing {
+            return;
+        }
+        let project = self.session.project();
+        let Some(value) = target.current(project) else {
+            return;
+        };
+        let pattern = self.session.selected_pattern();
+        let at = match snapshot.mode {
+            PlayMode::Pattern => snapshot.position.0,
+            PlayMode::Song => {
+                let position = snapshot.position.0;
+                let Some(clip) = project.active().and_then(|a| {
+                    a.clips.iter().find(|c| {
+                        c.source == ClipSource::Pattern(pattern)
+                            && c.start.0 <= position
+                            && position < c.end().0
+                    })
+                }) else {
+                    return;
+                };
+                position - clip.start.0 + clip.offset.0
+            }
+        };
+        let from = self
+            .automation_take
+            .filter(|(t, _)| *t == target)
+            .map(|(_, last)| last);
+        self.gesture(
+            key,
+            "automation.event.record",
+            json!({"pattern": pattern.0, "target": target, "from": from, "at": at, "value": value}),
+        );
+        self.automation_take = Some((target, at));
+    }
+
     fn record_filter_status(&self) -> String {
         let on = |b: bool| if b { "on" } else { "off" };
         format!(
-            "Record filter - audio: {}, notes: {}",
+            "Record filter - audio: {}, notes: {}, automation: {}",
             on(self.record_audio),
-            on(self.record_notes)
+            on(self.record_notes),
+            on(self.record_automation)
         )
     }
 
@@ -1721,6 +1839,10 @@ impl JetApp {
             }
             UiAction::ToggleRecordNotes => {
                 self.record_notes = !self.record_notes;
+                self.audio_status = Some(self.record_filter_status());
+            }
+            UiAction::ToggleRecordAutomation => {
+                self.record_automation = !self.record_automation;
                 self.audio_status = Some(self.record_filter_status());
             }
             UiAction::ToggleTyping => {
@@ -2499,6 +2621,7 @@ impl JetApp {
             (left, right)
         });
         MixerView {
+            event_targets: self.event_targets(),
             tracks,
             analyzer,
             rate: self.audio.as_ref().map_or(48_000, |h| h.output.rate()),
@@ -2560,6 +2683,7 @@ impl JetApp {
             step_ticks: project.settings.step_ticks().unwrap_or(24),
             channels,
             dragging_file: self.browser.dragging.clone(),
+            event_targets: self.event_targets(),
             swing: project.settings.swing,
             length_steps: pattern.and_then(|p| match p.length {
                 jet_model::PatternLength::Steps(steps) => Some(steps),
@@ -2921,6 +3045,7 @@ impl From<ToolbarAction> for UiAction {
             ToolbarAction::ToggleTyping => Self::ToggleTyping,
             ToolbarAction::ToggleRecordAudio => Self::ToggleRecordAudio,
             ToolbarAction::ToggleRecordNotes => Self::ToggleRecordNotes,
+            ToolbarAction::ToggleRecordAutomation => Self::ToggleRecordAutomation,
             ToolbarAction::SetGlobalSnap(snap) => Self::SetGlobalSnap(snap),
             ToolbarAction::PatternClone => Self::PatternClone,
             ToolbarAction::PatternDelete => Self::PatternDelete,
@@ -5252,6 +5377,61 @@ mod tests {
             PointerButton::Secondary,
         );
         assert_eq!(app.session.project().automations[0].points[1].tension, 0);
+    }
+
+    #[test]
+    fn moving_a_knob_while_recording_writes_event_data_that_becomes_a_clip() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        open_rack(&mut app, &ctx);
+        let add = app.probe().entries()["channel-rack.add"].rect;
+        click(&mut app, &ctx, add);
+        run_frame(&mut app, &ctx, Vec::new());
+        // Arm (R) and play in Pattern mode.
+        toggle(&mut app, &ctx, Key::R);
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::Space, true, Modifiers::default())],
+        );
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::Space, false, Modifiers::default())],
+        );
+        let knob = app.probe().entries()["channel-rack.volume.1"].rect;
+        drag(
+            &mut app,
+            &ctx,
+            knob.center(),
+            knob.center() + vec2(0.0, 60.0),
+        );
+        let events = app.session.project().patterns[0].events.clone();
+        assert_eq!(events.len(), 1, "one lane");
+        assert_eq!(
+            events[0].target,
+            jet_model::AutoTarget::ChannelVolume(ChannelId(1))
+        );
+        let last = events[0].points.last().unwrap().1;
+        assert_eq!(last, app.session.project().channels[0].volume);
+        // Stop, then the knob menu turns the events into an Automation Clip.
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::Space, true, Modifiers::default())],
+        );
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::Space, false, Modifiers::default())],
+        );
+        click_button(&mut app, &ctx, knob, PointerButton::Secondary);
+        run_frame(&mut app, &ctx, Vec::new());
+        let item = app.probe().entries()["channel-rack.knob-menu.item.1"].rect;
+        click(&mut app, &ctx, item);
+        assert!(app.session.project().patterns[0].events.is_empty());
+        assert_eq!(app.session.project().automations.len(), 1);
     }
 
     #[test]

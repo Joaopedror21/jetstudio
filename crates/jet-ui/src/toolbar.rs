@@ -59,6 +59,7 @@ pub enum ToolbarAction {
     /// Record filter [Manual: recording_scores, "recording filter (Right-Click) ... Audio, Note"].
     ToggleRecordAudio,
     ToggleRecordNotes,
+    ToggleRecordAutomation,
     SetGlobalSnap(crate::snap::SnapValue),
     PatternClone,
     PatternDelete,
@@ -1086,6 +1087,11 @@ fn paint_menu(
                 Some(ToolbarAction::ToggleRecordNotes),
             ),
             (
+                "Record filter: automation",
+                "",
+                Some(ToolbarAction::ToggleRecordAutomation),
+            ),
+            (
                 "Metronome",
                 "Ctrl+M",
                 Some(ToolbarAction::Engine(
@@ -1163,6 +1169,7 @@ fn paint_menu(
                 ToolbarAction::ToggleTyping => ToolbarAction::ToggleTyping,
                 ToolbarAction::ToggleRecordAudio => ToolbarAction::ToggleRecordAudio,
                 ToolbarAction::ToggleRecordNotes => ToolbarAction::ToggleRecordNotes,
+                ToolbarAction::ToggleRecordAutomation => ToolbarAction::ToggleRecordAutomation,
                 ToolbarAction::SetGlobalSnap(snap) => ToolbarAction::SetGlobalSnap(*snap),
                 ToolbarAction::PatternClone => ToolbarAction::PatternClone,
                 ToolbarAction::PatternDelete => ToolbarAction::PatternDelete,
