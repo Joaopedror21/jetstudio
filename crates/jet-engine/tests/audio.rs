@@ -831,7 +831,10 @@ fn mixer_phase_swap_and_stereo_separation_change_the_output() {
     let mut session = session_120();
     let id = add_sampler_with_click(&mut session);
     session
-        .execute("step.set", json!({"pattern":1,"channel":id,"index":0,"on":true}))
+        .execute(
+            "step.set",
+            json!({"pattern":1,"channel":id,"index":0,"on":true}),
+        )
         .unwrap();
     session
         .execute("channel.pan.set", json!({"id": id, "value": -1000}))
@@ -852,11 +855,20 @@ fn mixer_phase_swap_and_stereo_separation_change_the_output() {
         .execute("mixer.track.swap.set", json!({"track": 0, "value": false}))
         .unwrap();
     session
-        .execute("mixer.track.invert.set", json!({"track": 0, "value": false}))
+        .execute(
+            "mixer.track.invert.set",
+            json!({"track": 0, "value": false}),
+        )
         .unwrap();
     session
-        .execute("mixer.track.stereo_sep.set", json!({"track": 0, "value": 1000}))
+        .execute(
+            "mixer.track.stereo_sep.set",
+            json!({"track": 0, "value": 1000}),
+        )
         .unwrap();
     let (left, right) = export(&mut session, "pattern");
-    assert!((left[50] - right[50]).abs() < 1e-6 && left[50] > 0.1, "fully narrowed = mono");
+    assert!(
+        (left[50] - right[50]).abs() < 1e-6 && left[50] > 0.1,
+        "fully narrowed = mono"
+    );
 }
