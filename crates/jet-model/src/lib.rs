@@ -115,7 +115,7 @@ impl Default for ProjectSettings {
     fn default() -> Self {
         Self {
             ppq: Ppq::DEFAULT,
-            tempo: Tempo::DEFAULT,
+            tempo: Tempo(130_000), // [W] a new FL Studio 2026 project shows 130.000 BPM
             time_sig: TimeSig::default(),
             steps_per_beat: 4,
             swing: 0,
@@ -382,7 +382,7 @@ impl Project {
             settings: ProjectSettings::default(),
             channels: Vec::new(),
             patterns: vec![Pattern::new(pattern_id, "Pattern 1")],
-            arrangements: vec![Arrangement::new(arrangement_id, "Arrangement 1")],
+            arrangements: vec![Arrangement::new(arrangement_id, "Arrangement")],
             active_arrangement: arrangement_id,
             mixer: Mixer::default(),
             resources: Vec::new(),

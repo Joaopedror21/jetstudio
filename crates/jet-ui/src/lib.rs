@@ -3,6 +3,7 @@
 mod app;
 mod browser;
 mod channel_rack;
+pub mod demo;
 mod icons;
 mod playlist;
 mod probe;

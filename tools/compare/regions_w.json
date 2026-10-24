@@ -1,0 +1,15 @@
+{
+  "toolbar_row1": [0, 0, 1567, 41],
+  "toolbar_row2": [0, 41, 1567, 84],
+  "menu_panel": [4, 4, 297, 37],
+  "transport": [300, 3, 500, 38],
+  "time_panel": [500, 4, 629, 37],
+  "browser_title": [0, 84, 490, 106],
+  "browser_tabs": [0, 106, 490, 142],
+  "playlist_title": [500, 84, 1567, 106],
+  "playlist_header_band": [500, 106, 1567, 148],
+  "picker": [500, 148, 660, 1029],
+  "track_headers": [660, 148, 771, 1029],
+  "playlist_grid": [771, 148, 1547, 1029],
+  "vscroll": [1547, 128, 1567, 1029]
+}

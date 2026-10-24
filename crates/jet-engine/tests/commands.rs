@@ -80,6 +80,10 @@ fn playlist_clips_share_pattern_source() {
 fn silent_transport_uses_injected_clock_and_pause_freezes_position() {
     let clock = ManualClock::new(48_000);
     let mut session = Session::with_clock(Box::new(clock.clone()));
+    // Explicit tempo: half a second at 120 BPM is one beat (96 ticks at the default PPQ).
+    session
+        .execute("transport.tempo.set", json!({"milli_bpm": 120_000}))
+        .unwrap();
     session.execute("transport.play_stop", json!({})).unwrap();
     clock.set_frames(24_000);
     assert_eq!(session.transport_snapshot().position, Tick(96));

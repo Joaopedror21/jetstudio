@@ -1,20 +1,22 @@
 use std::time::Duration;
 
 use eframe::egui;
-use egui::{Align2, FontId, Id, Key, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+use egui::{Id, Key, Rect, Sense, pos2, vec2};
 use jet_engine::{PlayMode, Session, TransportState};
 use jet_model::ClipSource;
 use serde_json::{Value, json};
 
 use crate::browser::{BrowserState, paint_browser};
 use crate::channel_rack::{ChannelView, RackAction, RackState, RackView, paint_channel_rack};
+use crate::icons;
 use crate::playlist::{
-    ClipView, PlaylistAction, PlaylistState, PlaylistView, TrackView, paint_playlist,
+    ClipView, PatternEntry, PlaylistAction, PlaylistState, PlaylistView, TrackView, paint_playlist,
+    paint_title_tools,
 };
 use crate::probe::LayoutProbe;
-use crate::theme::{Layout, Tokens};
+use crate::theme::{self, Layout, Tokens};
 use crate::toolbar::{ToolbarAction, ToolbarState, ToolbarView, paint_toolbar};
-use crate::widgets::PaintCtx;
+use crate::widgets::{PaintCtx, WindowGlyph};
 use crate::workspace::{ResizeEdge, WindowKind, Workspace, WsAction};
 
 pub struct JetApp {
@@ -29,6 +31,9 @@ pub struct JetApp {
     probe: LayoutProbe,
     hint: String,
     last_error: Option<String>,
+    static_capture: bool,
+    fonts_installed: bool,
+    pending_show: Option<WindowKind>,
 }
 
 impl Default for JetApp {
@@ -45,6 +50,9 @@ impl Default for JetApp {
             probe: LayoutProbe::default(),
             hint: String::new(),
             last_error: None,
+            static_capture: false,
+            fonts_installed: false,
+            pending_show: None,
         }
     }
 }
@@ -63,6 +71,35 @@ enum UiAction {
 }
 
 impl JetApp {
+    /// App around an existing session (demo projects, tests, the screenshot tool).
+    pub fn with_session(session: Session) -> Self {
+        Self {
+            session,
+            ..Self::default()
+        }
+    }
+
+    /// Scrolls the Playlist so `bar` (zero-based) is the first visible bar.
+    pub fn set_playlist_scroll_bars(&mut self, bar: f32) {
+        self.playlist.scroll_bars = bar.max(0.0);
+    }
+
+    /// Deterministic frames for screenshots: no animation-driven repaints.
+    pub fn set_static_capture(&mut self, on: bool) {
+        self.static_capture = on;
+    }
+
+    /// Shows a window that a new project keeps closed (used by the screenshot tool).
+    pub fn show_window_on_start(&mut self, kind: WindowKind) {
+        self.pending_show = Some(kind);
+    }
+
+    /// Installs the measured fonts. Call before the first frame (eframe creation context).
+    pub fn install_fonts(&mut self, ctx: &egui::Context) {
+        ctx.set_fonts(theme::fonts());
+        self.fonts_installed = true;
+    }
+
     pub fn probe(&self) -> &LayoutProbe {
         &self.probe
     }
@@ -77,39 +114,54 @@ impl JetApp {
                     self.last_error = Some(format!("Workspace: {error:?}"));
                 }
             }
-            UiAction::Rack(action) => {
-                match action {
-                    RackAction::AddChannel => {
-                        let name = format!("Channel {}", self.session.project().ids.next_channel);
-                        self.execute("channel.add", json!({"name": name}));
-                    }
-                    RackAction::SetStep {
-                        pattern,
-                        channel,
-                        index,
-                        on,
-                    } => {
-                        self.execute("step.set", json!({"pattern": pattern, "channel": channel, "index": index, "on": on}));
-                    }
-                    RackAction::SelectChannel(id) => self.rack.selected_channel = Some(id),
-                    RackAction::SetMute { channel, muted } => {
-                        self.execute("channel.mute.set", json!({"id": channel, "mute": muted}));
-                    }
+            UiAction::Rack(action) => match action {
+                RackAction::AddChannel => {
+                    let name = format!("Channel {}", self.session.project().ids.next_channel);
+                    self.execute("channel.add", json!({"name": name}));
                 }
-            }
+                RackAction::SetStep {
+                    pattern,
+                    channel,
+                    index,
+                    on,
+                } => {
+                    self.execute(
+                        "step.set",
+                        json!({"pattern": pattern, "channel": channel, "index": index, "on": on}),
+                    );
+                }
+                RackAction::SelectChannel(id) => self.rack.selected_channel = Some(id),
+                RackAction::SetMute { channel, muted } => {
+                    self.execute("channel.mute.set", json!({"id": channel, "mute": muted}));
+                }
+            },
             UiAction::Playlist(action) => match action {
-                PlaylistAction::AddTrack => {
-                    let name = format!("Track {}", self.session.project().ids.next_track);
-                    self.execute("playlist.track.add", json!({"name": name}));
-                }
+                PlaylistAction::AddTrack => self.add_track(),
                 PlaylistAction::SelectTrack(id) => self.playlist.selected_track = Some(id),
-                PlaylistAction::AddClip {
-                    track,
+                PlaylistAction::SelectPattern(id) => {
+                    self.execute("pattern.select", json!({"id": id}));
+                }
+                PlaylistAction::AddClipOnRow {
+                    row,
                     pattern,
                     start,
                     length,
                 } => {
-                    self.execute("playlist.clip.add", json!({"track": track, "pattern": pattern, "start": start, "length": length}));
+                    // Display rows beyond the model's tracks are FL's empty "Track N" rows;
+                    // placing a clip there first creates the real tracks up to that row.
+                    while self.track_count() <= row {
+                        let before = self.track_count();
+                        self.add_track();
+                        if self.track_count() == before {
+                            return;
+                        }
+                    }
+                    if let Some(track) = self.track_id_at(row) {
+                        self.execute(
+                            "playlist.clip.add",
+                            json!({"track": track, "pattern": pattern, "start": start, "length": length}),
+                        );
+                    }
                 }
             },
             UiAction::OpenProject => {
@@ -137,6 +189,29 @@ impl JetApp {
         }
     }
 
+    fn add_track(&mut self) {
+        let name = format!("Track {}", self.track_count() + 1);
+        self.execute("playlist.track.add", json!({"name": name}));
+    }
+
+    fn active_arrangement(&self) -> Option<&jet_model::Arrangement> {
+        let project = self.session.project();
+        project
+            .arrangements
+            .iter()
+            .find(|a| a.id == project.active_arrangement)
+    }
+
+    fn track_count(&self) -> usize {
+        self.active_arrangement().map_or(0, |a| a.tracks.len())
+    }
+
+    fn track_id_at(&self, row: usize) -> Option<u64> {
+        self.active_arrangement()
+            .and_then(|a| a.tracks.get(row))
+            .map(|t| t.id.0)
+    }
+
     fn execute(&mut self, id: &str, params: Value) {
         if let Err(error) = self.session.execute(id, params) {
             self.last_error = Some(error.to_string());
@@ -157,145 +232,115 @@ impl JetApp {
 
     fn key_actions(&mut self, ctx: &egui::Context) -> Vec<UiAction> {
         let mut actions = Vec::new();
-        let input = ctx.input(|i| {
-            (
-                i.modifiers,
-                i.key_pressed(Key::F5),
-                i.key_pressed(Key::F6),
-                i.key_pressed(Key::F8),
-                i.key_pressed(Key::F12),
-                i.key_pressed(Key::F11),
-                i.key_pressed(Key::Tab),
-                i.key_pressed(Key::Enter),
-                i.key_pressed(Key::Escape),
-                i.key_pressed(Key::H),
-                i.key_pressed(Key::O),
-                i.key_pressed(Key::S),
-                i.key_pressed(Key::L),
-                i.key_pressed(Key::Space),
-                i.key_pressed(Key::Z),
-                i.key_pressed(Key::F4),
-                i.key_pressed(Key::Plus),
-                i.key_pressed(Key::Minus),
-            )
-        });
-        let (
-            modifiers,
-            f5,
-            f6,
-            f8,
-            f12,
-            f11,
-            tab,
-            enter,
-            escape,
-            h,
-            o,
-            s,
-            l,
-            space,
-            z,
-            f4,
-            plus,
-            minus,
-        ) = input;
-        if f11 && modifiers.ctrl {
+        let pressed = |key: Key| ctx.input(|i| i.key_pressed(key));
+        let modifiers = ctx.input(|i| i.modifiers);
+        if pressed(Key::F11) && modifiers.ctrl {
             self.toolbar.hidden = !self.toolbar.hidden;
         }
-        if f5 {
+        if pressed(Key::F5) {
             actions.push(UiAction::Workspace(WsAction::Toggle(WindowKind::Playlist)));
         }
-        if f6 {
+        if pressed(Key::F6) {
             actions.push(UiAction::Workspace(WsAction::Toggle(
                 WindowKind::ChannelRack,
             )));
         }
-        if f8 && modifiers.alt {
+        if pressed(Key::F8) && modifiers.alt {
             actions.push(UiAction::Workspace(WsAction::ToggleBrowser));
         }
-        if f12 {
+        if pressed(Key::F12) {
             actions.push(UiAction::Workspace(WsAction::CloseAll));
         }
-        if tab {
+        if pressed(Key::Tab) {
             actions.push(UiAction::Workspace(WsAction::CycleNested));
         }
-        if h && modifiers.ctrl && modifiers.shift {
+        if pressed(Key::H) && modifiers.ctrl && modifiers.shift {
             actions.push(UiAction::Workspace(WsAction::ArrangeDefault));
         }
-        if self.toolbar.tempo_edit.is_none() {
-            if o && modifiers.ctrl {
-                actions.push(UiAction::OpenProject);
-            }
-            if s && modifiers.ctrl {
-                actions.push(if modifiers.shift {
-                    UiAction::SaveProjectAs
+        if self.toolbar.tempo_edit.is_some() {
+            return actions;
+        }
+        if pressed(Key::O) && modifiers.ctrl {
+            actions.push(UiAction::OpenProject);
+        }
+        if pressed(Key::S) && modifiers.ctrl {
+            actions.push(if modifiers.shift {
+                UiAction::SaveProjectAs
+            } else {
+                UiAction::SaveProject
+            });
+        }
+        if pressed(Key::Enter) && !modifiers.any() {
+            let maximized = self
+                .workspace
+                .as_ref()
+                .and_then(|ws| ws.window(WindowKind::Playlist))
+                .is_some_and(|w| w.maximized);
+            actions.push(UiAction::Workspace(if maximized {
+                WsAction::Restore(WindowKind::Playlist)
+            } else {
+                WsAction::Maximize(WindowKind::Playlist)
+            }));
+        }
+        if pressed(Key::L) && !modifiers.any() {
+            actions.push(UiAction::Engine("transport.mode.toggle", json!({})));
+        }
+        if pressed(Key::Space) {
+            actions.push(UiAction::Engine(
+                if modifiers.ctrl {
+                    "transport.pause"
                 } else {
-                    UiAction::SaveProject
-                });
-            }
-            if enter && !modifiers.any() {
-                let maximized = self
-                    .workspace
-                    .as_ref()
-                    .and_then(|ws| ws.window(WindowKind::Playlist))
-                    .is_some_and(|w| w.maximized);
-                actions.push(UiAction::Workspace(if maximized {
-                    WsAction::Restore(WindowKind::Playlist)
+                    "transport.play_stop"
+                },
+                json!({}),
+            ));
+        }
+        if pressed(Key::Z) && modifiers.ctrl {
+            actions.push(UiAction::Engine(
+                if modifiers.alt {
+                    "edit.undo_step"
                 } else {
-                    WsAction::Maximize(WindowKind::Playlist)
-                }));
-            }
-            if l && !modifiers.any() {
-                actions.push(UiAction::Engine("transport.mode.toggle", json!({})));
-            }
-            if space {
-                actions.push(UiAction::Engine(
-                    if modifiers.ctrl {
-                        "transport.pause"
-                    } else {
-                        "transport.play_stop"
-                    },
-                    json!({}),
-                ));
-            }
-            if z && modifiers.ctrl {
-                actions.push(UiAction::Engine(
-                    if modifiers.alt {
-                        "edit.undo_step"
-                    } else {
-                        "edit.undo_toggle"
-                    },
-                    json!({}),
-                ));
-            }
-            if f4 {
-                actions.push(UiAction::Engine("pattern.next_empty", json!({})));
-            }
-            if plus && !modifiers.any() {
-                actions.push(UiAction::Engine("pattern.next", json!({})));
-            }
-            if minus && !modifiers.any() {
-                actions.push(UiAction::Engine("pattern.prev", json!({})));
-            }
-            if escape
-                && self.toolbar.open_menu.take().is_none()
-                && let Some(kind) = self.workspace.as_ref().and_then(|ws| ws.focused)
-            {
-                actions.push(UiAction::Workspace(WsAction::Close(kind)));
-            }
+                    "edit.undo_toggle"
+                },
+                json!({}),
+            ));
+        }
+        if pressed(Key::F4) {
+            actions.push(UiAction::Engine("pattern.next_empty", json!({})));
+        }
+        if pressed(Key::Plus) && !modifiers.any() {
+            actions.push(UiAction::Engine("pattern.next", json!({})));
+        }
+        if pressed(Key::Minus) && !modifiers.any() {
+            actions.push(UiAction::Engine("pattern.prev", json!({})));
+        }
+        if pressed(Key::Escape)
+            && self.toolbar.open_menu.take().is_none()
+            && let Some(kind) = self.workspace.as_ref().and_then(|ws| ws.focused)
+        {
+            actions.push(UiAction::Workspace(WsAction::Close(kind)));
         }
         actions
+    }
+
+    fn selected_pattern(&self) -> Option<&jet_model::Pattern> {
+        let project = self.session.project();
+        let selected = self.session.selected_pattern();
+        project
+            .patterns
+            .iter()
+            .find(|p| p.id == selected)
+            .or_else(|| project.patterns.first())
+    }
+
+    fn pattern_name(&self) -> String {
+        self.selected_pattern()
+            .map_or_else(|| "Pattern".to_owned(), |p| p.name.clone())
     }
 
     fn toolbar_view(&self) -> ToolbarView {
         let snapshot = self.session.transport_snapshot();
         let project = self.session.project();
-        let selected = self.session.selected_pattern();
-        let pattern = project
-            .patterns
-            .iter()
-            .find(|p| p.id == selected)
-            .or_else(|| project.patterns.first());
         let position = jet_time::format_bar_step_tick(
             snapshot.position,
             project.settings.ppq,
@@ -303,27 +348,26 @@ impl JetApp {
             project.settings.steps_per_beat,
         )
         .unwrap_or_else(|_| "--:--:--".to_owned());
+        let title = self.session.path().and_then(|p| p.file_stem()).map_or_else(
+            || "(untitled)".to_owned(),
+            |s| s.to_string_lossy().into_owned(),
+        );
         ToolbarView {
             song_mode: snapshot.mode == PlayMode::Song,
             playing: snapshot.state == TransportState::Playing,
-            paused: snapshot.state == TransportState::Paused,
             tempo_milli: i64::from(project.settings.tempo.0),
             position,
-            pattern_id: selected.0,
-            pattern_name: pattern.map_or_else(|| "Pattern".to_owned(), |p| p.name.clone()),
+            pattern_name: self.pattern_name(),
+            title,
+            error: self.last_error.clone(),
         }
     }
 
     fn rack_view(&self) -> RackView {
         let project = self.session.project();
-        let selected = self.session.selected_pattern();
-        let pattern = project
-            .patterns
-            .iter()
-            .find(|p| p.id == selected)
-            .or_else(|| project.patterns.first());
-        let default_steps = usize::from(project.settings.steps_per_beat)
-            * usize::from(project.settings.time_sig.num);
+        let pattern = self.selected_pattern();
+        let steps_per_beat = usize::from(project.settings.steps_per_beat);
+        let default_steps = steps_per_beat * usize::from(project.settings.time_sig.num);
         let channels = project
             .channels
             .iter()
@@ -341,25 +385,26 @@ impl JetApp {
                 ChannelView {
                     id: channel.id.0,
                     name: channel.name.clone(),
+                    color: channel.color,
                     muted: channel.mute,
+                    volume: channel.volume,
+                    pan: channel.pan,
+                    mixer_target: channel.mixer_target,
                     steps,
                 }
             })
             .collect();
         RackView {
-            pattern_id: selected.0,
-            pattern_name: pattern.map_or_else(|| "Pattern".to_owned(), |p| p.name.clone()),
+            pattern_id: self.session.selected_pattern().0,
+            steps_per_beat,
             channels,
         }
     }
 
     fn playlist_view(&self) -> PlaylistView {
         let project = self.session.project();
-        let selected = self.session.selected_pattern();
-        let arrangement = project
-            .arrangements
-            .iter()
-            .find(|a| a.id == project.active_arrangement);
+        let snapshot = self.session.transport_snapshot();
+        let arrangement = self.active_arrangement();
         let tracks = arrangement.map_or_else(Vec::new, |a| {
             a.tracks
                 .iter()
@@ -375,17 +420,14 @@ impl JetApp {
                 .iter()
                 .map(|clip| {
                     let ClipSource::Pattern(pattern_id) = clip.source;
-                    let label = project
-                        .patterns
-                        .iter()
-                        .find(|p| p.id == pattern_id)
-                        .map_or_else(|| "Pattern".to_owned(), |p| p.name.clone());
+                    let pattern = project.patterns.iter().find(|p| p.id == pattern_id);
                     ClipView {
                         id: clip.id.0,
                         track: clip.track.0,
                         start: clip.start.0,
                         length: clip.length.0,
-                        label,
+                        label: pattern.map_or_else(|| "Pattern".to_owned(), |p| p.name.clone()),
+                        color: pattern.and_then(|p| p.color),
                     }
                 })
                 .collect()
@@ -393,16 +435,25 @@ impl JetApp {
         let ticks_per_bar =
             i64::from(project.settings.ppq.0) * 4 * i64::from(project.settings.time_sig.num)
                 / i64::from(project.settings.time_sig.den);
+        let song_running =
+            snapshot.mode == PlayMode::Song && snapshot.state != TransportState::Stopped;
         PlaylistView {
-            pattern_id: selected.0,
-            pattern_name: project
-                .patterns
-                .iter()
-                .find(|p| p.id == selected)
-                .map_or_else(|| "Pattern".to_owned(), |p| p.name.clone()),
+            pattern_id: self.session.selected_pattern().0,
+            arrangement_name: arrangement
+                .map_or_else(|| "Arrangement".to_owned(), |a| a.name.clone()),
             ticks_per_bar,
+            beats_per_bar: u32::from(project.settings.time_sig.num),
+            position: song_running.then_some(snapshot.position.0),
             tracks,
             clips,
+            patterns: project
+                .patterns
+                .iter()
+                .map(|p| PatternEntry {
+                    id: p.id.0,
+                    name: p.name.clone(),
+                })
+                .collect(),
         }
     }
 }
@@ -411,9 +462,18 @@ impl JetApp {
     /// Draw one frame against egui's root UI; also used by headless interaction tests.
     pub fn ui_pass(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        if !self.fonts_installed {
+            // Named font families only exist from the next pass on; painting with them now
+            // would panic inside epaint, so this pass only installs them.
+            self.install_fonts(&ctx);
+            ctx.request_repaint();
+            return;
+        }
         self.probe.begin_frame();
         self.hint.clear();
-        let available = ui.max_rect();
+        // Paint edge to edge: the reference has no margin around the FL window.
+        let available = ctx.content_rect();
+        ui.set_clip_rect(available);
         let toolbar_h = if self.toolbar.hidden {
             0.0
         } else {
@@ -424,31 +484,26 @@ impl JetApp {
             pos2(available.left(), available.top() + toolbar_h),
             available.max,
         );
+        let side = self.layout.browser_w + self.layout.splitter_w;
         if self.workspace.is_none() {
-            let initial_desktop = Rect::from_min_max(
-                pos2(
-                    base_desktop.left() + self.layout.browser_w,
-                    base_desktop.top(),
-                ),
+            let initial = Rect::from_min_max(
+                pos2(base_desktop.left() + side, base_desktop.top()),
                 base_desktop.max,
             );
-            self.workspace = Some(Workspace::new(initial_desktop, self.layout.browser_w));
+            let mut workspace = Workspace::new(initial, self.layout.browser_w);
+            if let Some(kind) = self.pending_show.take() {
+                let _ = workspace.apply(WsAction::Toggle(kind), initial, self.layout.snap_distance);
+            }
+            self.workspace = Some(workspace);
         }
         let browser_visible = self.workspace.as_ref().is_some_and(|ws| ws.browser_visible);
-        let browser_w = self
-            .workspace
-            .as_ref()
-            .map_or(self.layout.browser_w, |ws| ws.browser_width);
         let browser_rect = Rect::from_min_size(
             base_desktop.min,
-            vec2(
-                if browser_visible { browser_w } else { 0.0 },
-                base_desktop.height(),
-            ),
+            vec2(self.layout.browser_w, base_desktop.height()),
         );
         let desktop = Rect::from_min_max(
             pos2(
-                base_desktop.left() + browser_rect.width(),
+                base_desktop.left() + if browser_visible { side } else { 0.0 },
                 base_desktop.top(),
             ),
             base_desktop.max,
@@ -475,6 +530,13 @@ impl JetApp {
             };
             if browser_visible {
                 paint_browser(&mut paint, &mut self.browser, browser_rect);
+                paint_splitter(
+                    &mut paint,
+                    Rect::from_min_max(
+                        pos2(browser_rect.right(), base_desktop.top()),
+                        pos2(desktop.left(), base_desktop.bottom()),
+                    ),
+                );
             }
             if let Some(pointer) = paint.ui.input(|i| {
                 if i.pointer.any_pressed() {
@@ -485,19 +547,23 @@ impl JetApp {
             }) && let Some(win) = windows
                 .iter()
                 .rev()
-                .find(|win| win.visible && win.rect.contains(pointer))
+                .find(|win| win.visible && effective_rect(win, desktop).contains(pointer))
                 && focused != Some(win.kind)
             {
                 actions.push(UiAction::Workspace(WsAction::Focus(win.kind)));
             }
+            let mut surfaces = Surfaces {
+                rack_state: &mut self.rack,
+                rack_view: &rack_view,
+                playlist_state: &mut self.playlist,
+                playlist_view: &playlist_view,
+            };
             for win in windows.iter().filter(|win| win.visible) {
                 paint_window(
                     &mut paint,
                     win,
-                    &mut self.rack,
-                    &rack_view,
-                    &mut self.playlist,
-                    &playlist_view,
+                    effective_rect(win, desktop),
+                    &mut surfaces,
                     &mut actions,
                 );
             }
@@ -507,38 +573,13 @@ impl JetApp {
                         .into_iter()
                         .map(UiAction::from),
                 );
-                let hint_rect = Rect::from_min_size(
-                    pos2(toolbar_rect.left() + 8.0, toolbar_rect.bottom() - 23.0),
-                    vec2(toolbar_rect.width() - 16.0, 18.0),
-                );
-                let hint_text = if let Some(error) = &self.last_error {
-                    format!("Erro: {error}")
-                } else if paint.hint.is_empty() {
-                    "M1: transporte silencioso; áudio, plugins e gravação pendentes".to_owned()
-                } else {
-                    paint.hint.clone()
-                };
-                paint.ui.painter().text(
-                    pos2(hint_rect.left(), hint_rect.center().y),
-                    Align2::LEFT_CENTER,
-                    hint_text,
-                    FontId::proportional(self.layout.font_small),
-                    self.tokens.muted,
-                );
-                paint.probe.insert(
-                    "toolbar.hint",
-                    hint_rect,
-                    "hint",
-                    true,
-                    Some(paint.hint.clone()),
-                );
             }
         }
 
         for action in actions {
             self.run_action(action, desktop, &ctx);
         }
-        if toolbar_view.playing {
+        if toolbar_view.playing && !self.static_capture {
             ctx.request_repaint_after(Duration::from_millis(30));
         }
     }
@@ -565,31 +606,63 @@ impl From<ToolbarAction> for UiAction {
     }
 }
 
+struct Surfaces<'a> {
+    rack_state: &'a mut RackState,
+    rack_view: &'a RackView,
+    playlist_state: &'a mut PlaylistState,
+    playlist_view: &'a PlaylistView,
+}
+
+/// A maximized window always fills the current desktop (it follows the Browser being toggled).
+fn effective_rect(win: &crate::workspace::WinState, desktop: Rect) -> Rect {
+    if win.maximized { desktop } else { win.rect }
+}
+
+/// Browser/desktop splitter [W x 490-499]: dark edges around a 6 px face.
+fn paint_splitter(paint: &mut PaintCtx<'_>, rect: Rect) {
+    let t = *paint.tokens;
+    let painter = paint.painter();
+    painter.rect_filled(rect, 0.0, t.splitter);
+    for x in [
+        rect.left(),
+        rect.left() + 1.0,
+        rect.right() - 2.0,
+        rect.right() - 1.0,
+    ] {
+        painter.rect_filled(
+            Rect::from_min_max(pos2(x, rect.top()), pos2(x + 1.0, rect.bottom())),
+            0.0,
+            t.splitter_edge,
+        );
+    }
+}
+
 fn paint_window(
     paint: &mut PaintCtx<'_>,
     win: &crate::workspace::WinState,
-    rack_state: &mut RackState,
-    rack_view: &RackView,
-    playlist_state: &mut PlaylistState,
-    playlist_view: &PlaylistView,
+    rect: Rect,
+    surfaces: &mut Surfaces<'_>,
     actions: &mut Vec<UiAction>,
 ) {
-    let rect = win.rect;
-    paint.panel(rect, false);
-    let title = Rect::from_min_size(rect.min, vec2(rect.width(), paint.layout.window_title_h));
-    paint.panel(title, true);
-    let title_drag = Rect::from_min_max(title.min, pos2(title.right() - 60.0, title.bottom()));
+    let t = *paint.tokens;
+    let title_h = paint.layout.title_h;
+    let painter = paint.painter();
+    painter.rect_filled(rect, 0.0, t.title_bg);
+    let title = Rect::from_min_size(rect.min, vec2(rect.width(), title_h));
+
+    // Drag area: the title bar minus the tool icons and the window buttons.
+    let drag_left = match win.kind {
+        WindowKind::Playlist => 250.0,
+        WindowKind::ChannelRack => 22.0,
+    };
+    let title_drag = Rect::from_min_max(
+        pos2(title.left() + drag_left, title.top()),
+        pos2(title.right() - 62.0, title.bottom()),
+    );
     let response = paint.ui.interact(
         title_drag,
         Id::new(("window.title", win.kind.id())),
         Sense::click_and_drag(),
-    );
-    paint.ui.painter().text(
-        pos2(title.left() + 8.0, title.center().y),
-        Align2::LEFT_CENTER,
-        win.kind.title(),
-        FontId::proportional(paint.layout.font_regular),
-        paint.tokens.text,
     );
     paint.probe.insert(
         format!("{}.titlebar", win.kind.id()),
@@ -617,65 +690,96 @@ fn paint_window(
             WsAction::Maximize(win.kind)
         }));
     }
-    let max_rect = Rect::from_min_size(
-        pos2(title.right() - 56.0, title.top() + 3.0),
-        vec2(24.0, title.height() - 6.0),
-    );
-    if paint
-        .button(
-            &format!("{}.maximize", win.kind.id()),
-            max_rect,
-            if win.maximized { "◧" } else { "□" },
-            false,
-            true,
-            "Maximizar/restaurar janela",
-        )
-        .clicked()
-    {
-        actions.push(UiAction::Workspace(if win.maximized {
-            WsAction::Restore(win.kind)
-        } else {
-            WsAction::Maximize(win.kind)
-        }));
+
+    match win.kind {
+        WindowKind::Playlist => paint_title_tools(paint, title, surfaces.playlist_view),
+        WindowKind::ChannelRack => {
+            icons::chevron_right(
+                &painter,
+                Rect::from_center_size(
+                    pos2(title.left() + 12.0, title.center().y),
+                    vec2(10.0, 12.0),
+                ),
+                t.title_icon,
+            );
+            icons::title_speaker(
+                &painter,
+                Rect::from_center_size(
+                    pos2(title.left() + 32.0, title.center().y),
+                    vec2(18.0, 18.0),
+                ),
+                t.title_icon,
+            );
+            painter.text(
+                pos2(title.left() + 44.0, title.center().y),
+                egui::Align2::LEFT_CENTER,
+                "Channel rack",
+                theme::regular(paint.layout.font_title),
+                t.title_text,
+            );
+        }
     }
-    let close_rect = Rect::from_min_size(
-        pos2(title.right() - 29.0, title.top() + 3.0),
-        vec2(24.0, title.height() - 6.0),
-    );
-    if paint
-        .button(
-            &format!("{}.close", win.kind.id()),
-            close_rect,
-            "×",
-            false,
-            true,
-            "Fechar janela",
-        )
-        .clicked()
-    {
-        actions.push(UiAction::Workspace(WsAction::Close(win.kind)));
+
+    // Window buttons [W Playlist: minimize 1510-1520, restore 1528-1541, close 1545-1556].
+    let max_glyph = if win.maximized {
+        WindowGlyph::Restore
+    } else {
+        WindowGlyph::Maximize
+    };
+    for (glyph, name, from_right, hint) in [
+        (WindowGlyph::Minimize, "minimize", 53.0, "Minimize window"),
+        (max_glyph, "maximize", 35.0, "Maximize/restore window"),
+        (WindowGlyph::Close, "close", 17.0, "Close window"),
+    ] {
+        let cell = Rect::from_center_size(
+            pos2(title.right() - from_right, title.center().y),
+            vec2(17.0, 18.0),
+        );
+        if paint
+            .window_button(
+                &format!("{}.{name}", win.kind.id()),
+                cell,
+                glyph,
+                false,
+                hint,
+            )
+            .clicked()
+        {
+            actions.push(UiAction::Workspace(match name {
+                "maximize" if win.maximized => WsAction::Restore(win.kind),
+                "maximize" => WsAction::Maximize(win.kind),
+                // UNMEASURED: FL's in-desktop minimize state is not modelled yet; it hides.
+                _ => WsAction::Close(win.kind),
+            }));
+        }
     }
-    let content = Rect::from_min_max(
-        pos2(rect.left() + 2.0, title.bottom() + 1.0),
-        pos2(rect.right() - 2.0, rect.bottom() - 2.0),
-    );
+
     match win.kind {
         WindowKind::ChannelRack => {
+            let content = Rect::from_min_max(pos2(rect.left(), title.bottom()), rect.max);
             actions.extend(
-                paint_channel_rack(paint, rack_state, rack_view, content)
+                paint_channel_rack(paint, surfaces.rack_state, surfaces.rack_view, content)
                     .into_iter()
                     .map(UiAction::Rack),
             );
         }
         WindowKind::Playlist => {
             actions.extend(
-                paint_playlist(paint, playlist_state, playlist_view, content)
+                paint_playlist(paint, surfaces.playlist_state, surfaces.playlist_view, rect)
                     .into_iter()
                     .map(UiAction::Playlist),
             );
         }
     }
+
     if !win.maximized {
+        let painter = paint.painter();
+        painter.rect_stroke(
+            rect,
+            0.0,
+            egui::Stroke::new(1.0, t.desktop_edge),
+            egui::StrokeKind::Inside,
+        );
         let grip = Rect::from_min_size(
             pos2(rect.right() - 13.0, rect.bottom() - 13.0),
             vec2(12.0, 12.0),
@@ -685,16 +789,16 @@ fn paint_window(
             Id::new(("window.resize", win.kind.id())),
             Sense::drag(),
         );
-        paint.ui.painter().line_segment(
-            [grip.left_bottom(), grip.right_top()],
-            Stroke::new(1.0, paint.tokens.border),
-        );
-        paint.ui.painter().rect_stroke(
-            grip,
-            0.0,
-            Stroke::new(1.0, paint.tokens.border),
-            StrokeKind::Inside,
-        );
+        for i in 0..3 {
+            let d = 3.0 + 3.0 * i as f32;
+            painter.line_segment(
+                [
+                    pos2(grip.right() - d, grip.bottom() - 1.0),
+                    pos2(grip.right() - 1.0, grip.bottom() - d),
+                ],
+                egui::Stroke::new(1.0, t.title_icon.gamma_multiply(0.5)),
+            );
+        }
         paint.probe.insert(
             format!("{}.resize", win.kind.id()),
             grip,
@@ -728,6 +832,9 @@ mod tests {
     use egui::{Event, Modifiers, PointerButton, RawInput};
 
     fn run_frame(app: &mut JetApp, ctx: &egui::Context, events: Vec<Event>) {
+        if !app.fonts_installed {
+            app.install_fonts(ctx);
+        }
         let input = RawInput {
             screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 800.0))),
             events,
@@ -776,11 +883,19 @@ mod tests {
         }
     }
 
+    /// F6 opens the Channel Rack, which a new project keeps closed (as in the reference).
+    fn open_rack(app: &mut JetApp, ctx: &egui::Context) {
+        run_frame(app, ctx, vec![key(Key::F6, true, Modifiers::default())]);
+        run_frame(app, ctx, vec![key(Key::F6, false, Modifiers::default())]);
+        run_frame(app, ctx, Vec::new());
+    }
+
     #[test]
     fn root_frame_registers_the_main_surfaces() {
         let ctx = egui::Context::default();
         let mut app = JetApp::default();
         run_frame(&mut app, &ctx, Vec::new());
+        open_rack(&mut app, &ctx);
         for id in [
             "toolbar.play",
             "browser.add-folder",
@@ -792,10 +907,20 @@ mod tests {
     }
 
     #[test]
+    fn new_project_shows_maximized_playlist_and_closed_rack() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        assert!(app.probe().entries().contains_key("playlist.window"));
+        assert!(!app.probe().entries().contains_key("channel-rack.window"));
+    }
+
+    #[test]
     fn pointer_click_adds_a_real_channel_and_transport_starts_and_stops() {
         let ctx = egui::Context::default();
         let mut app = JetApp::default();
         run_frame(&mut app, &ctx, Vec::new());
+        open_rack(&mut app, &ctx);
         let add = app.probe().entries()["channel-rack.add"].rect;
         click(&mut app, &ctx, add);
         assert_eq!(app.session.project().channels.len(), 1);
@@ -819,6 +944,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = JetApp::default();
         run_frame(&mut app, &ctx, Vec::new());
+        open_rack(&mut app, &ctx);
         let add_channel = app.probe().entries()["channel-rack.add"].rect;
         click(&mut app, &ctx, add_channel);
         run_frame(&mut app, &ctx, Vec::new());
@@ -841,24 +967,29 @@ mod tests {
     }
 
     #[test]
+    fn clicking_an_empty_placeholder_row_creates_tracks_and_a_clip() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        let grid = app.probe().entries()["playlist.grid"].rect;
+        let row3 = app.probe().entries()["playlist.track.placeholder.3"].rect;
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(pos2(grid.left() + 20.0, row3.center().y), vec2(8.0, 8.0)),
+        );
+        let arrangement = &app.session.project().arrangements[0];
+        assert_eq!(arrangement.tracks.len(), 3);
+        assert_eq!(arrangement.clips.len(), 1);
+        assert_eq!(arrangement.clips[0].track, arrangement.tracks[2].id);
+    }
+
+    #[test]
     fn keyboard_toggles_playlist_and_tempo_editor_commits_value() {
         let ctx = egui::Context::default();
         let mut app = JetApp::default();
         run_frame(&mut app, &ctx, Vec::new());
-        run_frame(
-            &mut app,
-            &ctx,
-            vec![key(Key::F5, true, Modifiers::default())],
-        );
-        assert_eq!(
-            app.workspace.as_ref().unwrap().focused,
-            Some(WindowKind::Playlist)
-        );
-        run_frame(
-            &mut app,
-            &ctx,
-            vec![key(Key::F5, false, Modifiers::default())],
-        );
+        // The Playlist starts visible and focused, so F5 hides it and F5 again shows it.
         run_frame(
             &mut app,
             &ctx,
@@ -871,6 +1002,20 @@ mod tests {
                 .window(WindowKind::Playlist)
                 .unwrap()
                 .visible
+        );
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::F5, false, Modifiers::default())],
+        );
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::F5, true, Modifiers::default())],
+        );
+        assert_eq!(
+            app.workspace.as_ref().unwrap().focused,
+            Some(WindowKind::Playlist)
         );
 
         let tempo = app.probe().entries()["toolbar.tempo"].rect;

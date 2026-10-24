@@ -12,5 +12,9 @@ jet-model = { path = "../jet-model" }
 jet-time = { path = "../jet-time" }
 rfd = "=0.17.2"
 
+[dev-dependencies]
+egui_kittest = { version = "=0.36.2", features = ["wgpu"] }
+image.workspace = true
+
 [lints]
 workspace = true

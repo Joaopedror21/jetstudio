@@ -1,0 +1,12 @@
+{
+  "toolbar_row1": [0, 0, 1421, 24],
+  "toolbar_row2": [0, 24, 1421, 47],
+  "browser_header": [0, 47, 213, 61],
+  "browser_tabs": [0, 61, 213, 79],
+  "rack_titlebar": [219, 47, 425, 61],
+  "rack_rows": [225, 73, 425, 270],
+  "playlist_titlebar": [425, 47, 1421, 61],
+  "playlist_ruler": [587, 84, 1421, 104],
+  "playlist_track_headers": [517, 104, 583, 270],
+  "playlist_grid": [587, 104, 1421, 270]
+}

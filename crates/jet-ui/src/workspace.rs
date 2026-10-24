@@ -80,39 +80,38 @@ pub enum WsError {
 
 impl Workspace {
     pub fn new(desktop: Rect, browser_width: f32) -> Self {
-        // UNMEASURED: relative initial placements only; R0 will supply measured rectangles.
-        let channel_rect = Rect::from_min_size(
-            pos2(
-                desktop.left() + desktop.width() * 0.04,
-                desktop.top() + 20.0,
-            ),
-            vec2(desktop.width() * 0.48, desktop.height() * 0.31),
+        // [W] A new project shows the Playlist maximized in the desktop and the Channel Rack
+        // closed. Restore rectangles are UNMEASURED: no restored window has been captured yet;
+        // the Channel Rack width fits its 16 default steps (201 + 16 x 15.5 + margin).
+        let playlist_restore = Rect::from_min_size(
+            desktop.min + vec2(desktop.width() * 0.05, desktop.height() * 0.05),
+            vec2(desktop.width() * 0.9, desktop.height() * 0.85),
         );
-        let playlist_rect = Rect::from_min_size(
-            pos2(
-                desktop.left() + desktop.width() * 0.18,
-                desktop.top() + desktop.height() * 0.33,
+        let channel_rect = Rect::from_min_size(
+            desktop.min + vec2(300.0, 120.0),
+            vec2(
+                470.0_f32.min(desktop.width() - 40.0).max(240.0),
+                420.0_f32.min(desktop.height() - 40.0).max(160.0),
             ),
-            vec2(desktop.width() * 0.78, desktop.height() * 0.59),
         );
         Self {
             windows: vec![
                 WinState {
                     kind: WindowKind::Playlist,
-                    rect: playlist_rect,
+                    rect: desktop,
                     visible: true,
-                    maximized: false,
-                    restore_rect: None,
+                    maximized: true,
+                    restore_rect: Some(playlist_restore),
                 },
                 WinState {
                     kind: WindowKind::ChannelRack,
                     rect: channel_rect,
-                    visible: true,
+                    visible: false,
                     maximized: false,
                     restore_rect: None,
                 },
             ],
-            focused: Some(WindowKind::ChannelRack),
+            focused: Some(WindowKind::Playlist),
             browser_visible: true,
             browser_width,
         }
@@ -343,14 +342,24 @@ mod tests {
     }
 
     #[test]
+    fn new_project_layout_matches_reference() {
+        let ws = Workspace::new(desktop(), 200.0);
+        let playlist = ws.window(WindowKind::Playlist).unwrap();
+        assert!(playlist.visible && playlist.maximized);
+        assert_eq!(playlist.rect, desktop());
+        assert!(!ws.window(WindowKind::ChannelRack).unwrap().visible);
+        assert_eq!(ws.focused, Some(WindowKind::Playlist));
+    }
+
+    #[test]
     fn maximize_restore_retains_rect() {
         let mut ws = Workspace::new(desktop(), 200.0);
-        let prior = ws.window(WindowKind::Playlist).unwrap().rect;
-        ws.apply(WsAction::Maximize(WindowKind::Playlist), desktop(), 12.0)
+        let prior = ws.window(WindowKind::ChannelRack).unwrap().rect;
+        ws.apply(WsAction::Maximize(WindowKind::ChannelRack), desktop(), 12.0)
             .unwrap();
-        ws.apply(WsAction::Restore(WindowKind::Playlist), desktop(), 12.0)
+        ws.apply(WsAction::Restore(WindowKind::ChannelRack), desktop(), 12.0)
             .unwrap();
-        assert_eq!(ws.window(WindowKind::Playlist).unwrap().rect, prior);
+        assert_eq!(ws.window(WindowKind::ChannelRack).unwrap().rect, prior);
     }
 
     #[test]
@@ -367,10 +376,10 @@ mod tests {
     #[test]
     fn resize_changes_window_geometry_without_invalid_state() {
         let mut ws = Workspace::new(desktop(), 200.0);
-        let before = ws.window(WindowKind::Playlist).unwrap().rect;
+        let before = ws.window(WindowKind::ChannelRack).unwrap().rect;
         ws.apply(
             WsAction::Resize {
-                kind: WindowKind::Playlist,
+                kind: WindowKind::ChannelRack,
                 edge: ResizeEdge::BottomRight,
                 delta: vec2(35.0, 24.0),
             },
@@ -378,7 +387,7 @@ mod tests {
             12.0,
         )
         .unwrap();
-        let after = ws.window(WindowKind::Playlist).unwrap().rect;
+        let after = ws.window(WindowKind::ChannelRack).unwrap().rect;
         assert_eq!(after.min, before.min);
         assert_eq!(after.width(), before.width() + 35.0);
         assert_eq!(after.height(), before.height() + 24.0);
