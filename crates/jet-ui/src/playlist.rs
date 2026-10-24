@@ -158,6 +158,8 @@ pub struct PlaylistState {
     sweep: Option<(Option<bool>, std::collections::BTreeSet<u64>)>,
     /// Paint tool drag: (row, starts painted so far).
     painting: Option<(usize, Vec<i64>)>,
+    /// Zoom and scroll before Shift+4 zoomed out, to switch back.
+    zoom_before_out: Option<(f32, f32)>,
     drag: Option<ClipDrag>,
     /// Control point being dragged: (automation id, index, tick, value).
     point_drag: Option<(u64, usize, i64, u16)>,
@@ -189,6 +191,7 @@ impl Default for PlaylistState {
             grid_drag: None,
             sweep: None,
             painting: None,
+            zoom_before_out: None,
             drag: None,
             point_drag: None,
             point_menu: None,
@@ -625,13 +628,109 @@ pub fn paint_playlist(
             .ui
             .input(|i| (i.smooth_scroll_delta.y, i.modifiers.ctrl, i.modifiers.shift));
         if ctrl && delta != 0.0 {
-            state.zoom = (state.zoom * if delta > 0.0 { 1.1 } else { 0.9 }).clamp(0.25, 6.0);
+            let anchor = paint
+                .ui
+                .input(|i| i.pointer.hover_pos())
+                .map_or(grid.center().x, |p| p.x);
+            zoom_at(
+                state,
+                l.bar_w,
+                grid.left(),
+                anchor,
+                if delta > 0.0 { 1.1 } else { 0.9 },
+            );
         } else if shift {
             state.scroll_bars = (state.scroll_bars - delta / bar_w).max(0.0);
         } else {
             state.scroll_tracks = (state.scroll_tracks - delta / l.track_h).max(0.0);
         }
     }
+    // Zoom keys [Manual: playlist, "Zoom in/ Zoom out (Page up/Page down) - Zoom centers on the
+    // Cursor position"; "Quick-zoom 1, 2 & 3 (Shift+1, 2, 3)"; "Zoom out (Shift+4) - Switches
+    // between 'zoom out' and previous zoom level"; "On Selection (Shift+5)"]. The three quick
+    // levels (2, 1 and 0.5 bars per default bar width) are ours (H-PL-3).
+    if state.focused {
+        let (page_up, page_down, digit, pointer) = paint.ui.input(|i| {
+            let shift = i.modifiers.shift && !i.modifiers.ctrl;
+            let digit = [
+                egui::Key::Num1,
+                egui::Key::Num2,
+                egui::Key::Num3,
+                egui::Key::Num4,
+                egui::Key::Num5,
+            ]
+            .iter()
+            .position(|k| shift && i.key_pressed(*k));
+            (
+                i.key_pressed(egui::Key::PageUp),
+                i.key_pressed(egui::Key::PageDown),
+                digit,
+                i.pointer.hover_pos(),
+            )
+        });
+        let anchor = pointer
+            .filter(|p| grid.contains(*p))
+            .map_or(grid.center().x, |p| p.x);
+        if page_up {
+            zoom_at(state, l.bar_w, grid.left(), anchor, 1.25);
+        }
+        if page_down {
+            zoom_at(state, l.bar_w, grid.left(), anchor, 0.8);
+        }
+        let tpb = view.ticks_per_bar.max(1) as f32;
+        let fit = |state: &mut PlaylistState, from: i64, to: i64| {
+            let bars = ((to - from).max(1) as f32 / tpb).max(0.25);
+            state.zoom = (grid.width() / bars / l.bar_w).clamp(0.25, 6.0);
+            state.scroll_bars = (from as f32 / tpb).max(0.0);
+        };
+        match digit {
+            Some(level @ 0..=2) => {
+                let zoom = [2.0, 1.0, 0.5][level];
+                zoom_at(state, l.bar_w, grid.left(), anchor, zoom / state.zoom);
+            }
+            Some(3) => match state.zoom_before_out.take() {
+                Some((zoom, scroll)) => {
+                    state.zoom = zoom;
+                    state.scroll_bars = scroll;
+                }
+                None => {
+                    state.zoom_before_out = Some((state.zoom, state.scroll_bars));
+                    let end = view
+                        .clips
+                        .iter()
+                        .map(|c| c.start + c.length)
+                        .max()
+                        .unwrap_or(view.ticks_per_bar);
+                    fit(state, 0, end);
+                }
+            },
+            Some(_) => {
+                // The selected clips, else the timeline selection.
+                let selected: Vec<&ClipView> = view
+                    .clips
+                    .iter()
+                    .filter(|c| state.selection.contains(&c.id))
+                    .collect();
+                let range = if selected.is_empty() {
+                    view.selection
+                } else {
+                    Some((
+                        selected.iter().map(|c| c.start).min().unwrap_or(0),
+                        selected
+                            .iter()
+                            .map(|c| c.start + c.length)
+                            .max()
+                            .unwrap_or(0),
+                    ))
+                };
+                if let Some((from, to)) = range {
+                    fit(state, from, to);
+                }
+            }
+            None => {}
+        }
+    }
+    let bar_w = l.bar_w * state.zoom;
     let pan = paint
         .ui
         .interact(grid, Id::new("playlist.pan"), Sense::click_and_drag());
@@ -2053,4 +2152,13 @@ fn paint_marker_menu(
             }
         }
     }
+}
+
+/// Zoom by `factor` keeping the time under `anchor_x` in place.
+fn zoom_at(state: &mut PlaylistState, base_bar_w: f32, grid_left: f32, anchor_x: f32, factor: f32) {
+    let old_w = base_bar_w * state.zoom;
+    let bars_at_anchor = (anchor_x - grid_left) / old_w + state.scroll_bars;
+    state.zoom = (state.zoom * factor).clamp(0.25, 6.0);
+    let new_w = base_bar_w * state.zoom;
+    state.scroll_bars = (bars_at_anchor - (anchor_x - grid_left) / new_w).max(0.0);
 }

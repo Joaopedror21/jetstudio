@@ -4281,6 +4281,49 @@ mod tests {
     }
 
     #[test]
+    fn playlist_zoom_keys() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("playlist.track.add", json!({"name": "Track 1"}));
+        app.execute(
+            "playlist.clip.add",
+            json!({"track": 1, "pattern": 1, "start": 0, "length": 384 * 40}),
+        );
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        let press = |app: &mut JetApp, k: Key, m: Modifiers| {
+            run_frame(app, &ctx, vec![Event::ModifiersChanged(m), key(k, true, m)]);
+            run_frame(
+                app,
+                &ctx,
+                vec![Event::ModifiersChanged(Modifiers::default())],
+            );
+        };
+        press(&mut app, Key::PageUp, Modifiers::default());
+        assert!((app.playlist.zoom - 1.25).abs() < 1e-4);
+        press(&mut app, Key::PageDown, Modifiers::default());
+        assert!((app.playlist.zoom - 1.0).abs() < 1e-4);
+        // Shift+4 fits the 40-bar song in the grid, and again goes back.
+        press(&mut app, Key::Num4, shift);
+        let grid = app.probe().entries()["playlist.grid"].rect;
+        let fitted = grid.width() / 40.0 / app.layout.bar_w;
+        assert!(
+            (app.playlist.zoom - fitted.max(0.25)).abs() < 1e-3,
+            "{}",
+            app.playlist.zoom
+        );
+        assert_eq!(app.playlist.scroll_bars, 0.0);
+        press(&mut app, Key::Num4, shift);
+        assert!((app.playlist.zoom - 1.0).abs() < 1e-4);
+        // Shift+1 is the closest quick zoom.
+        press(&mut app, Key::Num1, shift);
+        assert!((app.playlist.zoom - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
     fn chord_stamp_and_tools_menu_edit_the_score() {
         let ctx = egui::Context::default();
         let mut app = JetApp::default();
