@@ -564,6 +564,76 @@ pub struct Channel {
     /// setting and play the full note length."
     #[serde(default)]
     pub full_porta: bool,
+    /// Arpeggiator [Manual: chansettings_misc, "Arpeggiator"].
+    #[serde(default)]
+    pub arp: Arpeggiator,
+}
+
+/// "a real-time non-destructive arpeggio effect" [Manual: chansettings_misc, "Arpeggiator"].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Arpeggiator {
+    pub direction: ArpDirection,
+    /// "Time - ... the delay between the successive notes", in ticks (0 = one step).
+    pub time: u32,
+    /// "Gate - Gates the arpeggio notes": note length as a fraction of `time`, 0..=1000.
+    pub gate: u16,
+    /// "Slide - ... make the arpeggiator slide between notes" (the notes are portamento notes).
+    pub slide: bool,
+    /// "Range - ... the arpeggio range in octaves" (1..=4).
+    pub range: u8,
+    /// "Repeat - ... how many times a note or arpeggio chord is repeated prior to playing in a
+    /// different octave range" (1..=8).
+    pub repeat: u8,
+    pub chord: ArpChord,
+}
+
+impl Default for Arpeggiator {
+    fn default() -> Self {
+        // Hypothesis H-SMP-3: FL's default Time/Gate values are not documented.
+        Self {
+            direction: ArpDirection::Off,
+            time: 0,
+            gate: 500,
+            slide: false,
+            range: 1,
+            repeat: 1,
+            chord: ArpChord::Auto,
+        }
+    }
+}
+
+/// "Off (default ...), Up, Down, Up-Down, Up-Down (twice the lowest and highest notes), Random".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArpDirection {
+    #[default]
+    Off,
+    Up,
+    Down,
+    UpDown,
+    UpDownTwice,
+    Random,
+}
+
+/// "Chord - Select None ... a step of 12 semitones (1 octave) within the specified octave range.
+/// Select Auto or Auto (sustain) to set the arpeggiator in classic mode ... The remaining presets
+/// are predefined chords".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArpChord {
+    None,
+    #[default]
+    Auto,
+    AutoSustain,
+    /// Index into the chord table (`jet_seq::CHORDS`).
+    Preset(u8),
+}
+
+impl Arpeggiator {
+    pub fn valid(&self) -> bool {
+        self.gate <= 1000
+            && (1..=4).contains(&self.range)
+            && (1..=8).contains(&self.repeat)
+            && self.time <= 3840
+    }
 }
 
 fn default_root_key() -> u8 {
@@ -604,6 +674,7 @@ impl Channel {
             gate: 0,
             time_shift: 0,
             full_porta: false,
+            arp: Arpeggiator::default(),
         }
     }
 

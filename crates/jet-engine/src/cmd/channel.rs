@@ -51,6 +51,12 @@ struct MoveParams {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ArpParams {
+    id: u64,
+    arp: jet_model::Arpeggiator,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TimeParams {
     id: u64,
     #[serde(default)]
@@ -278,6 +284,16 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
             }
             session.edit_project(|project| {
                 channel_mut(project, p.id)?.swing_mix = p.value;
+                Ok(())
+            })
+        }
+        "channel.arp.set" => {
+            let p: ArpParams = parse(id, params)?;
+            if !p.arp.valid() {
+                return Err(invalid(id, "arpeggiator settings out of range"));
+            }
+            session.edit_project(|project| {
+                channel_mut(project, p.id)?.arp = p.arp;
                 Ok(())
             })
         }

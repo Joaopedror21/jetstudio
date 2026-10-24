@@ -1659,7 +1659,7 @@ impl JetApp {
 
     /// Shows the INS page of Channel Settings (used by the screenshot tool).
     pub fn show_ins_page(&mut self, target: jet_model::ModTarget) {
-        self.settings_page.ins = true;
+        self.settings_page.page = crate::channel_settings::ChannelPage::Ins;
         self.settings_page.target = target;
     }
 
@@ -2481,6 +2481,7 @@ impl JetApp {
             full_porta: channel.full_porta,
             step_ticks: project.settings.step_ticks().unwrap_or(24),
             bar_ticks: project.settings.bar_ticks().unwrap_or(384),
+            arp: channel.arp,
             sampler: channel.sampler,
             synth: match &channel.kind {
                 ChannelKind::Synth(params) => Some(params.clone()),
@@ -4925,7 +4926,10 @@ mod tests {
         let sampler = |app: &JetApp| app.session.project().channels[0].sampler;
         let target = entry(&app, "page.ins");
         click(&mut app, &ctx, target);
-        assert!(app.settings_page.ins);
+        assert_eq!(
+            app.settings_page.page,
+            crate::channel_settings::ChannelPage::Ins
+        );
         let target = entry(&app, "ins.filter.LP");
         click(&mut app, &ctx, target);
         assert_eq!(sampler(&app).filter.kind, jet_model::FilterType::Lp);
@@ -5432,6 +5436,28 @@ mod tests {
         click(&mut app, &ctx, item);
         assert!(app.session.project().patterns[0].events.is_empty());
         assert_eq!(app.session.project().automations.len(), 1);
+    }
+
+    #[test]
+    fn misc_page_sets_the_arpeggiator() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("channel.add", json!({"name": "Keys", "kind": "synth"}));
+        app.rack.selected_channel = Some(1);
+        app.pending_show.push(WindowKind::ChannelSettings);
+        run_frame(&mut app, &ctx, Vec::new());
+        run_frame(&mut app, &ctx, Vec::new());
+        let misc = app.probe().entries()["channel-settings.page.misc"].rect;
+        click(&mut app, &ctx, misc);
+        run_frame(&mut app, &ctx, Vec::new());
+        let up = app.probe().entries()["channel-settings.arp.up"].rect;
+        click(&mut app, &ctx, up);
+        let chord = app.probe().entries()["channel-settings.arp-chord"].rect;
+        click(&mut app, &ctx, chord);
+        let arp = app.session.project().channels[0].arp;
+        assert_eq!(arp.direction, jet_model::ArpDirection::Up);
+        assert_eq!(arp.chord, jet_model::ArpChord::AutoSustain);
     }
 
     #[test]

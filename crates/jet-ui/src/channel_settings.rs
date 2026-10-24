@@ -38,6 +38,7 @@ pub struct ChannelSettingsData {
     pub full_porta: bool,
     pub step_ticks: i64,
     pub bar_ticks: i64,
+    pub arp: jet_model::Arpeggiator,
     pub sampler: SamplerSettings,
     pub synth: Option<SynthParams>,
 }
@@ -60,16 +61,26 @@ pub(crate) fn note_name(key: u8) -> String {
     format!("{}{}", NAMES[usize::from(key % 12)], key / 12)
 }
 
+/// Channel Settings pages [Manual: chansettings]: SMP (sampler, channel, polyphony), INS
+/// (envelopes and LFOs), MISC (arpeggiator).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChannelPage {
+    #[default]
+    Smp,
+    Ins,
+    Misc,
+}
+
 /// Which Channel Settings page is shown, and the INS page's target tab.
 pub struct ChannelSettingsState {
-    pub ins: bool,
+    pub page: ChannelPage,
     pub target: ModTarget,
 }
 
 impl Default for ChannelSettingsState {
     fn default() -> Self {
         Self {
-            ins: false,
+            page: ChannelPage::Smp,
             target: ModTarget::Volume,
         }
     }
@@ -97,26 +108,42 @@ pub fn paint_channel_settings(
     };
     // Page tabs [Manual: chansettings, the SMP (Sampler) and INS (Envelope / Instrument) tabs].
     let mut tab_x = rect.left() + 10.0;
-    for (ins, label, hint) in [
-        (false, "SMP", "Sampler, channel and polyphony settings"),
-        (true, "INS", "Envelopes, LFOs and filter (Sampler channels)"),
+    for (page, label, hint) in [
+        (
+            ChannelPage::Smp,
+            "SMP",
+            "Sampler, channel and polyphony settings",
+        ),
+        (
+            ChannelPage::Ins,
+            "INS",
+            "Envelopes, LFOs and filter (Sampler channels)",
+        ),
+        (ChannelPage::Misc, "MISC", "Arpeggiator"),
     ] {
         let tab = Rect::from_min_size(pos2(tab_x, rect.top() + 6.0), vec2(60.0, 20.0));
         if paint.toggle(
             &format!("channel-settings.page.{}", label.to_lowercase()),
             tab,
             label,
-            state.ins == ins,
+            state.page == page,
             hint,
         ) {
-            state.ins = ins;
+            state.page = page;
         }
         tab_x += 64.0;
     }
-    if state.ins {
-        let content = Rect::from_min_max(pos2(rect.left(), rect.top() + 30.0), rect.max);
-        paint_ins(paint, state, c, content, &mut actions);
-        return actions;
+    let content = Rect::from_min_max(pos2(rect.left(), rect.top() + 30.0), rect.max);
+    match state.page {
+        ChannelPage::Ins => {
+            paint_ins(paint, state, c, content, &mut actions);
+            return actions;
+        }
+        ChannelPage::Misc => {
+            paint_misc(paint, c, content, &mut actions);
+            return actions;
+        }
+        ChannelPage::Smp => {}
     }
     let mut y = rect.top() + 32.0;
     let left = rect.left() + 10.0;
@@ -1145,5 +1172,205 @@ fn paint_ins(
             }
             send(actions, next, None);
         }
+    }
+}
+
+/// MISC page: the Arpeggiator [Manual: chansettings_misc, "Arpeggiator"].
+fn paint_misc(
+    paint: &mut PaintCtx<'_>,
+    c: &ChannelSettingsData,
+    rect: Rect,
+    actions: &mut Vec<SettingsAction>,
+) {
+    use jet_model::{ArpChord, ArpDirection, Arpeggiator};
+    let t = *paint.tokens;
+    let painter = paint.painter().with_clip_rect(rect);
+    let left = rect.left() + 10.0;
+    let width = rect.width() - 20.0;
+    let mut y = rect.top() + 4.0;
+    let id = c.id;
+    let a = c.arp;
+    let send = |actions: &mut Vec<SettingsAction>, arp: Arpeggiator, gesture: Option<String>| {
+        if arp.valid() {
+            actions.push(SettingsAction::Engine {
+                id: "channel.arp.set",
+                params: json!({"id": id, "arp": arp}),
+                gesture,
+            });
+        }
+    };
+    painter.text(
+        pos2(left, y + ROW_H / 2.0),
+        Align2::LEFT_CENTER,
+        "Arpeggiator",
+        theme::medium(15.0),
+        t.menu_text,
+    );
+    y += ROW_H + 4.0;
+    const DIRECTIONS: [(ArpDirection, &str); 6] = [
+        (ArpDirection::Off, "Off"),
+        (ArpDirection::Up, "Up"),
+        (ArpDirection::Down, "Down"),
+        (ArpDirection::UpDown, "Up-Down"),
+        (ArpDirection::UpDownTwice, "Up-Down 2x"),
+        (ArpDirection::Random, "Random"),
+    ];
+    for row in DIRECTIONS.chunks(3) {
+        let w = (width - 8.0) / 3.0;
+        for (i, (direction, label)) in row.iter().enumerate() {
+            let b = Rect::from_min_size(pos2(left + i as f32 * (w + 4.0), y), vec2(w, ROW_H));
+            if paint.toggle(
+                &format!(
+                    "channel-settings.arp.{}",
+                    label.to_lowercase().replace(' ', "-")
+                ),
+                b,
+                label,
+                a.direction == *direction,
+                "Arpeggio direction",
+            ) && a.direction != *direction
+            {
+                send(
+                    actions,
+                    Arpeggiator {
+                        direction: *direction,
+                        ..a
+                    },
+                    None,
+                );
+            }
+        }
+        y += ROW_H + 4.0;
+    }
+    let step = c.step_ticks.max(1);
+    let mut value_row = |paint: &mut PaintCtx<'_>,
+                         actions: &mut Vec<SettingsAction>,
+                         key: &str,
+                         label: &str,
+                         value: i32,
+                         min: i32,
+                         max: i32,
+                         display: String,
+                         make: &dyn Fn(i32) -> Arpeggiator| {
+        let r = Rect::from_min_size(pos2(left, y), vec2(width, ROW_H));
+        y += ROW_H + 4.0;
+        let e = paint.param_row(
+            &format!("channel-settings.arp-{key}"),
+            r,
+            label,
+            value,
+            min,
+            max,
+            &display,
+        );
+        if let Some(v) = e.value {
+            send(actions, make(v), Some(format!("settings.arp.{key}.{id}")));
+        }
+        if e.ended {
+            actions.push(SettingsAction::EndGesture);
+        }
+    };
+    let time = if a.time == 0 { step } else { i64::from(a.time) };
+    value_row(
+        paint,
+        actions,
+        "time",
+        "Time",
+        time as i32,
+        1,
+        (c.bar_ticks.max(1)) as i32,
+        format!("{}:{:02}", time / step, time % step),
+        &|v| Arpeggiator {
+            time: v as u32,
+            ..a
+        },
+    );
+    value_row(
+        paint,
+        actions,
+        "gate",
+        "Gate",
+        i32::from(a.gate),
+        0,
+        1000,
+        format!("{}%", a.gate / 10),
+        &|v| Arpeggiator {
+            gate: v as u16,
+            ..a
+        },
+    );
+    value_row(
+        paint,
+        actions,
+        "range",
+        "Range (octaves)",
+        i32::from(a.range),
+        1,
+        4,
+        a.range.to_string(),
+        &|v| Arpeggiator {
+            range: v as u8,
+            ..a
+        },
+    );
+    value_row(
+        paint,
+        actions,
+        "repeat",
+        "Repeat",
+        i32::from(a.repeat),
+        1,
+        8,
+        a.repeat.to_string(),
+        &|v| Arpeggiator {
+            repeat: v as u8,
+            ..a
+        },
+    );
+    let r = Rect::from_min_size(pos2(left, y), vec2(width, ROW_H));
+    let slide = Rect::from_min_size(r.min, vec2(80.0, ROW_H));
+    if paint.toggle(
+        "channel-settings.arp-slide",
+        slide,
+        "Slide",
+        a.slide,
+        "Slide between the arpeggio notes",
+    ) {
+        send(
+            actions,
+            Arpeggiator {
+                slide: !a.slide,
+                ..a
+            },
+            None,
+        );
+    }
+    // Chord: None, Auto, Auto (sustain), then the chord templates; click for the next one.
+    let presets = jet_seq::CHORDS.len() as u8;
+    let label = match a.chord {
+        ArpChord::None => "Chord: None".to_owned(),
+        ArpChord::Auto => "Chord: Auto".to_owned(),
+        ArpChord::AutoSustain => "Chord: Auto (sustain)".to_owned(),
+        ArpChord::Preset(i) => format!(
+            "Chord: {}",
+            jet_seq::CHORDS.get(usize::from(i)).map_or("?", |(n, _)| *n)
+        ),
+    };
+    let chord = Rect::from_min_size(pos2(slide.right() + 6.0, r.top()), vec2(200.0, ROW_H));
+    if paint.toggle(
+        "channel-settings.arp-chord",
+        chord,
+        &label,
+        false,
+        "Chord: click for the next (None, Auto, Auto (sustain), chord templates)",
+    ) {
+        let next = match a.chord {
+            ArpChord::None => ArpChord::Auto,
+            ArpChord::Auto => ArpChord::AutoSustain,
+            ArpChord::AutoSustain => ArpChord::Preset(0),
+            ArpChord::Preset(i) if i + 1 < presets => ArpChord::Preset(i + 1),
+            ArpChord::Preset(_) => ArpChord::None,
+        };
+        send(actions, Arpeggiator { chord: next, ..a }, None);
     }
 }

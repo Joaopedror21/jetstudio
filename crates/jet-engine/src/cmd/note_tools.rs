@@ -25,19 +25,7 @@ pub const SCALES: [(&str, &[u8]); 12] = [
     ("chromatic", &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
 ];
 
-/// Chord shapes for the Chord Stamp (intervals above the clicked root).
-pub const CHORDS: [(&str, &[u8]); 10] = [
-    ("major", &[0, 4, 7]),
-    ("minor", &[0, 3, 7]),
-    ("diminished", &[0, 3, 6]),
-    ("augmented", &[0, 4, 8]),
-    ("sus2", &[0, 2, 7]),
-    ("sus4", &[0, 5, 7]),
-    ("major7", &[0, 4, 7, 11]),
-    ("minor7", &[0, 3, 7, 10]),
-    ("dominant7", &[0, 4, 7, 10]),
-    ("power", &[0, 7, 12]),
-];
+pub use jet_seq::CHORDS;
 
 pub fn scale(name: &str) -> Option<&'static [u8]> {
     SCALES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)

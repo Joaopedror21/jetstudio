@@ -343,6 +343,14 @@ static SPECS: &[CommandSpec] = &[
         Step
     ),
     spec!(
+        "channel.arp.set",
+        "Channel arpeggiator",
+        "",
+        None,
+        "{id:uint,arp:Arpeggiator}",
+        Coalesce
+    ),
+    spec!(
         "channel.time.set",
         "Channel time (gate, shift, full porta)",
         "",

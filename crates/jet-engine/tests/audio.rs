@@ -1594,3 +1594,33 @@ fn recorded_automation_events_play_in_pattern_and_song_mode_and_become_a_clip() 
     let placed = project.active().unwrap().clips.last().unwrap();
     assert_eq!(placed.start.0, 384, "starts with the pattern's first clip");
 }
+
+#[test]
+fn the_channel_arpeggiator_plays_a_held_chord_note_by_note() {
+    let mut session = session_120();
+    let id = add_sampler_with_click(&mut session);
+    for key in [60, 64, 67] {
+        session
+            .execute(
+                "note.add",
+                json!({"pattern": 1, "channel": id, "start": 0, "length": 96, "key": key}),
+            )
+            .unwrap();
+    }
+    let (chord, _) = export(&mut session, "pattern");
+    assert_eq!(onsets(&chord), vec![0], "a chord: one onset");
+    let mut arp = jet_model::Arpeggiator::default();
+    arp.direction = jet_model::ArpDirection::Up;
+    session
+        .execute("channel.arp.set", json!({"id": id, "arp": arp}))
+        .unwrap();
+    // One note per step (6 000 frames) over the beat the chord is held.
+    let (arpeggio, _) = export(&mut session, "pattern");
+    assert_eq!(onsets(&arpeggio), vec![0, 6_000, 12_000, 18_000]);
+    arp.range = 9;
+    assert!(
+        session
+            .execute("channel.arp.set", json!({"id": id, "arp": arp}))
+            .is_err()
+    );
+}

@@ -9,6 +9,20 @@
 
 pub mod automation;
 
+/// Chord shapes for the Chord Stamp (intervals above the clicked root).
+pub const CHORDS: [(&str, &[u8]); 10] = [
+    ("major", &[0, 4, 7]),
+    ("minor", &[0, 3, 7]),
+    ("diminished", &[0, 3, 6]),
+    ("augmented", &[0, 4, 8]),
+    ("sus2", &[0, 2, 7]),
+    ("sus4", &[0, 5, 7]),
+    ("major7", &[0, 4, 7, 11]),
+    ("minor7", &[0, 3, 7, 10]),
+    ("dominant7", &[0, 4, 7, 10]),
+    ("power", &[0, 7, 12]),
+];
+
 use jet_model::{
     ChannelId, ClipSource, Pattern, PatternId, PatternLength, Project, ProjectSettings,
 };
@@ -234,6 +248,10 @@ pub fn pattern_events(project: &Project, pattern: &Pattern, out: &mut Vec<NoteEv
         let first = out.len();
         channel_events(project, pattern, channel, limit, out);
         apply_time(channel, step, &mut out[first..]);
+        if channel.arp.direction != jet_model::ArpDirection::Off {
+            let played: Vec<NoteEvent> = out.drain(first..).collect();
+            out.extend(arpeggiate(&channel.arp, step, played));
+        }
     }
 }
 
@@ -250,6 +268,120 @@ fn apply_time(channel: &jet_model::Channel, step: i64, events: &mut [NoteEvent])
             event.length = length.min(gate);
         }
     }
+}
+
+/// The channel arpeggiator [Manual: chansettings_misc, "Arpeggiator"]: notes starting together
+/// form a chord; over the chord's length a note is played every `time` ticks, walking the chord's
+/// pitches (Auto), the chord template on each note (presets) or the note itself (None, octave
+/// steps), through `range` octaves with each octave pass repeated `repeat` times, in the chosen
+/// direction. Hypothesis H-SMP-3: Random is a fixed pseudo-random walk (reproducible renders).
+pub fn arpeggiate(
+    arp: &jet_model::Arpeggiator,
+    step: i64,
+    mut events: Vec<NoteEvent>,
+) -> Vec<NoteEvent> {
+    use jet_model::{ArpChord, ArpDirection};
+    events.sort_by_key(|e| (e.tick, e.key));
+    let time = if arp.time == 0 {
+        step
+    } else {
+        i64::from(arp.time)
+    }
+    .max(1);
+    let gate = (time * i64::from(arp.gate) / 1000).max(1);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < events.len() {
+        let start = events[i].tick;
+        let chord: Vec<NoteEvent> = events[i..]
+            .iter()
+            .take_while(|e| e.tick == start)
+            .copied()
+            .collect();
+        i += chord.len();
+        let end = chord
+            .iter()
+            .map(|e| e.tick + if e.length > 0 { e.length } else { step })
+            .max()
+            .unwrap_or(start + step);
+        // "Auto (sustain) will not apply arpeggio effect on monophonic sequences (given that the
+        // octave range is set to 1)".
+        if arp.chord == ArpChord::AutoSustain && chord.len() == 1 && arp.range <= 1 {
+            out.extend(chord);
+            continue;
+        }
+        let mut keys: Vec<i16> = match arp.chord {
+            ArpChord::Auto | ArpChord::AutoSustain => {
+                chord.iter().map(|e| i16::from(e.key)).collect()
+            }
+            ArpChord::None => vec![i16::from(chord[0].key)],
+            ArpChord::Preset(index) => {
+                let shape = CHORDS
+                    .get(usize::from(index))
+                    .map_or(&[0u8][..], |(_, s)| *s);
+                shape
+                    .iter()
+                    .map(|interval| i16::from(chord[0].key) + i16::from(*interval))
+                    .collect()
+            }
+        };
+        keys.sort_unstable();
+        keys.dedup();
+        // One pass of the chord in the direction, per octave, repeated.
+        let pass = |octave: i16| -> Vec<i16> {
+            let up: Vec<i16> = keys.iter().map(|k| k + 12 * octave).collect();
+            let mut down = up.clone();
+            down.reverse();
+            match arp.direction {
+                ArpDirection::Down => down,
+                ArpDirection::UpDown => {
+                    let mut v = up.clone();
+                    v.extend(down.iter().skip(1).take(up.len().saturating_sub(2)));
+                    v
+                }
+                ArpDirection::UpDownTwice => {
+                    let mut v = up.clone();
+                    v.extend(down);
+                    v
+                }
+                _ => up,
+            }
+        };
+        let mut sequence: Vec<i16> = Vec::new();
+        for octave in 0..i16::from(arp.range.max(1)) {
+            for _ in 0..arp.repeat.max(1) {
+                sequence.extend(pass(octave));
+            }
+        }
+        if sequence.is_empty() {
+            continue;
+        }
+        let template = chord[0];
+        let mut seed = (start as u32).wrapping_mul(2_654_435_761) | 1;
+        let mut t = start;
+        let mut n = 0;
+        while t < end {
+            let key = if arp.direction == ArpDirection::Random {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                sequence[seed as usize % sequence.len()]
+            } else {
+                sequence[n % sequence.len()]
+            };
+            if (0..=i16::from(jet_model::MAX_KEY)).contains(&key) {
+                let mut note = template;
+                note.tick = t;
+                note.length = gate.min(end - t);
+                note.key = key as u8;
+                note.porta = arp.slide && n > 0;
+                out.push(note);
+            }
+            t += time;
+            n += 1;
+        }
+    }
+    out
 }
 
 /// Notes or steps of one (unmuted) channel in `pattern`.
@@ -483,6 +615,99 @@ mod tests {
     use super::*;
     use jet_model::{Channel, ClipInstance, Note, PlaylistTrack, StepSeq};
     use jet_time::Tick;
+
+    fn arp_keys(arp: jet_model::Arpeggiator, keys: &[u8], length: i64) -> Vec<(i64, i64, u8)> {
+        let events = keys
+            .iter()
+            .map(|key| NoteEvent {
+                tick: 0,
+                length,
+                channel: ChannelId(1),
+                key: *key,
+                velocity: 100,
+                pan: 0,
+                fine_pitch: 0,
+                release: 0,
+                mod_x: 0,
+                mod_y: 0,
+                slide: false,
+                porta: false,
+                color: 0,
+                audio: false,
+                audio_offset: 0,
+                clip: jet_model::AudioClipProps::default(),
+                audio_elapsed: 0,
+            })
+            .collect();
+        arpeggiate(&arp, 24, events)
+            .into_iter()
+            .map(|e| (e.tick, e.length, e.key))
+            .collect()
+    }
+
+    #[test]
+    fn the_arpeggiator_walks_chords_by_direction_range_and_template() {
+        use jet_model::{ArpChord, ArpDirection, Arpeggiator};
+        let arp = |direction, range, chord| Arpeggiator {
+            direction,
+            range,
+            chord,
+            ..Arpeggiator::default()
+        };
+        let keys = |v: Vec<(i64, i64, u8)>| v.into_iter().map(|(_, _, k)| k).collect::<Vec<_>>();
+        // A C major chord held for four steps: one note per step, half-step gates.
+        let up = arp_keys(arp(ArpDirection::Up, 1, ArpChord::Auto), &[60, 64, 67], 96);
+        assert_eq!(
+            up,
+            vec![(0, 12, 60), (24, 12, 64), (48, 12, 67), (72, 12, 60)]
+        );
+        assert_eq!(
+            keys(arp_keys(
+                arp(ArpDirection::Down, 1, ArpChord::Auto),
+                &[60, 64, 67],
+                96
+            )),
+            vec![67, 64, 60, 67]
+        );
+        assert_eq!(
+            keys(arp_keys(
+                arp(ArpDirection::UpDown, 1, ArpChord::Auto),
+                &[60, 64, 67],
+                96
+            )),
+            vec![60, 64, 67, 64]
+        );
+        assert_eq!(
+            keys(arp_keys(
+                arp(ArpDirection::Up, 2, ArpChord::Auto),
+                &[60, 64, 67],
+                96
+            )),
+            vec![60, 64, 67, 72]
+        );
+        // None: one note in octave steps; a preset applies its template to the note.
+        assert_eq!(
+            keys(arp_keys(
+                arp(ArpDirection::Up, 2, ArpChord::None),
+                &[60],
+                96
+            )),
+            vec![60, 72, 60, 72]
+        );
+        assert_eq!(
+            keys(arp_keys(
+                arp(ArpDirection::Up, 1, ArpChord::Preset(0)),
+                &[62],
+                72
+            )),
+            vec![62, 66, 69]
+        );
+        // Auto (sustain) leaves single notes alone at a one-octave range.
+        assert_eq!(
+            arp_keys(arp(ArpDirection::Up, 1, ArpChord::AutoSustain), &[60], 96),
+            vec![(0, 96, 60)]
+        );
+    }
 
     fn timeline(length: i64, jumps: Vec<(i64, i64)>, pauses: Vec<i64>) -> Sequence {
         Sequence {
