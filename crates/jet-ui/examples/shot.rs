@@ -75,6 +75,10 @@ fn main() {
             }
         }
     }
+    // `--ins` shows the Channel Settings INS page (Pitch tab).
+    if args.iter().any(|a| a == "--ins") {
+        app.show_ins_page(jet_model::ModTarget::Pitch);
+    }
     app.set_static_capture(true);
     let mut harness = Harness::builder()
         .with_size(egui::vec2(w, h))

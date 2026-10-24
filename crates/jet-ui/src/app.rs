@@ -14,7 +14,9 @@ use crate::browser::{BrowserState, paint_browser};
 use crate::channel_rack::{
     ChannelView, RackAction, RackMenu, RackState, RackView, paint_channel_rack,
 };
-use crate::channel_settings::{ChannelSettingsData, SettingsAction, paint_channel_settings};
+use crate::channel_settings::{
+    ChannelSettingsData, ChannelSettingsState, SettingsAction, paint_channel_settings,
+};
 use crate::graph_editor::{GraphAction, GraphState, GraphView, paint_graph_editor};
 use crate::icons;
 use crate::mixer::{MixerAction, MixerState, MixerTrackView, MixerView, paint_mixer};
@@ -121,6 +123,7 @@ pub struct JetApp {
     audio_status: Option<String>,
     piano: PianoRollState,
     graph: GraphState,
+    settings_page: ChannelSettingsState,
     mixer: MixerState,
     workspace: Option<Workspace>,
     browser: BrowserState,
@@ -176,6 +179,7 @@ impl Default for JetApp {
             audio_status: None,
             piano: PianoRollState::default(),
             graph: GraphState::default(),
+            settings_page: ChannelSettingsState::default(),
             mixer: MixerState::default(),
             workspace: None,
             browser: BrowserState::default(),
@@ -1363,6 +1367,12 @@ impl JetApp {
         self.static_capture = on;
     }
 
+    /// Shows the INS page of Channel Settings (used by the screenshot tool).
+    pub fn show_ins_page(&mut self, target: jet_model::ModTarget) {
+        self.settings_page.ins = true;
+        self.settings_page.target = target;
+    }
+
     /// Shows a window that a new project keeps closed (used by the screenshot tool).
     pub fn show_window_on_start(&mut self, kind: WindowKind) {
         self.pending_show.push(kind);
@@ -2431,6 +2441,7 @@ impl JetApp {
                 mixer_state: &mut self.mixer,
                 mixer_view: &mixer_view,
                 settings_view: settings_view.as_ref(),
+                settings_state: &mut self.settings_page,
                 audio_settings_view: &audio_settings_view,
                 graph_state: &mut self.graph,
                 graph_view: &graph_view,
@@ -2538,6 +2549,7 @@ struct Surfaces<'a> {
     mixer_state: &'a mut MixerState,
     mixer_view: &'a MixerView,
     settings_view: Option<&'a ChannelSettingsData>,
+    settings_state: &'a mut ChannelSettingsState,
     audio_settings_view: &'a AudioSettingsView,
     graph_state: &'a mut GraphState,
     graph_view: &'a GraphView,
@@ -2785,9 +2797,14 @@ fn paint_window(
         WindowKind::ChannelSettings => {
             let content = Rect::from_min_max(pos2(rect.left(), title.bottom()), rect.max);
             actions.extend(
-                paint_channel_settings(paint, surfaces.settings_view, content)
-                    .into_iter()
-                    .map(UiAction::Settings),
+                paint_channel_settings(
+                    paint,
+                    surfaces.settings_state,
+                    surfaces.settings_view,
+                    content,
+                )
+                .into_iter()
+                .map(UiAction::Settings),
             );
         }
         WindowKind::GraphEditor => {
@@ -4321,6 +4338,59 @@ mod tests {
         // Shift+1 is the closest quick zoom.
         press(&mut app, Key::Num1, shift);
         assert!((app.playlist.zoom - 2.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn ins_page_edits_filter_envelope_and_lfo() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("channel.add", json!({"name": "Kick"}));
+        app.rack.selected_channel = Some(1);
+        app.pending_show.push(WindowKind::ChannelSettings);
+        run_frame(&mut app, &ctx, Vec::new());
+        run_frame(&mut app, &ctx, Vec::new());
+        let entry = |app: &JetApp, name: &str| {
+            app.probe().entries()[&format!("channel-settings.{name}")].rect
+        };
+        let sampler = |app: &JetApp| app.session.project().channels[0].sampler;
+        let target = entry(&app, "page.ins");
+        click(&mut app, &ctx, target);
+        assert!(app.settings_page.ins);
+        let target = entry(&app, "ins.filter.LP");
+        click(&mut app, &ctx, target);
+        assert_eq!(sampler(&app).filter.kind, jet_model::FilterType::Lp);
+        // Mod X near its left end: a low cutoff.
+        let row = entry(&app, "ins.mod-x");
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(pos2(row.left() + 2.0, row.center().y), vec2(1.0, 1.0)),
+        );
+        assert!(
+            sampler(&app).filter.mod_x < 50,
+            "{:?}",
+            sampler(&app).filter
+        );
+        // Pitch tab: switch its envelope on and give the pitch LFO an amount.
+        let target = entry(&app, "ins.target.pitch");
+        click(&mut app, &ctx, target);
+        let target = entry(&app, "ins.env-on");
+        click(&mut app, &ctx, target);
+        assert!(sampler(&app).mod_env[2].on);
+        let amount = entry(&app, "ins.lfo-amount");
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(
+                pos2(amount.right() - 2.0, amount.center().y),
+                vec2(1.0, 1.0),
+            ),
+        );
+        assert!(sampler(&app).lfo[4].amount > 900);
+        let target = entry(&app, "ins.lfo-square");
+        click(&mut app, &ctx, target);
+        assert_eq!(sampler(&app).lfo[4].shape, jet_model::LfoShape::Square);
     }
 
     #[test]

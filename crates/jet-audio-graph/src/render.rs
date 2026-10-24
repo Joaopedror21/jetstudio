@@ -22,6 +22,9 @@ pub struct TransportSync {
     pub anchor_frame: u64,
 }
 
+// Voices live in a pool allocated once; boxing the large variant would allocate on the audio
+// thread at every note.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Default)]
 enum VoiceKind {
     #[default]
@@ -420,6 +423,7 @@ impl Renderer {
                 let cents = f64::from(pitch) + f64::from(event.fine_pitch);
                 let mut voice = SamplerVoice::default();
                 let mut options = channel.sampler;
+                options.start_frame = start_frame;
                 if event.audio {
                     // Audio Clips ignore the Sampler page and start at their clip offset; the
                     // instance's gain, fades and reverse apply [Manual: playlist_audioclip].

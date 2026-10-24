@@ -227,7 +227,11 @@ fn topological(project: &Project, used: &[bool; TRACK_COUNT]) -> Vec<u16> {
     order
 }
 
-fn sampler_options(settings: &jet_model::SamplerSettings) -> jet_dsp::sampler::SamplerOptions {
+fn sampler_options(
+    settings: &jet_model::SamplerSettings,
+    rate: u32,
+    tempo_bpm: f64,
+) -> jet_dsp::sampler::SamplerOptions {
     use jet_dsp::sampler::{LoopMode, SamplerOptions};
     SamplerOptions {
         start: f64::from(settings.start) / 1000.0,
@@ -249,6 +253,8 @@ fn sampler_options(settings: &jet_model::SamplerSettings) -> jet_dsp::sampler::S
         }),
         start_seconds: 0.0,
         clip: None,
+        ins: jet_dsp::ins::InsParams::new(settings, rate, tempo_bpm),
+        start_frame: 0,
     }
 }
 
@@ -363,7 +369,7 @@ pub fn build_plan(
                 .unwrap_or(master_slot),
             cut: channel.cut,
             cut_by: channel.cut_by,
-            sampler: sampler_options(&channel.sampler),
+            sampler: sampler_options(&channel.sampler, rate, tempo_bpm),
             polyphony: channel.polyphony,
             last_cents: None,
         })

@@ -40,6 +40,10 @@ pub struct SamplerOptions {
     pub start_seconds: f64,
     /// Audio Clip instance gain and fades.
     pub clip: Option<ClipEnvelope>,
+    /// INS page modulation and filter, when it changes anything.
+    pub ins: Option<crate::ins::InsParams>,
+    /// Output frame of the note start (global LFO phase).
+    pub start_frame: u64,
 }
 
 /// Audio Clip volume envelope [Manual: playlist_audioclip, "Volume Envelopes & Controls"]: gain,
@@ -82,6 +86,8 @@ impl Default for SamplerOptions {
             envelope: None,
             start_seconds: 0.0,
             clip: None,
+            ins: None,
+            start_frame: 0,
         }
     }
 }
@@ -100,6 +106,7 @@ pub struct SamplerVoice {
     options: SamplerOptions,
     env: Adsr,
     pub glide: Glide,
+    ins: Option<crate::ins::InsState>,
 }
 
 impl SamplerVoice {
@@ -126,6 +133,9 @@ impl SamplerVoice {
         self.released = false;
         self.options = options;
         self.glide = Glide::default();
+        self.ins = options
+            .ins
+            .map(|params| crate::ins::InsState::new(params, options.start_frame));
         if let Some((a, d, s, r)) = options.envelope {
             self.env.configure(a, d, s, r, rate as f32);
             self.env.trigger();
@@ -136,6 +146,9 @@ impl SamplerVoice {
     /// Note-off: loops stop repeating and the volume envelope (if any) releases.
     pub fn release(&mut self) {
         self.released = true;
+        if let Some(ins) = &mut self.ins {
+            ins.release();
+        }
         if self.options.envelope.is_some() {
             self.env.release();
         }
@@ -221,10 +234,23 @@ impl SamplerVoice {
             } else {
                 self.position
             };
-            let (sl, sr) = sample.read(physical);
+            let (mut sl, mut sr) = sample.read(physical);
+            let mut ratio = self.glide.tick();
+            if let Some(ins) = &mut self.ins {
+                ins.tick();
+                (sl, sr) = ins.filter(sl, sr);
+                amp *= ins.volume;
+                // Pan LFO as a balance on top of the channel pan (H-SMP-2).
+                if ins.pan > 0.0 {
+                    sl *= 1.0 - ins.pan;
+                } else {
+                    sr *= 1.0 + ins.pan;
+                }
+                ratio *= ins.ratio;
+            }
             *l += sl * gain_l * amp;
             *r += sr * gain_r * amp;
-            self.position += self.increment * self.glide.tick() * self.direction;
+            self.position += self.increment * ratio * self.direction;
         }
         if !alive {
             self.sample = None;

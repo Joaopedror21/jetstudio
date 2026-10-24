@@ -1255,3 +1255,74 @@ fn track_eq_shapes_the_mixer_output() {
             .is_err()
     );
 }
+
+#[test]
+fn ins_filter_pitch_envelope_and_pan_lfo_change_the_sampler() {
+    let mut session = session_120();
+    let wav = temp("tone4k.wav");
+    // One second of a 4 kHz sine at half scale.
+    let tone: Vec<f32> = (0..48_000)
+        .map(|i| 0.5 * (std::f32::consts::TAU * 4000.0 * i as f32 / 48_000.0).sin())
+        .collect();
+    write_wav(&wav, 48_000, 1, &tone, WavFormat::Float32).unwrap();
+    session
+        .execute("channel.add", json!({"name": "Tone"}))
+        .unwrap();
+    let id = session.selected_channel().unwrap().0;
+    session
+        .execute("channel.sample.load", json!({"id": id, "path": wav}))
+        .unwrap();
+    session
+        .execute(
+            "note.add",
+            json!({"pattern": 1, "channel": id, "start": 0, "length": 384, "key": 60}),
+        )
+        .unwrap();
+    let rms = |d: &[f32]| (d.iter().map(|v| v * v).sum::<f32>() / d.len() as f32).sqrt();
+    let settings =
+        |session: &Session| serde_json::to_value(session.project().channels[0].sampler).unwrap();
+    let (plain, _) = export(&mut session, "pattern");
+    assert!(rms(&plain[1_000..40_000]) > 0.1);
+    assert!(rms(&plain[40_000..47_000]) > 0.1, "plays its whole second");
+
+    // Low-pass at Mod X 30% (about 160 Hz): the 4 kHz tone almost disappears.
+    let mut s = settings(&session);
+    s["filter"] = json!({"kind": "Lp", "mod_x": 300, "mod_y": 0});
+    session
+        .execute("channel.sampler.set", json!({"id": id, "settings": s}))
+        .unwrap();
+    let (filtered, _) = export(&mut session, "pattern");
+    assert!(
+        rms(&filtered[1_000..40_000]) < rms(&plain[1_000..40_000]) * 0.01,
+        "{}",
+        rms(&filtered[1_000..40_000])
+    );
+
+    // A full-amount pitch envelope held at its peak: +1200 cents, so the second lasts half.
+    let mut s = settings(&session);
+    s["filter"] = json!({"kind": "FastLp", "mod_x": 1000, "mod_y": 0});
+    s["mod_env"][2] = json!({"on": true, "delay_ms": 0, "attack_ms": 0, "hold_ms": 5000,
+        "decay_ms": 0, "sustain": 1000, "release_ms": 0, "amount": 1000});
+    session
+        .execute("channel.sampler.set", json!({"id": id, "settings": s}))
+        .unwrap();
+    let (pitched, _) = export(&mut session, "pattern");
+    assert!(rms(&pitched[1_000..20_000]) > 0.1);
+    assert!(
+        rms(&pitched[25_000..47_000]) < 1e-3,
+        "over after half a second"
+    );
+
+    // A pan LFO at full amount swings the sound between the sides.
+    let mut s = settings(&session);
+    s["mod_env"][2]["on"] = json!(false);
+    s["lfo"][0] = json!({"shape": "Square", "delay_ms": 0, "attack_ms": 0, "amount": 1000,
+        "speed_milli": 2000, "tempo": false, "global": false});
+    session
+        .execute("channel.sampler.set", json!({"id": id, "settings": s}))
+        .unwrap();
+    let (left, right) = export(&mut session, "pattern");
+    // First half-cycle (0-0.25 s): fully right; second: fully left.
+    assert!(rms(&left[1_000..11_000]) < 1e-4 && rms(&right[1_000..11_000]) > 0.1);
+    assert!(rms(&right[13_000..23_000]) < 1e-4 && rms(&left[13_000..23_000]) > 0.1);
+}

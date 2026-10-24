@@ -3,7 +3,9 @@
 //! real engine command.
 
 use egui::{Align2, Rect, Stroke, pos2, vec2};
-use jet_model::{Envelope, SampleLoop, SamplerSettings, SynthParams, Waveform};
+use jet_model::{
+    Envelope, FilterType, LfoShape, ModTarget, SampleLoop, SamplerSettings, SynthParams, Waveform,
+};
 use serde_json::{Value, json};
 
 use crate::theme;
@@ -52,8 +54,24 @@ pub(crate) fn note_name(key: u8) -> String {
     format!("{}{}", NAMES[usize::from(key % 12)], key / 12)
 }
 
+/// Which Channel Settings page is shown, and the INS page's target tab.
+pub struct ChannelSettingsState {
+    pub ins: bool,
+    pub target: ModTarget,
+}
+
+impl Default for ChannelSettingsState {
+    fn default() -> Self {
+        Self {
+            ins: false,
+            target: ModTarget::Volume,
+        }
+    }
+}
+
 pub fn paint_channel_settings(
     paint: &mut PaintCtx<'_>,
+    state: &mut ChannelSettingsState,
     data: Option<&ChannelSettingsData>,
     rect: Rect,
 ) -> Vec<SettingsAction> {
@@ -71,7 +89,30 @@ pub fn paint_channel_settings(
         );
         return actions;
     };
-    let mut y = rect.top() + 8.0;
+    // Page tabs [Manual: chansettings, the SMP (Sampler) and INS (Envelope / Instrument) tabs].
+    let mut tab_x = rect.left() + 10.0;
+    for (ins, label, hint) in [
+        (false, "SMP", "Sampler, channel and polyphony settings"),
+        (true, "INS", "Envelopes, LFOs and filter (Sampler channels)"),
+    ] {
+        let tab = Rect::from_min_size(pos2(tab_x, rect.top() + 6.0), vec2(60.0, 20.0));
+        if paint.toggle(
+            &format!("channel-settings.page.{}", label.to_lowercase()),
+            tab,
+            label,
+            state.ins == ins,
+            hint,
+        ) {
+            state.ins = ins;
+        }
+        tab_x += 64.0;
+    }
+    if state.ins {
+        let content = Rect::from_min_max(pos2(rect.left(), rect.top() + 30.0), rect.max);
+        paint_ins(paint, state, c, content, &mut actions);
+        return actions;
+    }
+    let mut y = rect.top() + 32.0;
     let left = rect.left() + 10.0;
     let width = rect.width() - 20.0;
     let mut row = |h: f32| {
@@ -632,4 +673,425 @@ pub fn paint_channel_settings(
     }
     let _ = y;
     actions
+}
+
+/// INS page [Manual: chansettings_ins]: the filter (type, Mod X cutoff, Mod Y resonance), then
+/// for the chosen target (Pan, Volume, Mod X, Mod Y, Pitch) its envelope and its LFO.
+fn paint_ins(
+    paint: &mut PaintCtx<'_>,
+    state: &mut ChannelSettingsState,
+    c: &ChannelSettingsData,
+    rect: Rect,
+    actions: &mut Vec<SettingsAction>,
+) {
+    let t = *paint.tokens;
+    let painter = paint.painter().with_clip_rect(rect);
+    let left = rect.left() + 10.0;
+    let width = rect.width() - 20.0;
+    let mut y = rect.top() + 4.0;
+    if !c.is_sampler {
+        painter.text(
+            pos2(left, y + 10.0),
+            Align2::LEFT_TOP,
+            "The INS page is for Sampler channels.",
+            theme::regular(14.0),
+            t.hint_text,
+        );
+        return;
+    }
+    let id = c.id;
+    let s = c.sampler;
+    let send =
+        |actions: &mut Vec<SettingsAction>, next: SamplerSettings, gesture: Option<String>| {
+            if next.valid() {
+                actions.push(SettingsAction::Engine {
+                    id: "channel.sampler.set",
+                    params: json!({"id": id, "settings": next}),
+                    gesture,
+                });
+            }
+        };
+    let section = |painter: &egui::Painter, y: f32, title: &str| {
+        painter.text(
+            pos2(left, y + ROW_H / 2.0),
+            Align2::LEFT_CENTER,
+            title,
+            theme::medium(15.0),
+            t.menu_text,
+        );
+    };
+    // A labelled value row; `make` builds the new settings from the value.
+    #[allow(clippy::too_many_arguments)]
+    fn value_row(
+        paint: &mut PaintCtx<'_>,
+        actions: &mut Vec<SettingsAction>,
+        r: Rect,
+        key: &str,
+        label: &str,
+        value: i32,
+        min: i32,
+        max: i32,
+        display: String,
+        id: u64,
+        make: &dyn Fn(i32) -> SamplerSettings,
+    ) {
+        let e = paint.param_row(
+            &format!("channel-settings.ins.{key}"),
+            r,
+            label,
+            value,
+            min,
+            max,
+            &display,
+        );
+        if let Some(v) = e.value {
+            let next = make(v);
+            if next.valid() {
+                actions.push(SettingsAction::Engine {
+                    id: "channel.sampler.set",
+                    params: json!({"id": id, "settings": next}),
+                    gesture: Some(format!("settings.ins.{key}.{id}")),
+                });
+            }
+        }
+        if e.ended {
+            actions.push(SettingsAction::EndGesture);
+        }
+    }
+    let mut next_row = |gap: f32| {
+        y += gap;
+        let r = Rect::from_min_size(pos2(left, y), vec2(width, ROW_H));
+        y += ROW_H + 4.0;
+        r
+    };
+
+    // ---- Filter ----
+    let header = next_row(0.0);
+    section(&painter, header.top(), "Filter");
+    const TYPES: [(FilterType, &str); 8] = [
+        (FilterType::FastLp, "Fast LP"),
+        (FilterType::Lp, "LP"),
+        (FilterType::Bp, "BP"),
+        (FilterType::Hp, "HP"),
+        (FilterType::Bs, "BS"),
+        (FilterType::Lp2, "LPx2"),
+        (FilterType::SvfLp, "SVF LP"),
+        (FilterType::SvfLp2, "SVF LPx2"),
+    ];
+    for chunk in TYPES.chunks(4) {
+        let r = next_row(0.0);
+        let w = (r.width() - 12.0) / 4.0;
+        for (i, (kind, label)) in chunk.iter().enumerate() {
+            let b = Rect::from_min_size(
+                pos2(r.left() + i as f32 * (w + 4.0), r.top()),
+                vec2(w, r.height()),
+            );
+            if paint.toggle(
+                &format!("channel-settings.ins.filter.{label}"),
+                b,
+                label,
+                s.filter.kind == *kind,
+                "Filter type",
+            ) && s.filter.kind != *kind
+            {
+                let mut next = s;
+                next.filter.kind = *kind;
+                send(actions, next, None);
+            }
+        }
+    }
+    let cutoff_hz = 20.0 * 1000f32.powf(f32::from(s.filter.mod_x) / 1000.0);
+    value_row(
+        paint,
+        actions,
+        next_row(0.0),
+        "mod-x",
+        "Mod X (cutoff)",
+        i32::from(s.filter.mod_x),
+        0,
+        1000,
+        if s.filter.mod_x == 1000 && s.filter.mod_y == 0 {
+            "100% (bypass)".to_owned()
+        } else {
+            format!("{:.0} Hz", cutoff_hz)
+        },
+        id,
+        &|v| {
+            let mut next = s;
+            next.filter.mod_x = v as u16;
+            next
+        },
+    );
+    value_row(
+        paint,
+        actions,
+        next_row(0.0),
+        "mod-y",
+        "Mod Y (resonance)",
+        i32::from(s.filter.mod_y),
+        0,
+        1000,
+        format!("{}%", s.filter.mod_y / 10),
+        id,
+        &|v| {
+            let mut next = s;
+            next.filter.mod_y = v as u16;
+            next
+        },
+    );
+
+    // ---- Target tabs ----
+    let r = next_row(4.0);
+    let w = (r.width() - 16.0) / 5.0;
+    for (i, target) in ModTarget::ALL.iter().enumerate() {
+        let label = match target {
+            ModTarget::Pan => "Pan",
+            ModTarget::Volume => "Volume",
+            ModTarget::ModX => "Mod X",
+            ModTarget::ModY => "Mod Y",
+            ModTarget::Pitch => "Pitch",
+        };
+        let b = Rect::from_min_size(
+            pos2(r.left() + i as f32 * (w + 4.0), r.top()),
+            vec2(w, r.height()),
+        );
+        if paint.toggle(
+            &format!(
+                "channel-settings.ins.target.{}",
+                label.to_lowercase().replace(' ', "-")
+            ),
+            b,
+            label,
+            state.target == *target,
+            "Envelope and LFO target",
+        ) {
+            state.target = *target;
+        }
+    }
+    let target = state.target;
+
+    // ---- Envelope ----
+    let header = next_row(0.0);
+    section(&painter, header.top(), "Envelope");
+    match target.env_index() {
+        None => {
+            painter.text(
+                pos2(left + 90.0, header.center().y),
+                Align2::LEFT_CENTER,
+                if target == ModTarget::Pan {
+                    "pan does not support an envelope"
+                } else {
+                    "the volume envelope is on the SMP page"
+                },
+                theme::regular(13.0),
+                t.hint_text,
+            );
+        }
+        Some(e) => {
+            let env = s.mod_env[e];
+            let b =
+                Rect::from_min_size(pos2(header.right() - 80.0, header.top()), vec2(80.0, ROW_H));
+            if paint.toggle(
+                "channel-settings.ins.env-on",
+                b,
+                "On",
+                env.on,
+                "The envelope applies only when it is on",
+            ) {
+                let mut next = s;
+                next.mod_env[e].on = !env.on;
+                send(actions, next, None);
+            }
+            let times: [(&str, &str, u16); 5] = [
+                ("delay", "Delay", env.delay_ms),
+                ("attack", "Attack", env.attack_ms),
+                ("hold", "Hold", env.hold_ms),
+                ("decay", "Decay", env.decay_ms),
+                ("release", "Release", env.release_ms),
+            ];
+            for (field, label, value) in times {
+                value_row(
+                    paint,
+                    actions,
+                    next_row(0.0),
+                    &format!("env-{field}"),
+                    label,
+                    i32::from(value),
+                    0,
+                    5000,
+                    format!("{value} ms"),
+                    id,
+                    &|v| {
+                        let mut next = s;
+                        let target = &mut next.mod_env[e];
+                        let v = v as u16;
+                        match field {
+                            "delay" => target.delay_ms = v,
+                            "attack" => target.attack_ms = v,
+                            "hold" => target.hold_ms = v,
+                            "decay" => target.decay_ms = v,
+                            _ => target.release_ms = v,
+                        }
+                        next
+                    },
+                );
+            }
+            value_row(
+                paint,
+                actions,
+                next_row(0.0),
+                "env-sustain",
+                "Sustain",
+                i32::from(env.sustain),
+                0,
+                1000,
+                format!("{}%", env.sustain / 10),
+                id,
+                &|v| {
+                    let mut next = s;
+                    next.mod_env[e].sustain = v as u16;
+                    next
+                },
+            );
+            value_row(
+                paint,
+                actions,
+                next_row(0.0),
+                "env-amount",
+                "Amount",
+                i32::from(env.amount),
+                -1000,
+                1000,
+                format!("{:+}%", env.amount / 10),
+                id,
+                &|v| {
+                    let mut next = s;
+                    next.mod_env[e].amount = v as i16;
+                    next
+                },
+            );
+        }
+    }
+
+    // ---- LFO ----
+    let header = next_row(4.0);
+    section(&painter, header.top(), "LFO");
+    let l = target.lfo_index();
+    let lfo = s.lfo[l];
+    let mut bx = left + 60.0;
+    for (shape, label) in [
+        (LfoShape::Sine, "Sine"),
+        (LfoShape::Triangle, "Triangle"),
+        (LfoShape::Square, "Square"),
+    ] {
+        let b = Rect::from_min_size(pos2(bx, header.top()), vec2(70.0, ROW_H));
+        if paint.toggle(
+            &format!("channel-settings.ins.lfo-{}", label.to_lowercase()),
+            b,
+            label,
+            lfo.shape == shape,
+            "LFO shape",
+        ) && lfo.shape != shape
+        {
+            let mut next = s;
+            next.lfo[l].shape = shape;
+            send(actions, next, None);
+        }
+        bx += 74.0;
+    }
+    for (field, label, value) in [
+        ("delay", "Delay", lfo.delay_ms),
+        ("attack", "Attack", lfo.attack_ms),
+    ] {
+        value_row(
+            paint,
+            actions,
+            next_row(0.0),
+            &format!("lfo-{field}"),
+            label,
+            i32::from(value),
+            0,
+            5000,
+            format!("{value} ms"),
+            id,
+            &|v| {
+                let mut next = s;
+                if field == "delay" {
+                    next.lfo[l].delay_ms = v as u16;
+                } else {
+                    next.lfo[l].attack_ms = v as u16;
+                }
+                next
+            },
+        );
+    }
+    value_row(
+        paint,
+        actions,
+        next_row(0.0),
+        "lfo-amount",
+        "Amount",
+        i32::from(lfo.amount),
+        -1000,
+        1000,
+        if lfo.amount == 0 {
+            "off".to_owned()
+        } else {
+            format!("{:+}%", lfo.amount / 10)
+        },
+        id,
+        &|v| {
+            let mut next = s;
+            next.lfo[l].amount = v as i16;
+            next
+        },
+    );
+    value_row(
+        paint,
+        actions,
+        next_row(0.0),
+        "lfo-speed",
+        "Speed",
+        lfo.speed_milli as i32,
+        10,
+        20_000,
+        format!(
+            "{:.2} {}",
+            lfo.speed_milli as f32 / 1000.0,
+            if lfo.tempo { "per beat" } else { "Hz" }
+        ),
+        id,
+        &|v| {
+            let mut next = s;
+            next.lfo[l].speed_milli = v.max(10) as u32;
+            next
+        },
+    );
+    let r = next_row(0.0);
+    for (i, (key, label, on, hint)) in [
+        ("lfo-tempo", "Tempo", lfo.tempo, "Speed in cycles per beat"),
+        (
+            "lfo-global",
+            "Global",
+            lfo.global,
+            "Free running: the LFO does not restart with each note",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let b = Rect::from_min_size(
+            pos2(r.left() + i as f32 * 84.0, r.top()),
+            vec2(80.0, r.height()),
+        );
+        if paint.toggle(&format!("channel-settings.ins.{key}"), b, label, on, hint) {
+            let mut next = s;
+            if key == "lfo-tempo" {
+                next.lfo[l].tempo = !on;
+            } else {
+                next.lfo[l].global = !on;
+            }
+            send(actions, next, None);
+        }
+    }
 }

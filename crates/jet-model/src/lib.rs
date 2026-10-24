@@ -272,6 +272,16 @@ pub struct SamplerSettings {
     pub reverse: bool,
     /// `Some` when the volume envelope is active.
     pub envelope: Option<Envelope>,
+    /// INS page filter [Manual: chansettings_ins, "Filter Section"].
+    #[serde(default)]
+    pub filter: SamplerFilter,
+    /// INS envelopes for [`ModTarget::ModX`], [`ModTarget::ModY`] and [`ModTarget::Pitch`] (in
+    /// that order); the volume envelope is `envelope` and "pan does not support an envelope".
+    #[serde(default)]
+    pub mod_env: [ModEnvelope; 3],
+    /// INS LFOs, indexed by [`ModTarget`].
+    #[serde(default)]
+    pub lfo: [Lfo; 5],
 }
 
 impl Default for SamplerSettings {
@@ -283,13 +293,172 @@ impl Default for SamplerSettings {
             loop_end: 1000,
             reverse: false,
             envelope: None,
+            filter: SamplerFilter::default(),
+            mod_env: [ModEnvelope::default(); 3],
+            lfo: [Lfo::default(); 5],
         }
+    }
+}
+
+/// Targets of the INS page tabs [Manual: chansettings_ins, "Contains envelopes and LFOs for
+/// Panning, Volume, Mod X, Mod Y and Pitch"].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ModTarget {
+    Pan,
+    Volume,
+    ModX,
+    ModY,
+    Pitch,
+}
+
+impl ModTarget {
+    pub const ALL: [ModTarget; 5] = [
+        ModTarget::Pan,
+        ModTarget::Volume,
+        ModTarget::ModX,
+        ModTarget::ModY,
+        ModTarget::Pitch,
+    ];
+
+    /// Index into `SamplerSettings::mod_env`, for the targets that have one there.
+    pub fn env_index(self) -> Option<usize> {
+        match self {
+            ModTarget::ModX => Some(0),
+            ModTarget::ModY => Some(1),
+            ModTarget::Pitch => Some(2),
+            ModTarget::Pan | ModTarget::Volume => None,
+        }
+    }
+
+    pub fn lfo_index(self) -> usize {
+        self as usize
+    }
+}
+
+/// "The drop-down menu selects the filter type" [Manual: chansettings_ins, "Filter Section"].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FilterType {
+    #[default]
+    FastLp,
+    Lp,
+    Bp,
+    Hp,
+    Bs,
+    Lp2,
+    SvfLp,
+    SvfLp2,
+}
+
+/// "By default Mod X controls the Cutoff of a filter and Mod Y the resonance"; "When Mod X (Filter
+/// Cutoff) is 100% and Mod Y (Resonance) is 0% the filtering is completely bypassed. This is the
+/// default state for Sampler Channels."
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SamplerFilter {
+    pub kind: FilterType,
+    /// Cutoff 0..=1000.
+    pub mod_x: u16,
+    /// Resonance 0..=1000.
+    pub mod_y: u16,
+}
+
+impl Default for SamplerFilter {
+    fn default() -> Self {
+        Self {
+            kind: FilterType::FastLp,
+            mod_x: 1000,
+            mod_y: 0,
+        }
+    }
+}
+
+/// INS envelope: "Delay ... Attack ... Hold ... Decay ... Sustain ... Release ... Amount (AMT) - ...
+/// If the Amount knob is centered (AMT = 0), the envelope will NOT be applied" [Manual:
+/// chansettings_ins]. Times in ms; sustain 0..=1000; amount -1000..=1000. The envelope applies
+/// only "when it is turned on".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModEnvelope {
+    pub on: bool,
+    pub delay_ms: u16,
+    pub attack_ms: u16,
+    pub hold_ms: u16,
+    pub decay_ms: u16,
+    pub sustain: u16,
+    pub release_ms: u16,
+    pub amount: i16,
+}
+
+impl Default for ModEnvelope {
+    fn default() -> Self {
+        // Hypothesis H-SMP-2: FL's default envelope values are not documented.
+        Self {
+            on: false,
+            delay_ms: 0,
+            attack_ms: 10,
+            hold_ms: 0,
+            decay_ms: 300,
+            sustain: 500,
+            release_ms: 200,
+            amount: 500,
+        }
+    }
+}
+
+/// "You can choose from three LFO shapes - sine, triangle and square."
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LfoShape {
+    #[default]
+    Sine,
+    Triangle,
+    Square,
+}
+
+/// INS LFO: Delay, Attack, Amount (0 = off, negative inverts the phase), Speed, Tempo, Global.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lfo {
+    pub shape: LfoShape,
+    pub delay_ms: u16,
+    pub attack_ms: u16,
+    pub amount: i16,
+    /// Speed in thousandths of a cycle per second, or per beat when `tempo` is on.
+    pub speed_milli: u32,
+    pub tempo: bool,
+    /// "does not restart in the beginning of each note".
+    pub global: bool,
+}
+
+impl Default for Lfo {
+    fn default() -> Self {
+        Self {
+            shape: LfoShape::Sine,
+            delay_ms: 0,
+            attack_ms: 0,
+            amount: 0,
+            speed_milli: 2000,
+            tempo: false,
+            global: false,
+        }
+    }
+}
+
+impl ModEnvelope {
+    pub fn valid(&self) -> bool {
+        self.sustain <= 1000 && i32::from(self.amount).abs() <= 1000
+    }
+}
+
+impl Lfo {
+    pub fn valid(&self) -> bool {
+        i32::from(self.amount).abs() <= 1000 && (10..=50_000).contains(&self.speed_milli)
     }
 }
 
 impl SamplerSettings {
     pub fn valid(&self) -> bool {
-        self.start <= 1000
+        self.filter.mod_x <= 1000
+            && self.filter.mod_y <= 1000
+            && self.mod_env.iter().all(ModEnvelope::valid)
+            && self.lfo.iter().all(Lfo::valid)
+            && self.start <= 1000
             && self.loop_start < self.loop_end
             && self.loop_end <= 1000
             && self.envelope.is_none_or(|e| {
