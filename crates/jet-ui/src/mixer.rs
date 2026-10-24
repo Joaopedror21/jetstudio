@@ -30,6 +30,8 @@ enum MixerMenu {
     Slot(usize),
     /// Right-click on a fader (`true`) or pan knob (`false`) of a track.
     Automate(u16, bool),
+    /// Right-click on a track label: Channel routing.
+    Routing(u16),
 }
 
 pub struct MixerTrackView {
@@ -55,6 +57,11 @@ pub struct MixerView {
 }
 
 pub enum MixerAction {
+    /// "Route selected channels to this track" (`sequential`: "... starting from this track").
+    RouteSelected {
+        track: u16,
+        sequential: bool,
+    },
     /// Track EQ band change (part of a drag gesture).
     Eq {
         track: u16,
@@ -257,6 +264,13 @@ fn paint_strip(
     if response.clicked() {
         state.selected = track.index;
         state.selected_slot = None;
+    }
+    if response.secondary_clicked() {
+        state.selected = track.index;
+        state.menu = paint
+            .ui
+            .input(|i| i.pointer.hover_pos())
+            .map(|p| (MixerMenu::Routing(track.index), p));
     }
 
     // Pan knob.
@@ -1014,6 +1028,33 @@ fn paint_menus(
                     if let Some((name, _)) = names.get(i) {
                         actions.push(MixerAction::FxAdd { track, kind: name });
                     }
+                }
+            }
+        }
+        // [Manual: mixer, "Channel routing > Route selected channels to this track (Ctrl+L) ... Route
+        // selected channels starting from this track (Ctrl+Shift+L)"].
+        MixerMenu::Routing(index) => {
+            let items = [
+                MenuItem {
+                    label: "Route selected channels to this track",
+                    shortcut: "Ctrl+L",
+                    enabled: true,
+                },
+                MenuItem {
+                    label: "Route selected channels starting from this track",
+                    shortcut: "Ctrl+Shift+L",
+                    enabled: index != 0,
+                },
+            ];
+            match paint.popup_menu("mixer.routing-menu", origin, &items) {
+                MenuResult::Open => {}
+                MenuResult::Dismissed => state.menu = None,
+                MenuResult::Chosen(choice) => {
+                    state.menu = None;
+                    actions.push(MixerAction::RouteSelected {
+                        track: index,
+                        sequential: choice == 1,
+                    });
                 }
             }
         }

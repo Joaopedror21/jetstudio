@@ -8,6 +8,13 @@ use crate::widgets::{MenuItem, MenuResult, PaintCtx, framed, vgradient};
 #[derive(Default)]
 pub struct RackState {
     pub selected_channel: Option<u64>,
+    /// Channels selected with the Channel Selectors [Manual: channelrack, "10. Channel Selector"];
+    /// `selected_channel` (the target) is always one of them when set.
+    pub selection: std::collections::BTreeSet<u64>,
+    /// Right-button drag down the selectors in progress.
+    select_drag: bool,
+    /// Last selector click (channel, time), for double-clicks.
+    last_selector_click: Option<(u64, f64)>,
     pub step_scroll: usize,
     /// Step paint gesture: `Some(true)` paints steps on, `Some(false)` off.
     pub painting: Option<bool>,
@@ -477,7 +484,8 @@ pub fn paint_channel_rack(
         }
 
         // Channel name button.
-        let selected = state.selected_channel == Some(channel.id);
+        let selected =
+            state.selected_channel == Some(channel.id) || state.selection.contains(&channel.id);
         let name_rect =
             Rect::from_min_max(pos2(x(NAME_X0), cy - 10.0), pos2(x(NAME_X1), cy + 10.0));
         let name_id = format!("channel-rack.channel.{}", channel.id);
@@ -512,6 +520,7 @@ pub fn paint_channel_rack(
         );
         if response.clicked() {
             state.selected_channel = Some(channel.id);
+            state.selection = [channel.id].into();
             actions.push(RackAction::OpenSettings(channel.id));
         }
         if response.secondary_clicked() {
@@ -520,9 +529,48 @@ pub fn paint_channel_rack(
             state.menu = pointer.map(|p| (channel.id, p));
         }
 
-        // Selection bracket.
+        // Selection bracket: "Select/deselect target Channel - (Left-Click)"; "(Right-Click) ...
+        // independent selection/deselection"; "Right-Click (hold) and drag down the Channel
+        // Selectors to make multiple selections"; "Select all Channels - (Double-Click)".
         let select =
             Rect::from_min_max(pos2(x(SELECT_X0), cy - 11.0), pos2(x(SELECT_X1), cy + 11.0));
+        let selector = paint.hit(
+            &format!("channel-rack.selector.{}", channel.id),
+            select,
+            "selector",
+            true,
+            "Channel selector: click selects, right-click adds/removes, right-drag selects \
+             several, double-click selects all",
+        );
+        // A second click on the same selector within egui's double-click delay.
+        let now = paint.ui.input(|i| i.time);
+        let double = selector.clicked()
+            && state
+                .last_selector_click
+                .is_some_and(|(id, at)| id == channel.id && now - at <= 0.3);
+        if selector.clicked() {
+            state.last_selector_click = Some((channel.id, now));
+        }
+        if selector.double_clicked() || double {
+            state.selection = view.channels.iter().map(|c| c.id).collect();
+        } else if selector.clicked() {
+            state.selected_channel = Some(channel.id);
+            state.selection = [channel.id].into();
+            actions.push(RackAction::SelectChannel(channel.id));
+        } else if selector.secondary_clicked() && !state.selection.remove(&channel.id) {
+            state.selection.insert(channel.id);
+        }
+        if selector.drag_started_by(egui::PointerButton::Secondary) {
+            state.select_drag = true;
+        }
+        if state.select_drag
+            && paint
+                .ui
+                .input(|i| i.pointer.hover_pos())
+                .is_some_and(|p| p.y >= select.top() - 2.0 && p.y <= select.bottom() + 2.0)
+        {
+            state.selection.insert(channel.id);
+        }
         if selected {
             painter.rect_stroke(
                 select.expand(1.0),
@@ -655,6 +703,9 @@ pub fn paint_channel_rack(
                 actions.push(RackAction::CreateAutomation(channel, param));
             }
         }
+    }
+    if !paint.ui.input(|i| i.pointer.secondary_down()) {
+        state.select_drag = false;
     }
     actions
 }

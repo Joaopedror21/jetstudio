@@ -47,6 +47,24 @@ struct AudioHost {
     midi: Option<jet_playback::midi::MidiInputs>,
 }
 
+/// Where the selected channels go [Manual: channelrack, "Assign selected to free mixer track(s)
+/// (Ctrl+L)"; mixer, "Route selected channels to this track (Ctrl+L)", "... starting from this
+/// track (Ctrl+Shift+L)"].
+#[derive(Clone, Copy, Debug)]
+enum Route {
+    Free,
+    To(u16),
+    From(u16),
+}
+
+/// "Delete selected (Alt+Del)", "Clone selected (Alt+C)", "Move selected up/down (Alt+Up/Down)".
+#[derive(Clone, Copy, Debug)]
+enum RackSelectionOp {
+    Delete,
+    Clone,
+    Move(i32),
+}
+
 /// Notes being recorded into a pattern [Manual: recording_scores].
 struct NoteTake {
     pattern: u64,
@@ -230,6 +248,10 @@ enum UiAction {
     AudioSettings(AudioSettingsAction),
     Graph(GraphAction),
     Automation(AutomationSettingsAction),
+    /// Mixer routing of the selected channels.
+    Route(Route),
+    /// An operation on the selected channels (Channel rack focused).
+    RackSelection(RackSelectionOp),
     ToggleRecord,
     ToggleTyping,
     ToggleRecordAudio,
@@ -447,6 +469,43 @@ impl JetApp {
         host.cpu = host.cpu * 0.8 + load * 0.2;
         let meters = Arc::clone(host.output.meters());
         meters.read_scope(&mut host.scope);
+    }
+
+    /// Route the selected channels to mixer tracks.
+    fn route_selected(&mut self, route: Route) {
+        let ids = self.rack_selection();
+        self.multi_edit += 1;
+        let key = format!("rack.multi.{}", self.multi_edit);
+        for (i, id) in ids.into_iter().enumerate() {
+            match route {
+                Route::Free => {
+                    self.gesture(&key, "channel.mixer_target.free", json!({"id": id}));
+                }
+                Route::To(track) => self.gesture(
+                    &key,
+                    "channel.mixer_target.set",
+                    json!({"id": id, "value": track}),
+                ),
+                Route::From(track) => self.gesture(
+                    &key,
+                    "channel.mixer_target.set",
+                    json!({"id": id, "value": (usize::from(track) + i).min(jet_model::MAX_INSERTS)}),
+                ),
+            }
+        }
+        self.session.end_gesture();
+    }
+
+    /// The selected channels in Channel rack order (the target channel when none is marked).
+    fn rack_selection(&self) -> Vec<u64> {
+        let project = self.session.project();
+        let target = self.selected_channel_id();
+        project
+            .channels
+            .iter()
+            .map(|c| c.id.0)
+            .filter(|id| self.rack.selection.contains(id) || Some(*id) == target)
+            .collect()
     }
 
     fn selected_channel_id(&self) -> Option<u64> {
@@ -937,6 +996,13 @@ impl JetApp {
                 "mixer.track.stereo_sep.set",
                 json!({"track": track, "value": value}),
             ),
+            MixerAction::RouteSelected { track, sequential } => {
+                self.route_selected(if sequential {
+                    Route::From(track)
+                } else {
+                    Route::To(track)
+                });
+            }
             MixerAction::CreateAutomation { track, fader } => {
                 let target = if fader {
                     json!({ "MixerVolume": track })
@@ -1410,6 +1476,36 @@ impl JetApp {
             UiAction::Mixer(action) => self.run_mixer(action),
             UiAction::AudioSettings(action) => self.run_audio_settings(action),
             UiAction::ToggleRecord => self.toggle_record(),
+            UiAction::Route(route) => self.route_selected(route),
+            UiAction::RackSelection(op) => {
+                let mut ids = self.rack_selection();
+                self.multi_edit += 1;
+                let key = format!("rack.multi.{}", self.multi_edit);
+                match op {
+                    RackSelectionOp::Delete => {
+                        for id in &ids {
+                            self.gesture(&key, "channel.remove", json!({"id": id}));
+                        }
+                        self.rack.selection.clear();
+                        self.rack.selected_channel = None;
+                    }
+                    RackSelectionOp::Clone => {
+                        for id in &ids {
+                            self.gesture(&key, "channel.clone", json!({"id": id}));
+                        }
+                    }
+                    RackSelectionOp::Move(delta) => {
+                        // Move the channel nearest the destination first so they keep order.
+                        if delta > 0 {
+                            ids.reverse();
+                        }
+                        for id in &ids {
+                            self.gesture(&key, "channel.move", json!({"id": id, "delta": delta}));
+                        }
+                    }
+                }
+                self.session.end_gesture();
+            }
             UiAction::Automation(action) => {
                 let Some(id) = self.automation_open else {
                     return;
@@ -1841,14 +1937,30 @@ impl JetApp {
         if pressed(Key::R) && modifiers.ctrl {
             actions.push(UiAction::ExportWav);
         }
-        if pressed(Key::L)
-            && modifiers.ctrl
-            && let Some(id) = self.selected_channel_id()
+        if pressed(Key::L) && modifiers.ctrl {
+            let focused = self.workspace.as_ref().and_then(|ws| ws.focused);
+            actions.push(UiAction::Route(match (focused, modifiers.shift) {
+                (Some(WindowKind::Mixer), false) => Route::To(self.mixer.selected),
+                (Some(WindowKind::Mixer), true) => Route::From(self.mixer.selected.max(1)),
+                _ => Route::Free,
+            }));
+        }
+        if modifiers.alt
+            && !modifiers.ctrl
+            && self.workspace.as_ref().and_then(|ws| ws.focused) == Some(WindowKind::ChannelRack)
         {
-            actions.push(UiAction::Engine(
-                "channel.mixer_target.free",
-                json!({"id": id}),
-            ));
+            if pressed(Key::Delete) {
+                actions.push(UiAction::RackSelection(RackSelectionOp::Delete));
+            }
+            if pressed(Key::C) {
+                actions.push(UiAction::RackSelection(RackSelectionOp::Clone));
+            }
+            if pressed(Key::ArrowUp) {
+                actions.push(UiAction::RackSelection(RackSelectionOp::Move(-1)));
+            }
+            if pressed(Key::ArrowDown) {
+                actions.push(UiAction::RackSelection(RackSelectionOp::Move(1)));
+            }
         }
         if pressed(Key::O) && modifiers.ctrl {
             actions.push(UiAction::OpenProject);
@@ -4520,6 +4632,117 @@ mod tests {
             app.session.project().automations[0].points[0].value,
             1000 - before
         );
+    }
+
+    #[test]
+    fn channel_selectors_and_routing_shortcuts() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        for name in ["Kick", "Snare", "Hat"] {
+            app.execute("channel.add", json!({"name": name}));
+        }
+        open_rack(&mut app, &ctx);
+        let selector = |app: &JetApp, id: u64| {
+            app.probe().entries()[&format!("channel-rack.selector.{id}")].rect
+        };
+        let targets = |app: &JetApp| -> Vec<u16> {
+            app.session
+                .project()
+                .channels
+                .iter()
+                .map(|c| c.mixer_target)
+                .collect()
+        };
+        let ctrl = Modifiers {
+            ctrl: true,
+            command: true,
+            ..Modifiers::default()
+        };
+        let press = |app: &mut JetApp, k: Key, m: Modifiers| {
+            run_frame(app, &ctx, vec![Event::ModifiersChanged(m), key(k, true, m)]);
+            run_frame(
+                app,
+                &ctx,
+                vec![Event::ModifiersChanged(Modifiers::default())],
+            );
+        };
+        // Click selects Kick, right-click adds Hat.
+        let r = selector(&app, 1);
+        click(&mut app, &ctx, r);
+        let r = selector(&app, 3);
+        click_button(&mut app, &ctx, r, PointerButton::Secondary);
+        assert_eq!(app.rack_selection(), vec![1, 3]);
+        let before = targets(&app);
+        // Ctrl+L in the Channel rack: each selected channel to its own free insert.
+        press(&mut app, Key::L, ctrl);
+        let after = targets(&app);
+        assert_eq!(after[1], before[1], "Snare is not selected");
+        assert!(
+            after[0] > 0 && after[2] > 0 && after[0] != after[2],
+            "{after:?}"
+        );
+        app.execute("edit.undo_step", json!({}));
+        assert_eq!(targets(&app), before, "one undo step");
+
+        // Double-click selects every channel.
+        let r = selector(&app, 2);
+        run_frame(&mut app, &ctx, vec![Event::PointerMoved(r.center())]);
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                run_frame(
+                    &mut app,
+                    &ctx,
+                    vec![Event::PointerButton {
+                        pos: r.center(),
+                        button: PointerButton::Primary,
+                        pressed,
+                        modifiers: Modifiers::default(),
+                    }],
+                );
+            }
+        }
+        assert_eq!(app.rack_selection(), vec![1, 2, 3]);
+
+        // In the Mixer, Ctrl+Shift+L routes them in sequence from the selected track.
+        toggle(&mut app, &ctx, Key::F9);
+        let label = app.probe().entries()["mixer.track.5.label"].rect;
+        click(&mut app, &ctx, label);
+        assert_eq!(app.mixer.selected, 5);
+        press(
+            &mut app,
+            Key::L,
+            Modifiers {
+                shift: true,
+                ..ctrl
+            },
+        );
+        assert_eq!(targets(&app), vec![5, 6, 7]);
+        // Ctrl+L routes all of them to that track.
+        press(&mut app, Key::L, ctrl);
+        assert_eq!(targets(&app), vec![5, 5, 5]);
+
+        // Alt+Down in the Channel rack moves the selected channel down.
+        run_frame(&mut app, &ctx, Vec::new());
+        let r = selector(&app, 1);
+        click(&mut app, &ctx, r);
+        assert_eq!(
+            app.workspace.as_ref().and_then(|ws| ws.focused),
+            Some(WindowKind::ChannelRack)
+        );
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        press(&mut app, Key::ArrowDown, alt);
+        let order: Vec<u64> = app
+            .session
+            .project()
+            .channels
+            .iter()
+            .map(|c| c.id.0)
+            .collect();
+        assert_eq!(order, vec![2, 1, 3]);
     }
 
     #[test]

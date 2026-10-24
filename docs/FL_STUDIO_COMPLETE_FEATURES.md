@@ -105,7 +105,7 @@
 | CR-003 | Clonar canal | "Clone ... including settings and generator type"; clone dos selecionados "does not contain its notes" | Inserido logo após o original | CR-001 | S | P1 | Testado | `channel_solo_clone_and_move` |
 | CR-004 | Renomear | Menu "Rename, recolor and icon" (F2) | Edição de nome | — | S | P1 | Implementado (edição inline com Enter/Esc) | — |
 | CR-005 | Cor do canal | "Color selected", "Gradient", "Random" | Cor do botão | — | S | P2 | Parcialmente compatível: comando `channel.color.set`; falta o seletor de cor | — |
-| CR-006 | Mover canal | "Move selected up/down (Alt+Up/Down)", Shift+roda | Reordena | — | S | P1 | Testado no engine; sem atalho na UI | `channel_solo_clone_and_move` |
+| CR-006 | Mover canal | "Move selected up/down (Alt+Up/Down)", Shift+roda | Reordena | — | S | P1 | Testado: Alt+Up/Down com o Channel rack focado move os canais selecionados; Alt+C clona e Alt+Del apaga a seleção, cada um num passo de undo | `channel_solo_clone_and_move`, `channel_selectors_and_routing_shortcuts` |
 | CR-007 | Mute | "Mute/Unmute - (Left-Click)" no LED | Mute vale para o playback de steps e do Piano roll; MIDI ao vivo continua | jet-seq | S | P0 | Testado | `muted_channels_produce_no_events`, `channel_volume_pan_and_mute_change_the_audio` |
 | CR-008 | Solo | "(Ctrl+Left-Click), (Alt+Left-Click) OR (Right+Click)"; repetir "unsolo ... (unmute all)" | Muta todos os outros | CR-007 | S | P1 | Testado (Ctrl/Alt+clique e clique direito fazem solo direto, sem o menu) | `channel_solo_clone_and_move` |
 | CR-009 | Volume do canal | §7-8: Sampler carrega em "-5.2 dB (78%)"; 100% restaura o nível original | Knob pré-mixer | jet-dsp | S | P0 | Parcialmente compatível (H-VOL-1); arraste vertical | `channel_volume_matches_the_two_manual_points`, `default_sampler_plays_8_2_db...` |
@@ -233,7 +233,7 @@
 | MX-014 | Track delay / PDC | "Track delay", PDC | Compensação de latência | AE | L | P2 | Especificado (`Effect::latency`; nenhum efeito atual tem latência) | — |
 | MX-015 | Entrada/saída de áudio por faixa | "Audio Input & Output" | Requer ASIO | REC | L | P2 | Pesquisado | — |
 | MX-016 | Docks, layouts, renomear/colorir faixas | — | — | — | S | P3 | Renomear: Testado no engine; o resto: Pesquisado | — |
-| MX-017 | Ctrl+L / Ctrl+Shift+L (rotear canais selecionados) | "Route selected channels to this track" | — | CR-011 | S | P1 | Parcialmente compatível (Ctrl+L no canal selecionado) | — |
+| MX-017 | Ctrl+L / Ctrl+Shift+L (rotear canais selecionados) | [Manual: mixer] "Route selected channels to this track (Ctrl+L) ... starting from this track (Ctrl+Shift+L)"; [channelrack] "Assign selected to free mixer track(s) (Ctrl+L)" | — | CR-011 | S | P1 | Testado: seletores de canal no rack (clique seleciona, botão direito adiciona/remove, arrastar com o direito seleciona vários, duplo clique seleciona todos); Ctrl+L no rack manda cada selecionado para um insert livre; com o Mixer focado, Ctrl+L manda todos para a faixa selecionada e Ctrl+Shift+L em sequência a partir dela; o mesmo no menu de botão direito do nome da faixa ("Channel routing"); cada operação é um passo de undo | `channel_selectors_and_routing_shortcuts` |
 
 ## 9. Motor de áudio (AE)
 

@@ -14,13 +14,13 @@ Legenda: ✅ disponível e testado · 🟡 parcial (o que falta está ao lado) �
 | Sampler e instrumentos (SMP/INS) | 20 | 8 | 3 | 9 | 0 |
 | Piano Roll (PR) | 27 | 9 | 13 | 5 | 0 |
 | Playlist (PL) | 17 | 5 | 9 | 3 | 0 |
-| Mixer (MX) | 17 | 9 | 4 | 4 | 0 |
+| Mixer (MX) | 17 | 10 | 3 | 4 | 0 |
 | Motor de áudio (AE) | 15 | 9 | 2 | 4 | 0 |
 | Efeitos (FX) | 14 | 9 | 1 | 4 | 0 |
 | Plugins externos (PLG) | 4 | 0 | 0 | 4 | 0 |
 | Browser e arquivos (BR/FILE) | 12 | 2 | 5 | 4 | 1 |
 | Automação, MIDI, gravação (AUT/MIDI/REC) | 10 | 0 | 4 | 6 | 0 |
-| **Total** | **192** | **73** | **58** | **59** | **2** |
+| **Total** | **192** | **74** | **57** | **59** | **2** |
 
 As contagens foram geradas por script a partir da coluna Estado do inventário: ✅ = Testado; 🟡 = Implementado ou Parcialmente compatível; ⬜ = Pesquisado ou Especificado; ⛔ = Bloqueado. 
 
