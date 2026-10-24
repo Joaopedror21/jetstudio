@@ -232,3 +232,101 @@ fn slicing_and_slipping_clips() {
     session.execute("edit.undo_step", json!({})).unwrap();
     assert_eq!(session.project().active().unwrap().clips.len(), 1);
 }
+
+#[test]
+fn automation_settings_rerange_flip_normalize_time_and_lfo() {
+    let mut session = Session::with_clock(Box::new(ManualClock::new(48_000)));
+    session
+        .execute("channel.add", json!({"name": "Pad"}))
+        .unwrap();
+    session
+        .execute("automation.create", json!({"target": {"ChannelVolume": 1}}))
+        .unwrap();
+    let id = session.project().automations[0].id.0;
+    let lane = |session: &Session, tick: i64| {
+        jet_seq::automation::lanes(session.project())[0]
+            .value_at(tick)
+            .unwrap()
+    };
+    // The new clip starts at the knob value (78%).
+    let knob = lane(&session, 10);
+    // Min 20% / Max 60% re-range the envelope.
+    let mut settings = jet_model::AutoSettings {
+        min: 200,
+        max: 600,
+        ..jet_model::AutoSettings::default()
+    };
+    session
+        .execute(
+            "automation.settings.set",
+            json!({"id": id, "settings": settings}),
+        )
+        .unwrap();
+    assert!((lane(&session, 10) - (0.2 + 0.4 * knob)).abs() < 1e-9);
+    // Flip inverts the points.
+    session
+        .execute("automation.flip", json!({"id": id}))
+        .unwrap();
+    assert!((lane(&session, 10) - (0.2 + 0.4 * (1.0 - knob))).abs() < 1e-9);
+    // Normalize: with a second level the envelope spans 0..100%.
+    session
+        .execute(
+            "automation.point.add",
+            json!({"id": id, "at": 192, "value": 900}),
+        )
+        .unwrap();
+    session
+        .execute("automation.normalize", json!({"id": id}))
+        .unwrap();
+    let values: Vec<u16> = session.project().automations[0]
+        .points
+        .iter()
+        .map(|p| p.value)
+        .collect();
+    assert_eq!(values.iter().min(), Some(&0));
+    assert_eq!(values.iter().max(), Some(&1000));
+    // LFO, multiplied: a square at full level silences half of each cycle (one cycle per beat).
+    settings.min = 0;
+    settings.max = 1000;
+    settings.lfo = jet_model::AutoLfo {
+        on: true,
+        tension: -1000,
+        multiply: true,
+        ..jet_model::AutoLfo::default()
+    };
+    session
+        .execute(
+            "automation.settings.set",
+            json!({"id": id, "settings": settings}),
+        )
+        .unwrap();
+    assert_eq!(lane(&session, 60), 0.0, "second half of the first beat");
+    assert!(lane(&session, 20) > 0.0);
+    // Time x2 plays the clip twice as fast: tick 96 reads the point at 192.
+    settings.lfo.on = false;
+    settings.time_milli = 2000;
+    session
+        .execute(
+            "automation.settings.set",
+            json!({"id": id, "settings": settings}),
+        )
+        .unwrap();
+    let at_192 = f64::from(
+        session.project().automations[0]
+            .points
+            .iter()
+            .find(|p| p.at.0 == 192)
+            .unwrap()
+            .value,
+    ) / 1000.0;
+    assert!((lane(&session, 96) - at_192).abs() < 1e-9);
+    assert!(
+        session
+            .execute(
+                "automation.settings.set",
+                json!({"id": id, "settings": {"min": 0, "max": 1000, "time_milli": 50,
+                    "lfo": jet_model::AutoLfo::default()}}),
+            )
+            .is_err()
+    );
+}

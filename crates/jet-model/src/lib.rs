@@ -900,6 +900,79 @@ pub struct AutomationClip {
     /// The value the control returns to when the song starts ("Initialized controls"
     /// [Manual: playlist_automationclip]).
     pub initial: u16,
+    /// Automation Clip Settings: Min, Max, Time and the LFO.
+    #[serde(default)]
+    pub settings: AutoSettings,
+}
+
+/// [Manual: playlist_automationclip, "Settings"]: "Min - ... re-ranges the output"; "Max"; "Time -
+/// Controls the speed at which the Automation Clip plays back"; "LFO Mode".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoSettings {
+    /// Output range 0..=1000.
+    pub min: u16,
+    pub max: u16,
+    /// Playback speed multiplier x1000 (100..=16000).
+    pub time_milli: u16,
+    pub lfo: AutoLfo,
+}
+
+impl Default for AutoSettings {
+    fn default() -> Self {
+        Self {
+            min: 0,
+            max: 1000,
+            time_milli: 1000,
+            lfo: AutoLfo::default(),
+        }
+    }
+}
+
+/// "LFO Switch"; "Speed (SPD)"; "Tension (TENS) - ... a shape morph ... starting with square
+/// (pulse), sine, triangle and 'pulse'"; "Shape Skew"; "Pulse Width"; "Level (LVL) - ... the
+/// middle position ... disable[s] the LFO. Turn it left for negative amplitude"; "Multiply - ...
+/// the two values will be multiplied ... When the switch is disabled both values are added".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoLfo {
+    pub on: bool,
+    /// Cycles per beat x1000 (hypothesis H-AUT-4: the manual gives no unit).
+    pub speed_milli: u32,
+    /// -1000 (square) .. -333 (sine) .. 333 (triangle) .. 1000 (narrow pulse).
+    pub tension: i16,
+    /// -1000..=1000; with the triangle it gives saw shapes.
+    pub skew: i16,
+    /// 1..=999 (fraction of the cycle x1000).
+    pub pulse_width: u16,
+    /// -1000..=1000.
+    pub level: i16,
+    pub multiply: bool,
+}
+
+impl Default for AutoLfo {
+    fn default() -> Self {
+        Self {
+            on: false,
+            speed_milli: 1000,
+            tension: -333,
+            skew: 0,
+            pulse_width: 500,
+            level: 1000,
+            multiply: false,
+        }
+    }
+}
+
+impl AutoSettings {
+    pub fn valid(&self) -> bool {
+        self.min <= 1000
+            && self.max <= 1000
+            && (100..=16_000).contains(&self.time_milli)
+            && (10..=64_000).contains(&self.lfo.speed_milli)
+            && i32::from(self.lfo.tension).abs() <= 1000
+            && i32::from(self.lfo.skew).abs() <= 1000
+            && (1..=999).contains(&self.lfo.pulse_width)
+            && i32::from(self.lfo.level).abs() <= 1000
+    }
 }
 
 impl AutomationClip {

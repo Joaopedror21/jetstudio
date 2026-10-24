@@ -2,6 +2,7 @@
 
 mod app;
 mod audio_settings;
+mod automation_settings;
 mod browser;
 mod channel_rack;
 mod channel_settings;

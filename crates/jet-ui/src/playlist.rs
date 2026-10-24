@@ -237,6 +237,8 @@ pub enum PlaylistAction {
     },
     /// Play tool: start playback (Song mode) from this tick.
     PlayFrom(i64),
+    /// Double-click on an Automation Clip opens its settings.
+    OpenAutomation(u64),
     MuteClip {
         id: u64,
         muted: bool,
@@ -1136,6 +1138,13 @@ pub fn paint_playlist(
         // Right-click deletes [Manual: playlist, "Draw mode ... Right-Click to delete Clips"].
         if response.secondary_clicked() {
             actions.push(PlaylistAction::DeleteClip(clip.id));
+        }
+        // "To Open - Double-click the Automation Clip in the Playlist" [Manual:
+        // playlist_automationclip, "Automation Clip Settings"].
+        if response.double_clicked()
+            && let Some(auto) = &clip.automation
+        {
+            actions.push(PlaylistAction::OpenAutomation(auto.id));
         }
         // Delete and Mute tools: "Click-and-drag to delete Clips", "Left-click and drag to mute
         // multiple clips" - every clip the pointer crosses while the button is down.

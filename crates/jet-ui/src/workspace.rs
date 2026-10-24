@@ -9,6 +9,7 @@ pub enum WindowKind {
     ChannelSettings,
     AudioSettings,
     GraphEditor,
+    AutomationSettings,
 }
 
 impl WindowKind {
@@ -21,6 +22,7 @@ impl WindowKind {
             Self::ChannelSettings => "Channel settings",
             Self::AudioSettings => "Audio settings",
             Self::GraphEditor => "Graph editor",
+            Self::AutomationSettings => "Automation clip settings",
         }
     }
 
@@ -33,6 +35,7 @@ impl WindowKind {
             Self::ChannelSettings => "channel-settings",
             Self::AudioSettings => "audio-settings",
             Self::GraphEditor => "graph-editor",
+            Self::AutomationSettings => "automation-settings",
         }
     }
 }
@@ -189,6 +192,21 @@ impl Workspace {
                             ),
                             size,
                         )
+                    },
+                    visible: false,
+                    maximized: false,
+                    restore_rect: None,
+                },
+                WinState {
+                    kind: WindowKind::AutomationSettings,
+                    // Right-aligned like Channel settings so it never starts off screen.
+                    rect: {
+                        let size = vec2(
+                            420.0_f32.min(desktop.width() - 40.0).max(240.0),
+                            (desktop.height() - 80.0).clamp(160.0, 420.0),
+                        );
+                        let x = (desktop.right() - size.x - 30.0).max(desktop.left());
+                        Rect::from_min_size(pos2(x, desktop.top() + 60.0), size)
                     },
                     visible: false,
                     maximized: false,

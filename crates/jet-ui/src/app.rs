@@ -10,6 +10,9 @@ use jet_playback::{AudioOutput, OutputRequest};
 use serde_json::{Value, json};
 
 use crate::audio_settings::{AudioSettingsAction, AudioSettingsView, paint_audio_settings};
+use crate::automation_settings::{
+    AutomationSettingsAction, AutomationSettingsView, paint_automation_settings,
+};
 use crate::browser::{BrowserState, paint_browser};
 use crate::channel_rack::{
     ChannelView, RackAction, RackMenu, RackState, RackView, paint_channel_rack,
@@ -123,6 +126,8 @@ pub struct JetApp {
     audio_status: Option<String>,
     piano: PianoRollState,
     graph: GraphState,
+    /// Automation Clip shown in the settings window.
+    automation_open: Option<u64>,
     settings_page: ChannelSettingsState,
     mixer: MixerState,
     workspace: Option<Workspace>,
@@ -179,6 +184,7 @@ impl Default for JetApp {
             audio_status: None,
             piano: PianoRollState::default(),
             graph: GraphState::default(),
+            automation_open: None,
             settings_page: ChannelSettingsState::default(),
             mixer: MixerState::default(),
             workspace: None,
@@ -223,6 +229,7 @@ enum UiAction {
     Settings(SettingsAction),
     AudioSettings(AudioSettingsAction),
     Graph(GraphAction),
+    Automation(AutomationSettingsAction),
     ToggleRecord,
     ToggleTyping,
     ToggleRecordAudio,
@@ -1403,6 +1410,31 @@ impl JetApp {
             UiAction::Mixer(action) => self.run_mixer(action),
             UiAction::AudioSettings(action) => self.run_audio_settings(action),
             UiAction::ToggleRecord => self.toggle_record(),
+            UiAction::Automation(action) => {
+                let Some(id) = self.automation_open else {
+                    return;
+                };
+                match action {
+                    AutomationSettingsAction::Set { settings, gesture } => {
+                        let params = json!({"id": id, "settings": settings});
+                        match gesture {
+                            Some(key) => self.gesture(
+                                &format!("{key}.{id}"),
+                                "automation.settings.set",
+                                params,
+                            ),
+                            None => self.execute("automation.settings.set", params),
+                        }
+                    }
+                    AutomationSettingsAction::EndGesture => self.session.end_gesture(),
+                    AutomationSettingsAction::Flip => {
+                        self.execute("automation.flip", json!({"id": id}));
+                    }
+                    AutomationSettingsAction::Normalize => {
+                        self.execute("automation.normalize", json!({"id": id}));
+                    }
+                }
+            }
             UiAction::Graph(action) => match action {
                 GraphAction::Set {
                     pattern,
@@ -1519,6 +1551,19 @@ impl JetApp {
                 }
                 PlaylistAction::SlipClip { id, offset } => {
                     self.execute("playlist.clip.slip", json!({"id": id, "offset": offset}));
+                }
+                PlaylistAction::OpenAutomation(id) => {
+                    self.automation_open = Some(id);
+                    let visible = self
+                        .workspace
+                        .as_ref()
+                        .and_then(|ws| ws.window(WindowKind::AutomationSettings))
+                        .is_some_and(|w| w.visible);
+                    if visible {
+                        self.pending_focus = Some(WindowKind::AutomationSettings);
+                    } else {
+                        self.pending_show.push(WindowKind::AutomationSettings);
+                    }
                 }
                 PlaylistAction::PlayFrom(tick) => {
                     if self.session.transport_snapshot().mode != PlayMode::Song {
@@ -2385,6 +2430,17 @@ impl JetApp {
         let piano_view = self.piano_view();
         let mixer_view = self.mixer_view();
         let graph_view = self.graph_view();
+        let automation_view = self.automation_open.and_then(|id| {
+            self.session
+                .project()
+                .automations
+                .iter()
+                .find(|a| a.id.0 == id)
+                .map(|a| AutomationSettingsView {
+                    name: a.name.clone(),
+                    settings: a.settings,
+                })
+        });
         let windows = self
             .workspace
             .as_ref()
@@ -2445,6 +2501,7 @@ impl JetApp {
                 audio_settings_view: &audio_settings_view,
                 graph_state: &mut self.graph,
                 graph_view: &graph_view,
+                automation_view: automation_view.as_ref(),
                 focused,
             };
             for win in windows.iter().filter(|win| win.visible) {
@@ -2553,6 +2610,7 @@ struct Surfaces<'a> {
     audio_settings_view: &'a AudioSettingsView,
     graph_state: &'a mut GraphState,
     graph_view: &'a GraphView,
+    automation_view: Option<&'a AutomationSettingsView>,
     focused: Option<WindowKind>,
 }
 
@@ -2601,7 +2659,8 @@ fn paint_window(
         | WindowKind::Mixer
         | WindowKind::ChannelSettings
         | WindowKind::AudioSettings
-        | WindowKind::GraphEditor => 22.0,
+        | WindowKind::GraphEditor
+        | WindowKind::AutomationSettings => 22.0,
     };
     let title_drag = Rect::from_min_max(
         pos2(title.left() + drag_left, title.top()),
@@ -2680,9 +2739,15 @@ fn paint_window(
         | WindowKind::Mixer
         | WindowKind::ChannelSettings
         | WindowKind::AudioSettings
-        | WindowKind::GraphEditor => {
+        | WindowKind::GraphEditor
+        | WindowKind::AutomationSettings => {
             let label = if win.kind == WindowKind::AudioSettings {
                 "Settings - Audio".to_owned()
+            } else if win.kind == WindowKind::AutomationSettings {
+                surfaces.automation_view.map_or_else(
+                    || "Automation clip settings".to_owned(),
+                    |v| format!("Automation clip - {}", v.name),
+                )
             } else if win.kind == WindowKind::GraphEditor {
                 surfaces.graph_view.channel.as_ref().map_or_else(
                     || "Graph editor".to_owned(),
@@ -2805,6 +2870,14 @@ fn paint_window(
                 )
                 .into_iter()
                 .map(UiAction::Settings),
+            );
+        }
+        WindowKind::AutomationSettings => {
+            let content = Rect::from_min_max(pos2(rect.left(), title.bottom()), rect.max);
+            actions.extend(
+                paint_automation_settings(paint, surfaces.automation_view, content)
+                    .into_iter()
+                    .map(UiAction::Automation),
             );
         }
         WindowKind::GraphEditor => {
@@ -4391,6 +4464,62 @@ mod tests {
         let target = entry(&app, "ins.lfo-square");
         click(&mut app, &ctx, target);
         assert_eq!(sampler(&app).lfo[4].shape, jet_model::LfoShape::Square);
+    }
+
+    #[test]
+    fn double_click_opens_automation_clip_settings() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("channel.add", json!({"name": "Pad"}));
+        app.execute("automation.create", json!({"target": {"ChannelVolume": 1}}));
+        run_frame(&mut app, &ctx, Vec::new());
+        let clip_id = app.session.project().arrangements[0].clips[0].id.0;
+        let band = app.probe().entries()[&format!("playlist.clip.{clip_id}")].rect;
+        let pos = band.center();
+        run_frame(&mut app, &ctx, vec![Event::PointerMoved(pos)]);
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                run_frame(
+                    &mut app,
+                    &ctx,
+                    vec![Event::PointerButton {
+                        pos,
+                        button: PointerButton::Primary,
+                        pressed,
+                        modifiers: Modifiers::default(),
+                    }],
+                );
+            }
+        }
+        run_frame(&mut app, &ctx, Vec::new());
+        assert!(
+            app.probe()
+                .entries()
+                .contains_key("automation-settings.window")
+        );
+        let settings = |app: &JetApp| app.session.project().automations[0].settings;
+        let lfo = app.probe().entries()["automation-settings.lfo"].rect;
+        click(&mut app, &ctx, lfo);
+        assert!(settings(&app).lfo.on);
+        let min = app.probe().entries()["automation-settings.min"].rect;
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(pos2(min.center().x, min.center().y), vec2(1.0, 1.0)),
+        );
+        assert!(
+            (400..=600).contains(&settings(&app).min),
+            "{:?}",
+            settings(&app)
+        );
+        let before = app.session.project().automations[0].points[0].value;
+        let flip = app.probe().entries()["automation-settings.flip"].rect;
+        click(&mut app, &ctx, flip);
+        assert_eq!(
+            app.session.project().automations[0].points[0].value,
+            1000 - before
+        );
     }
 
     #[test]

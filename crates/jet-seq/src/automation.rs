@@ -93,7 +93,9 @@ pub struct AutoLane {
     pub target: AutoTarget,
     /// Sorted by start.
     pub segments: Vec<AutoSegment>,
-    pub points: Vec<(AutomationId, Vec<AutoPoint>)>,
+    pub points: Vec<(AutomationId, Vec<AutoPoint>, jet_model::AutoSettings)>,
+    /// Ticks per beat (the clip LFO speed is in cycles per beat).
+    pub beat_ticks: i64,
 }
 
 impl AutoLane {
@@ -102,14 +104,60 @@ impl AutoLane {
     pub fn value_at(&self, tick: i64) -> Option<f64> {
         let index = self.segments.partition_point(|s| s.start <= tick);
         let segment = self.segments.get(index.checked_sub(1)?)?;
-        let points = &self
+        let (_, points, settings) = self
             .points
             .iter()
-            .find(|(id, _)| *id == segment.automation)?
-            .1;
+            .find(|(id, ..)| *id == segment.automation)?;
         let local = tick.min(segment.end - 1).max(segment.start) - segment.start + segment.offset;
-        value_at(points, local)
+        // "Time - Controls the speed at which the Automation Clip plays back".
+        let local = local * i64::from(settings.time_milli) / 1000;
+        let mut value = value_at(points, local)?;
+        let lfo = settings.lfo;
+        if lfo.on {
+            let phase = (local as f64 * f64::from(lfo.speed_milli)
+                / 1000.0
+                / self.beat_ticks.max(1) as f64)
+                .rem_euclid(1.0);
+            let wave = lfo_wave(lfo, phase) * f64::from(lfo.level) / 1000.0;
+            // Hypothesis H-AUT-4: multiplied, the LFO scales the envelope between 0 and itself;
+            // added, it offsets the envelope by up to half the range.
+            value = if lfo.multiply {
+                value * (0.5 + 0.5 * wave)
+            } else {
+                value + 0.5 * wave
+            }
+            .clamp(0.0, 1.0);
+        }
+        // "Min/Max - ... a scaling factor that re-ranges the output".
+        let (min, max) = (f64::from(settings.min), f64::from(settings.max));
+        Some((min + (max - min) * value) / 1000.0)
     }
+}
+
+/// The clip LFO's wave (-1..=1) at `phase` (0..1): the tension morphs square -> sine ->
+/// triangle -> narrow pulse; skew warps the phase; the pulse width sets the duty of the square
+/// and pulse shapes.
+pub fn lfo_wave(lfo: jet_model::AutoLfo, phase: f64) -> f64 {
+    let skew = (0.5 * (1.0 + f64::from(lfo.skew) / 1000.0)).clamp(0.001, 0.999);
+    let phase = if phase < skew {
+        0.5 * phase / skew
+    } else {
+        0.5 + 0.5 * (phase - skew) / (1.0 - skew)
+    };
+    let width = f64::from(lfo.pulse_width) / 1000.0;
+    // The triangle peaks where the sine does (a quarter cycle in).
+    let from_peak = (phase - 0.25).rem_euclid(1.0);
+    let shapes = [
+        if phase < width { 1.0 } else { -1.0 },
+        (phase * std::f64::consts::TAU).sin(),
+        1.0 - 4.0 * from_peak.min(1.0 - from_peak),
+        if phase < width * 0.25 { 1.0 } else { -1.0 },
+    ];
+    // Position 0..3 along the four shapes.
+    let at = (f64::from(lfo.tension) / 1000.0 + 1.0) * 1.5;
+    let i = (at.floor() as usize).min(2);
+    let f = at - i as f64;
+    shapes[i] * (1.0 - f) + shapes[i + 1] * f
 }
 
 /// Automation lanes for Song mode (Pattern mode plays no Playlist clips).
@@ -142,14 +190,16 @@ pub fn lanes(project: &Project) -> Vec<AutoLane> {
         match lanes.iter_mut().find(|l| l.target == automation.target) {
             Some(lane) => {
                 lane.segments.push(segment);
-                if !lane.points.iter().any(|(pid, _)| *pid == id) {
-                    lane.points.push((id, automation.points.clone()));
+                if !lane.points.iter().any(|(pid, ..)| *pid == id) {
+                    lane.points
+                        .push((id, automation.points.clone(), automation.settings));
                 }
             }
             None => lanes.push(AutoLane {
                 target: automation.target,
                 segments: vec![segment],
-                points: vec![(id, automation.points.clone())],
+                points: vec![(id, automation.points.clone(), automation.settings)],
+                beat_ticks: project.settings.beat_ticks().unwrap_or(96),
             }),
         }
     }
@@ -172,6 +222,24 @@ mod tests {
             tension,
             shape,
         }
+    }
+
+    #[test]
+    fn clip_lfo_tension_morphs_square_sine_triangle_and_pulse() {
+        let lfo = |tension: i16| jet_model::AutoLfo {
+            on: true,
+            tension,
+            ..jet_model::AutoLfo::default()
+        };
+        // Square at -1000, sine at -333, triangle at 333 (all peak a quarter cycle in).
+        assert_eq!(lfo_wave(lfo(-1000), 0.25), 1.0);
+        assert_eq!(lfo_wave(lfo(-1000), 0.75), -1.0);
+        assert!((lfo_wave(lfo(-333), 0.25) - 1.0).abs() < 1e-3);
+        assert!((lfo_wave(lfo(-333), 0.125) - (0.25 * std::f64::consts::PI).sin()).abs() < 1e-2);
+        assert!((lfo_wave(lfo(333), 0.125) - 0.5).abs() < 1e-2);
+        // The narrow pulse is high only for an eighth of a cycle at 50% width.
+        assert_eq!(lfo_wave(lfo(1000), 0.1), 1.0);
+        assert_eq!(lfo_wave(lfo(1000), 0.2), -1.0);
     }
 
     #[test]
@@ -236,6 +304,7 @@ mod tests {
                 point(384, 1000, CurveShape::SingleCurve, 0),
             ],
             initial: 781,
+            settings: jet_model::AutoSettings::default(),
         });
         let track = project.ids.track();
         project.arrangements[0]

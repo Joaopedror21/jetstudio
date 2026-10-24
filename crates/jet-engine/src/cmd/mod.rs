@@ -1065,6 +1065,30 @@ static SPECS: &[CommandSpec] = &[
         Coalesce
     ),
     spec!(
+        "automation.settings.set",
+        "Automation Clip settings",
+        "",
+        None,
+        "{id:uint,settings:AutoSettings}",
+        Coalesce
+    ),
+    spec!(
+        "automation.flip",
+        "Flip automation vertically",
+        "",
+        None,
+        "{id:uint}",
+        Step
+    ),
+    spec!(
+        "automation.normalize",
+        "Normalize automation levels",
+        "",
+        None,
+        "{id:uint}",
+        Step
+    ),
+    spec!(
         "automation.delete",
         "Delete automation clip",
         "",

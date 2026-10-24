@@ -158,6 +158,7 @@ fn song_mode_automation_does_not_allocate() {
                 },
             ],
             initial: 500,
+            settings: jet_model::AutoSettings::default(),
         });
         let clip = project.ids.clip();
         let mut instance =

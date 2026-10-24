@@ -55,6 +55,13 @@ struct IdParams {
     id: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsParams {
+    id: u64,
+    settings: jet_model::AutoSettings,
+}
+
 fn clip_mut(project: &mut Project, id: u64) -> Result<&mut AutomationClip, CmdError> {
     project
         .automations
@@ -102,6 +109,7 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                         },
                     ],
                     initial: current,
+                    settings: jet_model::AutoSettings::default(),
                 });
                 let track = project.ids.track();
                 let clip = project.ids.clip();
@@ -196,6 +204,44 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
             })
         }
         // Removing the clip definition removes its Playlist instances too.
+        // Automation Clip Settings: Min, Max, Time, LFO [Manual: playlist_automationclip].
+        "automation.settings.set" => {
+            let p: SettingsParams = parse(id, params)?;
+            if !p.settings.valid() {
+                return Err(invalid(id, "settings out of range"));
+            }
+            session.edit_project(|project| {
+                clip_mut(project, p.id)?.settings = p.settings;
+                Ok(())
+            })
+        }
+        // "Flip vertically - Inverts the current envelope."
+        "automation.flip" => {
+            let p: IdParams = parse(id, params)?;
+            session.edit_project(|project| {
+                for point in &mut clip_mut(project, p.id)?.points {
+                    point.value = 1000 - point.value;
+                }
+                Ok(())
+            })
+        }
+        // "Normalize levels - Scales the envelope so the highest and/or lowest levels reach
+        // +/- 100%."
+        "automation.normalize" => {
+            let p: IdParams = parse(id, params)?;
+            session.edit_project(|project| {
+                let points = &mut clip_mut(project, p.id)?.points;
+                let low = points.iter().map(|p| p.value).min().unwrap_or(0);
+                let high = points.iter().map(|p| p.value).max().unwrap_or(1000);
+                if high > low {
+                    for point in points.iter_mut() {
+                        point.value =
+                            (u32::from(point.value - low) * 1000 / u32::from(high - low)) as u16;
+                    }
+                }
+                Ok(())
+            })
+        }
         "automation.delete" => {
             let p: IdParams = parse(id, params)?;
             session.edit_project(|project| {
