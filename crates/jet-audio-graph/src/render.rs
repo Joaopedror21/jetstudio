@@ -297,21 +297,23 @@ impl Renderer {
         (numerator / denominator.max(1)) as u64
     }
 
-    /// Schedule the events of play ticks `from..to`. Looping plans play the material straight
-    /// to its end, then repeat `loop_start..length` (see `Sequence::wrap`); each stretch between
-    /// wraps is one segment.
+    /// Schedule the events of play ticks `from..to`. Looping plans follow the material's jumps,
+    /// pauses and end loop (see `Sequence::locate`); each linear stretch is one segment.
     fn schedule(&mut self, from: i64, to: i64) {
-        let length = self.plan.sequence.length.max(1);
         let limit = self.stop_events_after.unwrap_or(i64::MAX);
         let to = to.min(limit);
+        let anchor = self.transport.anchor_tick;
         let mut from = from;
         while from < to {
-            let (local_from, local_end) = if self.plan.looping {
-                (self.plan.sequence.wrap(from), length)
+            let (local_from, left) = if self.plan.looping {
+                self.plan.sequence.locate(anchor, from)
             } else {
                 (from, i64::MAX)
             };
-            let segment_to = to.min(from.saturating_add(local_end - local_from));
+            if left == 0 {
+                break; // stopped at a pause marker
+            }
+            let segment_to = to.min(from.saturating_add(left));
             let local_to = local_from + (segment_to - from);
             let mut index = self.plan.sequence.first_at_or_after(local_from);
             while let Some(event) = self.plan.sequence.events.get(index).copied() {
@@ -339,7 +341,9 @@ impl Renderer {
     /// notes that started earlier are not restarted).
     fn start_audio_in_progress(&mut self, tick: i64) {
         let local = if self.plan.looping {
-            self.plan.sequence.wrap(tick)
+            self.plan
+                .sequence
+                .wrap_from(self.transport.anchor_tick, tick)
         } else {
             tick
         };
@@ -654,7 +658,7 @@ impl Renderer {
         let tick = if playing {
             let t = self.tick_at(block_start);
             if self.plan.looping {
-                self.plan.sequence.wrap(t)
+                self.plan.sequence.wrap_from(self.transport.anchor_tick, t)
             } else {
                 t
             }
@@ -726,7 +730,9 @@ impl Renderer {
         }
         while tick < to {
             let local = if self.plan.looping {
-                self.plan.sequence.wrap(tick)
+                self.plan
+                    .sequence
+                    .wrap_from(self.transport.anchor_tick, tick)
             } else {
                 tick
             };

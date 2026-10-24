@@ -1564,6 +1564,24 @@ pub fn paint_playlist(
                 pos2(flag.right() + 2.0, flag.center().y),
                 pos2(flag.left(), flag.bottom()),
             ],
+            // Ours: a left-pointing flag returns (marker loop), a narrow right wedge skips, a short
+            // block pauses.
+            jet_model::MarkerAction::MarkerLoop => vec![
+                pos2(flag.right() + 2.0, flag.top()),
+                pos2(flag.left(), flag.center().y),
+                pos2(flag.right() + 2.0, flag.bottom()),
+            ],
+            jet_model::MarkerAction::Skip => vec![
+                pos2(flag.left(), flag.top() + 3.0),
+                pos2(flag.right() + 4.0, flag.center().y),
+                pos2(flag.left(), flag.bottom() - 3.0),
+            ],
+            jet_model::MarkerAction::Pause => vec![
+                pos2(flag.left(), flag.top() + 4.0),
+                pos2(flag.right(), flag.top() + 4.0),
+                pos2(flag.right(), flag.bottom() - 4.0),
+                pos2(flag.left(), flag.bottom() - 4.0),
+            ],
             jet_model::MarkerAction::None => vec![
                 flag.left_top(),
                 flag.right_top(),
@@ -2252,10 +2270,13 @@ fn paint_marker_menu(
         state.marker_menu = None;
         return;
     };
-    const ACTIONS: [(jet_model::MarkerAction, &str); 3] = [
+    const ACTIONS: [(jet_model::MarkerAction, &str); 6] = [
         (jet_model::MarkerAction::None, "Action: None"),
         (jet_model::MarkerAction::Start, "Action: Start"),
         (jet_model::MarkerAction::Loop, "Action: Song loop"),
+        (jet_model::MarkerAction::MarkerLoop, "Action: Marker loop"),
+        (jet_model::MarkerAction::Skip, "Action: Marker skip"),
+        (jet_model::MarkerAction::Pause, "Action: Marker pause"),
     ];
     let mut items = vec![crate::widgets::MenuItem {
         label: "Delete",

@@ -64,24 +64,89 @@ pub struct Sequence {
     /// Where playback returns when it reaches `length` (a Song loop marker or a timeline
     /// selection start; 0 otherwise).
     pub loop_start: i64,
+    /// Jumps (from, to) taken when the play position reaches `from` (marker skip and marker
+    /// loop).
+    pub jumps: Vec<(i64, i64)>,
+    /// Positions where playback pauses (marker pause).
+    pub pauses: Vec<i64>,
     /// Ticks in one step, used for step-style note gates.
     pub step_ticks: i64,
 }
 
 impl Sequence {
-    /// The material tick for an unwrapped play tick: the play runs straight up to `length`, then
-    /// repeats `loop_start..length`.
-    pub fn wrap(&self, tick: i64) -> i64 {
+    /// The material tick for play tick `tick` of a playback that started at material position
+    /// `anchor` (play tick `anchor` too).
+    pub fn wrap_from(&self, anchor: i64, tick: i64) -> i64 {
+        self.locate(anchor, tick).0
+    }
+
+    /// (material position, linear ticks left before the next jump, pause or loop) for play tick
+    /// `tick` of a playback anchored at `anchor`. The play runs straight on; reaching a jump's
+    /// `from` moves it to its `to`, reaching `length` moves it to `loop_start`, reaching a pause
+    /// stops it there (0 ticks left). A jump fires when the position crosses `from`, not when it
+    /// starts on it. Cycles are folded, so any `tick` takes a few steps and no allocation.
+    pub fn locate(&self, anchor: i64, tick: i64) -> (i64, i64) {
+        const END: usize = usize::MAX - 1;
+        const PAUSE: usize = usize::MAX;
         let length = self.length.max(1);
-        if tick < length {
-            return tick;
-        }
         let start = if self.loop_start < length {
             self.loop_start.max(0)
         } else {
             0
         };
-        start + (tick - length).rem_euclid(length - start)
+        let span = (length - start).max(1);
+        let normalize = |m: i64| {
+            if m >= length {
+                start + (m - length).rem_euclid(span)
+            } else {
+                m.max(0)
+            }
+        };
+        let mut m = normalize(anchor);
+        let mut e = (tick - anchor).max(0);
+        let mut seen = [(usize::MAX, 0_i64); 16];
+        for _ in 0..256 {
+            let mut next = (length, END);
+            for (i, (from, _)) in self.jumps.iter().enumerate() {
+                if *from > m && *from < next.0 {
+                    next = (*from, i);
+                }
+            }
+            for at in &self.pauses {
+                if *at > m && *at < next.0 {
+                    next = (*at, PAUSE);
+                }
+            }
+            let d = next.0 - m;
+            if e < d {
+                return (m + e, d - e);
+            }
+            if next.1 == PAUSE {
+                return (next.0, 0);
+            }
+            e -= d;
+            m = if next.1 == END {
+                start
+            } else {
+                normalize(self.jumps[next.1].1)
+            };
+            // Fold whole cycles: the same boundary reached again means the play repeats.
+            match seen.iter_mut().find(|(kind, _)| *kind == next.1) {
+                Some(entry) => {
+                    let cycle = entry.1 - e;
+                    if cycle > 0 && e >= cycle {
+                        e %= cycle;
+                    }
+                    entry.1 = e;
+                }
+                None => {
+                    if let Some(slot) = seen.iter_mut().find(|(kind, _)| *kind == usize::MAX) {
+                        *slot = (next.1, e);
+                    }
+                }
+            }
+        }
+        (m, 0)
     }
 
     /// Gate length for a note: zero-length (step) notes hold for one step.
@@ -280,6 +345,41 @@ pub fn marker_at(project: &Project, action: jet_model::MarkerAction) -> Option<i
         .map(|m| m.at.0)
 }
 
+/// Jumps and pauses from the active arrangement's markers [Manual: playlist, "Time Markers",
+/// "Action"]: a Skip marker jumps to the next marker; a Marker loop returns from the next marker
+/// to itself; a Pause marker pauses unless the preceding marker is a loop. "The next marker" of the
+/// last one is the song end.
+pub fn marker_jumps(project: &Project, length: i64) -> (Vec<(i64, i64)>, Vec<i64>) {
+    use jet_model::MarkerAction;
+    let Some(arrangement) = project.active() else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut markers: Vec<&jet_model::Marker> = arrangement.markers.iter().collect();
+    markers.sort_by_key(|m| m.at);
+    let mut jumps = Vec::new();
+    let mut pauses = Vec::new();
+    for (i, marker) in markers.iter().enumerate() {
+        let at = marker.at.0;
+        let next = markers.get(i + 1).map_or(length, |m| m.at.0);
+        match marker.action {
+            MarkerAction::Skip if next > at => jumps.push((at, next)),
+            MarkerAction::MarkerLoop if next > at => jumps.push((next, at)),
+            MarkerAction::Pause => {
+                let after_loop = i > 0
+                    && matches!(
+                        markers[i - 1].action,
+                        MarkerAction::Loop | MarkerAction::MarkerLoop
+                    );
+                if !after_loop {
+                    pauses.push(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    (jumps, pauses)
+}
+
 /// The Song loop point: a Loop marker [Manual: playlist, "Song Loop (uses Time Markers)"].
 pub fn loop_marker(project: &Project) -> Option<i64> {
     marker_at(project, jet_model::MarkerAction::Loop)
@@ -364,10 +464,16 @@ pub fn compile(project: &Project, source: Source) -> Sequence {
         Source::Song => loop_marker(project).filter(|at| *at < length).unwrap_or(0),
         Source::Pattern(_) => 0,
     };
+    let (jumps, pauses) = match source {
+        Source::Song => marker_jumps(project, length),
+        Source::Pattern(_) => (Vec::new(), Vec::new()),
+    };
     Sequence {
         events,
         length: length.max(1),
         loop_start,
+        jumps,
+        pauses,
         step_ticks: step_ticks(&project.settings),
     }
 }
@@ -377,6 +483,34 @@ mod tests {
     use super::*;
     use jet_model::{Channel, ClipInstance, Note, PlaylistTrack, StepSeq};
     use jet_time::Tick;
+
+    fn timeline(length: i64, jumps: Vec<(i64, i64)>, pauses: Vec<i64>) -> Sequence {
+        Sequence {
+            length,
+            jumps,
+            pauses,
+            ..Sequence::default()
+        }
+    }
+
+    #[test]
+    fn locate_follows_skips_marker_loops_and_pauses() {
+        // A skip from 100 to 300 in a 400-tick song.
+        let seq = timeline(400, vec![(100, 300)], vec![]);
+        assert_eq!(seq.locate(0, 50), (50, 50));
+        assert_eq!(seq.locate(0, 150), (350, 50), "100 + 50 past the skip");
+        assert_eq!(seq.locate(0, 250), (50, 50), "then the song loops from 0");
+        // Starting on the skip marker does not skip.
+        assert_eq!(seq.wrap_from(100, 110), 110);
+        // A marker loop 200 -> 100: after 200 it repeats 100..200 for ever (cycles folded).
+        let seq = timeline(400, vec![(200, 100)], vec![]);
+        assert_eq!(seq.wrap_from(0, 250), 150);
+        assert_eq!(seq.wrap_from(0, 200 + 1_000_000 * 100 + 30), 130);
+        // A pause at 120 stops the position there.
+        let seq = timeline(400, vec![], vec![120]);
+        assert_eq!(seq.locate(0, 500), (120, 0));
+        assert_eq!(seq.locate(120, 130), (130, 270), "resumed from the pause");
+    }
 
     fn project_with_kick() -> (Project, ChannelId) {
         let mut project = Project::new();

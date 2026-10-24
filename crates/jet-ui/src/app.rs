@@ -2887,6 +2887,10 @@ impl JetApp {
         for action in actions {
             self.run_action(action, desktop, &ctx);
         }
+        // "Marker pause - Playback will Pause" [Manual: playlist, "Time Markers"].
+        if self.session.reached_pause().is_some() {
+            self.execute("transport.pause", json!({}));
+        }
         self.pump_audio();
         self.pump_recording(toolbar_view.playing);
         self.pump_note_recording(toolbar_view.playing);

@@ -231,14 +231,45 @@ impl Session {
         let mut snapshot = self
             .transport
             .snapshot(self.project.settings.ppq, self.project.settings.tempo);
+        let (_, anchor, _) = self.transport.anchor();
+        snapshot.position = Tick(self.timeline().wrap_from(anchor.0, snapshot.position.0));
+        snapshot
+    }
+
+    /// The material's loop, jumps and pauses (no events): what the renderer follows.
+    pub fn timeline(&self) -> jet_seq::Sequence {
         let (start, end) = self.loop_range();
-        let wrap = jet_seq::Sequence {
+        let (jumps, pauses) = match (self.play_source(), self.time_selection) {
+            (Source::Song, None) => jet_seq::marker_jumps(&self.project, end),
+            _ => (Vec::new(), Vec::new()),
+        };
+        jet_seq::Sequence {
             length: end,
             loop_start: start,
+            jumps,
+            pauses,
             ..jet_seq::Sequence::default()
-        };
-        snapshot.position = Tick(wrap.wrap(snapshot.position.0));
-        snapshot
+        }
+    }
+
+    /// While playing, the pause marker the position has just reached ("Marker pause - Playback
+    /// will Pause"); the host then pauses the transport.
+    pub fn reached_pause(&self) -> Option<i64> {
+        let (playing, anchor, _) = self.transport.anchor();
+        if !playing {
+            return None;
+        }
+        let timeline = self.timeline();
+        if timeline.pauses.is_empty() {
+            return None;
+        }
+        let now = self
+            .transport
+            .snapshot(self.project.settings.ppq, self.project.settings.tempo)
+            .position
+            .0;
+        let (at, left) = timeline.locate(anchor.0, now);
+        (left == 0 && timeline.pauses.contains(&at) && at != anchor.0).then_some(at)
     }
 
     /// Transport state for the renderer; both use the same frame counter and formula.
@@ -292,9 +323,11 @@ impl Session {
             });
         plan.metronome = self.metronome;
         if matches!(self.play_source(), Source::Song) {
-            let (start, end) = self.loop_range();
-            plan.sequence.loop_start = start;
-            plan.sequence.length = end.max(1);
+            let timeline = self.timeline();
+            plan.sequence.loop_start = timeline.loop_start;
+            plan.sequence.length = timeline.length.max(1);
+            plan.sequence.jumps = timeline.jumps;
+            plan.sequence.pauses = timeline.pauses;
         }
         plan
     }

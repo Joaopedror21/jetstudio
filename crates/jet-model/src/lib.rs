@@ -1094,6 +1094,14 @@ pub enum MarkerAction {
     /// ... Placing this marker type beyond the end of the last data will also cause FL Studio to
     /// render to that point."
     Loop,
+    /// "Marker loop - When the playback reaches the next marker playback will jump back to the
+    /// Loop marker creating a loop."
+    MarkerLoop,
+    /// "Marker skip - Playback will jump to the next marker skipping any Playlist data between
+    /// them."
+    Skip,
+    /// "Marker pause - Playback will Pause unless the preceding marker is the Loop type."
+    Pause,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

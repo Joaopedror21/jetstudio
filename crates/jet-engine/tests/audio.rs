@@ -1425,3 +1425,91 @@ fn missing_samples_are_found_in_search_folders_and_relinked() {
     assert!(session.samples().get(resource.id).is_some());
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn marker_skip_loop_and_pause_drive_the_song_position_and_audio() {
+    let clock = ManualClock::new(48_000);
+    let mut session = Session::with_clock(Box::new(clock.clone()));
+    session
+        .execute("transport.tempo.set", json!({"milli_bpm": 120_000}))
+        .unwrap();
+    let id = add_sampler_with_click(&mut session);
+    session
+        .execute(
+            "step.set",
+            json!({"pattern": 1, "channel": id, "index": 0, "on": true}),
+        )
+        .unwrap();
+    session
+        .execute("playlist.track.add", json!({"name": "Track 1"}))
+        .unwrap();
+    // Four one-bar clips: a click on every bar (one bar = 384 ticks = 96 000 frames).
+    for bar in 0..4 {
+        session
+            .execute(
+                "playlist.clip.add",
+                json!({"track": 1, "pattern": 1, "start": bar * 384, "length": 384}),
+            )
+            .unwrap();
+    }
+    session.execute("transport.mode.toggle", json!({})).unwrap();
+    let position = |session: &Session| session.transport_snapshot().position.0;
+    // Skip at bar 2 to the marker at bar 3: bar 2 is never played.
+    session.execute("marker.add", json!({"at": 384})).unwrap();
+    session.execute("marker.add", json!({"at": 768})).unwrap();
+    session
+        .execute("marker.action.set", json!({"index": 0, "action": "Skip"}))
+        .unwrap();
+    session.execute("transport.play_stop", json!({})).unwrap();
+    clock.set_frames(96_000 + 24_000); // play tick 480 -> material 768 + 96
+    assert_eq!(position(&session), 864);
+    // The renderer follows: clicks at bars 1, 3 and 4 only, in play time.
+    let mut renderer = jet_audio_graph::Renderer::new(
+        Box::new(session.build_plan(48_000)),
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        std::sync::Arc::new(jet_audio_graph::Meters::default()),
+    );
+    renderer.sync(jet_audio_graph::TransportSync {
+        playing: true,
+        anchor_tick: 0,
+        anchor_frame: 0,
+    });
+    let mut out = vec![0.0_f32; 3 * 96_000 * 2];
+    renderer.process(&mut out);
+    let left: Vec<f32> = out.iter().step_by(2).copied().collect();
+    assert_eq!(onsets(&left), vec![0, 96_000, 192_000]);
+    session.execute("transport.stop", json!({})).unwrap();
+
+    // Marker loop at bar 2 with the next marker at bar 3: bar 2 repeats.
+    session
+        .execute(
+            "marker.action.set",
+            json!({"index": 0, "action": "MarkerLoop"}),
+        )
+        .unwrap();
+    clock.set_frames(1_000_000);
+    session.execute("transport.play_stop", json!({})).unwrap();
+    clock.set_frames(1_000_000 + 2 * 96_000 + 48_000); // 960 -> 384 + 192
+    assert_eq!(position(&session), 576);
+    session.execute("transport.stop", json!({})).unwrap();
+
+    // Pause marker at bar 2: the position stops there and the transport pauses.
+    session
+        .execute("marker.action.set", json!({"index": 0, "action": "Pause"}))
+        .unwrap();
+    clock.set_frames(2_000_000);
+    session.execute("transport.play_stop", json!({})).unwrap();
+    clock.set_frames(2_000_000 + 96_000 + 30_000);
+    assert_eq!(session.reached_pause(), Some(384));
+    session.execute("transport.pause", json!({})).unwrap();
+    assert_eq!(
+        session.transport_snapshot().state,
+        jet_engine::TransportState::Paused
+    );
+    assert_eq!(position(&session), 384);
+    // Resuming plays on past the marker.
+    session.execute("transport.pause", json!({})).unwrap();
+    clock.set_frames(2_000_000 + 96_000 + 30_000 + 24_000);
+    assert_eq!(position(&session), 480);
+    assert_eq!(session.reached_pause(), None);
+}

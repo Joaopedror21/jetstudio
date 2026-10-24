@@ -38,9 +38,14 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
         }
         "transport.pause" => {
             empty(id, params)?;
+            // Pausing keeps the material position (after loops and marker jumps).
+            let material = session.transport_snapshot().position;
             session
                 .transport
                 .pause(session.project.settings.ppq, session.project.settings.tempo);
+            if session.transport_snapshot().state == crate::TransportState::Paused {
+                session.transport.seek(material);
+            }
             Ok(true)
         }
         "transport.metronome.toggle" => {
