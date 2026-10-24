@@ -48,6 +48,12 @@ struct ResizeClip {
 struct IdParams {
     id: u64,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MuteClip {
+    id: u64,
+    muted: bool,
+}
 
 pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool, CmdError> {
     match id {
@@ -78,6 +84,26 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
             }
             session.edit_project(|project| {
                 track_mut(project, TrackId(p.id))?.name = p.name;
+                Ok(())
+            })
+        }
+        // Solo mutes the other tracks; soloing the only audible track unmutes all
+        // [Manual: playlist, "Track Mute/Solo"].
+        "playlist.track.solo" => {
+            let p: IdParams = parse(id, params)?;
+            session.edit_project(|project| {
+                let arrangement = active_arrangement_mut(project)?;
+                let target = TrackId(p.id);
+                if !arrangement.tracks.iter().any(|t| t.id == target) {
+                    return Err(CmdError::Failed("track does not exist".into()));
+                }
+                let soloed = arrangement
+                    .tracks
+                    .iter()
+                    .all(|t| t.mute == (t.id != target));
+                for track in &mut arrangement.tracks {
+                    track.mute = !soloed && track.id != target;
+                }
                 Ok(())
             })
         }
@@ -168,6 +194,19 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                     .find(|clip| clip.id == ClipId(p.id))
                     .ok_or_else(|| CmdError::Failed("clip does not exist".into()))?;
                 clip.length = Tick(p.length);
+                Ok(())
+            })
+        }
+        // The Mute tool mutes single clips, independent of the track mute [Manual: playlist, "Mute (T)"].
+        "playlist.clip.mute.set" => {
+            let p: MuteClip = parse(id, params)?;
+            session.edit_project(|project| {
+                let clip = active_arrangement_mut(project)?
+                    .clips
+                    .iter_mut()
+                    .find(|clip| clip.id == ClipId(p.id))
+                    .ok_or_else(|| CmdError::Failed("clip does not exist".into()))?;
+                clip.muted = p.muted;
                 Ok(())
             })
         }

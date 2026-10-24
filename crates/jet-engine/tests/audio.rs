@@ -442,3 +442,47 @@ fn channel_solo_clone_and_move() {
         .collect();
     assert_eq!(names, vec!["A", "A #2", "C", "B"]);
 }
+
+#[test]
+fn clip_mute_and_track_solo_change_the_song() {
+    let mut session = session_120();
+    let id = add_sampler_with_click(&mut session);
+    session
+        .execute(
+            "step.set",
+            json!({"pattern":1,"channel":id,"index":0,"on":true}),
+        )
+        .unwrap();
+    for name in ["Track 1", "Track 2"] {
+        session
+            .execute("playlist.track.add", json!({"name": name}))
+            .unwrap();
+    }
+    session
+        .execute(
+            "playlist.clip.add",
+            json!({"track":1,"pattern":1,"start":0,"length":384}),
+        )
+        .unwrap();
+    session
+        .execute(
+            "playlist.clip.add",
+            json!({"track":2,"pattern":1,"start":384,"length":384}),
+        )
+        .unwrap();
+    let (left, _) = export(&mut session, "song");
+    assert_eq!(onsets(&left), vec![0, 96_000]);
+    session
+        .execute("playlist.clip.mute.set", json!({"id": 1, "muted": true}))
+        .unwrap();
+    let (left, _) = export(&mut session, "song");
+    assert_eq!(onsets(&left), vec![96_000], "a muted clip is silent");
+    session
+        .execute("playlist.clip.mute.set", json!({"id": 1, "muted": false}))
+        .unwrap();
+    session
+        .execute("playlist.track.solo", json!({"id": 1}))
+        .unwrap();
+    let (left, _) = export(&mut session, "song");
+    assert_eq!(onsets(&left), vec![0], "solo silences the other tracks");
+}

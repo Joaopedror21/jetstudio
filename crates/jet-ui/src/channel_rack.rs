@@ -24,6 +24,12 @@ pub struct RackView {
     pub channels: Vec<ChannelView>,
     /// A Browser file being dragged, if any.
     pub dragging_file: Option<PathBuf>,
+    /// Global swing 0..=100 [Manual: channelrack, "3. Global Swing"].
+    pub swing: u8,
+    /// Explicit pattern length in steps; `None` is Auto.
+    pub length_steps: Option<u16>,
+    /// Length the pattern plays at, in steps (Auto resolved).
+    pub effective_steps: u16,
 }
 
 pub struct ChannelView {
@@ -90,6 +96,98 @@ pub enum RackAction {
         channel: Option<u64>,
         path: PathBuf,
     },
+    SetSwing(u8),
+    /// `None` returns the pattern to Auto length.
+    SetPatternLength(Option<u16>),
+}
+
+/// Swing knob and pattern length display in the Channel rack title bar
+/// [Manual: channelrack, "3. Global Swing", "4. Pattern Length"]. Positions are UNMEASURED.
+pub fn paint_rack_header(
+    paint: &mut PaintCtx<'_>,
+    title: Rect,
+    view: &RackView,
+) -> Vec<RackAction> {
+    let mut actions = Vec::new();
+    let t = *paint.tokens;
+    let painter = paint.painter();
+    // Swing knob.
+    let center = pos2(title.right() - 190.0, title.center().y);
+    let knob = Rect::from_center_size(center, vec2(18.0, 18.0));
+    let value = f32::from(view.swing) / 100.0;
+    let response = paint.hit(
+        "channel-rack.swing",
+        knob,
+        "knob",
+        true,
+        &format!("Swing: {}%", view.swing),
+    );
+    paint.knob(center, 7.0, value);
+    painter.text(
+        pos2(knob.left() - 4.0, title.center().y),
+        Align2::RIGHT_CENTER,
+        "SWING",
+        theme::regular(11.0),
+        t.title_text,
+    );
+    if response.dragged() {
+        let next =
+            ((value - response.drag_delta().y / KNOB_TRAVEL).clamp(0.0, 1.0) * 100.0).round() as u8;
+        if next != view.swing {
+            actions.push(RackAction::SetSwing(next));
+        }
+    }
+    if response.drag_stopped() {
+        actions.push(RackAction::EndGesture);
+    }
+    // Pattern length: drag vertically for steps, right-click for Auto.
+    let lcd = Rect::from_min_max(
+        pos2(title.right() - 160.0, title.top() + 2.0),
+        pos2(title.right() - 78.0, title.bottom() - 2.0),
+    );
+    framed(&painter, lcd, 2.0, t.lcd_bg, t.lcd_edge);
+    let label = match view.length_steps {
+        Some(steps) => format!("{steps} steps"),
+        None => format!("Auto ({})", view.effective_steps),
+    };
+    painter.text(
+        lcd.center(),
+        Align2::CENTER_CENTER,
+        label,
+        theme::regular(12.0),
+        t.lcd_text,
+    );
+    let response = paint.hit(
+        "channel-rack.pattern-length",
+        lcd,
+        "lcd",
+        true,
+        "Pattern length: drag to set steps (1-512), right-click for Auto",
+    );
+    if response.dragged()
+        && let Some((origin, now)) = paint
+            .ui
+            .input(|i| i.pointer.press_origin().zip(i.pointer.hover_pos()))
+    {
+        let base = i32::from(view.length_steps.unwrap_or(view.effective_steps));
+        let id = egui::Id::new("channel-rack.length-origin");
+        let start = paint.ui.ctx().data_mut(|d| *d.get_temp_mut_or(id, base));
+        let next = (start + ((origin.y - now.y) / 4.0).round() as i32).clamp(1, 512) as u16;
+        if Some(next) != view.length_steps {
+            actions.push(RackAction::SetPatternLength(Some(next)));
+        }
+    }
+    if response.drag_stopped() {
+        paint
+            .ui
+            .ctx()
+            .data_mut(|d| d.remove::<i32>(egui::Id::new("channel-rack.length-origin")));
+        actions.push(RackAction::EndGesture);
+    }
+    if response.secondary_clicked() {
+        actions.push(RackAction::SetPatternLength(None));
+    }
+    actions
 }
 
 /// Row columns (x from the rack content's left edge), derived from capture B scaled by 1/1.49

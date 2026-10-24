@@ -167,6 +167,20 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                 Ok(())
             })
         }
+        // "When set to Auto the length of the pattern will be set by the end of the last bar
+        // with data in it" [Manual: channelrack, "4. Pattern Length"].
+        "pattern.length.auto" => {
+            let p: IdParams = parse(id, params)?;
+            session.edit_project(|project| {
+                let pattern = project
+                    .patterns
+                    .iter_mut()
+                    .find(|pattern| pattern.id == PatternId(p.id))
+                    .ok_or_else(|| CmdError::Failed("pattern does not exist".into()))?;
+                pattern.length = PatternLength::Auto;
+                Ok(())
+            })
+        }
         _ => Err(CmdError::UnknownCommand(id.to_owned())),
     }
 }

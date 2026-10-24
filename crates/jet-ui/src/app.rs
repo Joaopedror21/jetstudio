@@ -262,6 +262,20 @@ impl JetApp {
                 }
             }
             RackAction::Menu(id, item) => self.rack_menu(id, item),
+            RackAction::SetSwing(value) => {
+                self.gesture("rack.swing", "project.swing.set", json!({"value": value}));
+            }
+            RackAction::SetPatternLength(steps) => {
+                let id = self.session.selected_pattern().0;
+                match steps {
+                    Some(steps) => self.gesture(
+                        "rack.pattern-length",
+                        "pattern.length.set",
+                        json!({"id": id, "steps": steps}),
+                    ),
+                    None => self.execute("pattern.length.auto", json!({"id": id})),
+                }
+            }
         }
     }
 
@@ -572,6 +586,39 @@ impl JetApp {
                 PlaylistAction::SelectTrack(id) => self.playlist.selected_track = Some(id),
                 PlaylistAction::SelectPattern(id) => {
                     self.execute("pattern.select", json!({"id": id}));
+                }
+                PlaylistAction::MoveClip { id, row, start } => {
+                    while self.track_count() <= row {
+                        let before = self.track_count();
+                        self.add_track();
+                        if self.track_count() == before {
+                            return;
+                        }
+                    }
+                    if let Some(track) = self.track_id_at(row) {
+                        self.execute(
+                            "playlist.clip.move",
+                            json!({"id": id, "track": track, "start": start}),
+                        );
+                    }
+                }
+                PlaylistAction::ResizeClip { id, length } => {
+                    self.execute("playlist.clip.resize", json!({"id": id, "length": length}));
+                }
+                PlaylistAction::DeleteClip(id) => {
+                    self.execute("playlist.clip.delete", json!({"id": id}));
+                }
+                PlaylistAction::MuteClip { id, muted } => {
+                    self.execute("playlist.clip.mute.set", json!({"id": id, "muted": muted}));
+                }
+                PlaylistAction::MuteTrack { id, muted } => {
+                    self.execute("playlist.track.mute.set", json!({"id": id, "mute": muted}));
+                }
+                PlaylistAction::SoloTrack(id) => {
+                    self.execute("playlist.track.solo", json!({"id": id}))
+                }
+                PlaylistAction::Seek(tick) => {
+                    self.execute("transport.position.set", json!({"tick": tick}));
                 }
                 PlaylistAction::AddClipOnRow {
                     row,
@@ -951,6 +998,16 @@ impl JetApp {
             step_ticks: project.settings.step_ticks().unwrap_or(24),
             channels,
             dragging_file: self.browser.dragging.clone(),
+            swing: project.settings.swing,
+            length_steps: pattern.and_then(|p| match p.length {
+                jet_model::PatternLength::Steps(steps) => Some(steps),
+                jet_model::PatternLength::Auto => None,
+            }),
+            effective_steps: pattern.map_or(16, |p| {
+                (jet_seq::pattern_length(project, p)
+                    / project.settings.step_ticks().unwrap_or(24).max(1))
+                .clamp(1, 512) as u16
+            }),
         }
     }
 
@@ -981,6 +1038,7 @@ impl JetApp {
                         length: clip.length.0,
                         label: pattern.map_or_else(|| "Pattern".to_owned(), |p| p.name.clone()),
                         color: pattern.and_then(|p| p.color),
+                        muted: clip.muted,
                     }
                 })
                 .collect()
@@ -988,8 +1046,8 @@ impl JetApp {
         let ticks_per_bar =
             i64::from(project.settings.ppq.0) * 4 * i64::from(project.settings.time_sig.num)
                 / i64::from(project.settings.time_sig.den);
-        let song_running =
-            snapshot.mode == PlayMode::Song && snapshot.state != TransportState::Stopped;
+        // In Song mode the position marker is always shown [Manual: playlist, "Play Position Marker"].
+        let song_running = snapshot.mode == PlayMode::Song;
         PlaylistView {
             pattern_id: self.session.selected_pattern().0,
             arrangement_name: arrangement
@@ -1005,6 +1063,7 @@ impl JetApp {
                 .map(|p| PatternEntry {
                     id: p.id.0,
                     name: p.name.clone(),
+                    length: jet_seq::pattern_length(project, p),
                 })
                 .collect(),
         }
@@ -1309,6 +1368,11 @@ fn paint_window(
                 "Channel rack",
                 theme::regular(paint.layout.font_title),
                 t.title_text,
+            );
+            actions.extend(
+                crate::channel_rack::paint_rack_header(paint, title, surfaces.rack_view)
+                    .into_iter()
+                    .map(UiAction::Rack),
             );
         }
         WindowKind::PianoRoll | WindowKind::Mixer => {
@@ -1789,5 +1853,70 @@ mod tests {
             fader.center() + vec2(0.0, 40.0),
         );
         assert!(app.session.project().mixer.master.volume < before);
+    }
+
+    #[test]
+    fn playlist_clips_move_and_delete_with_the_mouse() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        let grid = app.probe().entries()["playlist.grid"].rect;
+        let row1 = app.probe().entries()["playlist.track.placeholder.1"].rect;
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(pos2(grid.left() + 20.0, row1.center().y), vec2(4.0, 4.0)),
+        );
+        run_frame(&mut app, &ctx, Vec::new());
+        let clip = app.probe().entries()["playlist.clip.1"].rect;
+        let bar_w = app.layout.bar_w;
+        // Drag the clip two bars to the right (from its middle, away from the resize edge).
+        let from = pos2(clip.left() + 8.0, clip.center().y);
+        drag(&mut app, &ctx, from, from + vec2(bar_w * 2.0, 0.0));
+        let ticks_per_bar = 384;
+        assert_eq!(
+            app.session.project().arrangements[0].clips[0].start.0,
+            2 * ticks_per_bar
+        );
+        let clip = app.probe().entries()["playlist.clip.1"].rect;
+        click_button(&mut app, &ctx, clip, PointerButton::Secondary);
+        assert!(app.session.project().arrangements[0].clips.is_empty());
+    }
+
+    #[test]
+    fn rack_header_sets_swing_and_pattern_length() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        open_rack(&mut app, &ctx);
+        let swing = app.probe().entries()["channel-rack.swing"].rect;
+        drag(
+            &mut app,
+            &ctx,
+            swing.center(),
+            swing.center() - vec2(0.0, 100.0),
+        );
+        assert_eq!(
+            app.session.project().settings.swing,
+            50,
+            "half the knob travel"
+        );
+        let length = app.probe().entries()["channel-rack.pattern-length"].rect;
+        drag(
+            &mut app,
+            &ctx,
+            length.center(),
+            length.center() - vec2(0.0, 64.0),
+        );
+        assert_eq!(
+            app.session.project().patterns[0].length,
+            jet_model::PatternLength::Steps(32),
+            "16 steps + 64 px / 4 px per step"
+        );
+        click_button(&mut app, &ctx, length, PointerButton::Secondary);
+        assert_eq!(
+            app.session.project().patterns[0].length,
+            jet_model::PatternLength::Auto
+        );
     }
 }

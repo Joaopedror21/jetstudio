@@ -435,7 +435,8 @@ pub fn paint_piano_roll(
         grid_response.drag_started_by(egui::PointerButton::Primary) || grid_response.clicked();
     let secondary = grid_response.drag_started_by(egui::PointerButton::Secondary)
         || grid_response.secondary_clicked();
-    if press && let Some(p) = pointer {
+    let press_pos = paint.ui.input(|i| i.pointer.press_origin()).or(pointer);
+    if press && let Some(p) = press_pos {
         let tick = geo.tick_at(state, p.x).max(0);
         let key = geo.key_at(state, p.y).clamp(0, 131) as u8;
         let selecting = state.tool == Tool::Select || (modifiers.ctrl && primary);

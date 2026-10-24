@@ -31,17 +31,37 @@ pub struct ClipView {
     pub length: i64,
     pub label: String,
     pub color: Option<u32>,
+    pub muted: bool,
 }
 
 pub struct PatternEntry {
     pub id: u64,
     pub name: String,
+    /// Pattern length in ticks: the length of a newly placed clip.
+    pub length: i64,
+}
+
+/// A clip gesture in progress; committed as one command when the mouse is released.
+#[derive(Clone, Copy, Debug)]
+enum ClipDrag {
+    Move {
+        id: u64,
+        anchor: egui::Pos2,
+        dt: i64,
+        drow: i64,
+    },
+    Resize {
+        id: u64,
+        anchor: egui::Pos2,
+        dl: i64,
+    },
 }
 
 #[derive(Clone)]
 pub struct PlaylistState {
     pub selected_track: Option<u64>,
     pub selected_clip: Option<u64>,
+    drag: Option<ClipDrag>,
     /// Horizontal zoom as a multiple of the measured default bar width.
     pub zoom: f32,
     pub scroll_bars: f32,
@@ -53,6 +73,7 @@ impl Default for PlaylistState {
         Self {
             selected_track: None,
             selected_clip: None,
+            drag: None,
             zoom: 1.0,
             scroll_bars: 0.0,
             scroll_tracks: 0.0,
@@ -71,7 +92,32 @@ pub enum PlaylistAction {
         start: i64,
         length: i64,
     },
+    /// Move a clip to display row `row` and tick `start`.
+    MoveClip {
+        id: u64,
+        row: usize,
+        start: i64,
+    },
+    ResizeClip {
+        id: u64,
+        length: i64,
+    },
+    DeleteClip(u64),
+    MuteClip {
+        id: u64,
+        muted: bool,
+    },
+    MuteTrack {
+        id: u64,
+        muted: bool,
+    },
+    SoloTrack(u64),
+    Seek(i64),
 }
+
+// Clip edits snap to one beat; Alt bypasses snap [Manual: playlist, "Holding the Alt key
+// temporarily sets snap to 'none'"]. Hypothesis H-PL-1: FL's default "Line" snap follows the
+// zoom; we use a fixed beat.
 
 /// Title-bar tool icons [W x 510-740 relative to 500].
 pub fn paint_title_tools(paint: &mut PaintCtx<'_>, title: Rect, view: &PlaylistView) {
@@ -514,7 +560,28 @@ pub fn paint_playlist(
             theme::regular(12.0),
             theme::shade(t.track_text, 0.8),
         );
-        paint.led(pos2(o.x + header_l + 90.0, y + 37.0), 5.5, !muted);
+        let led_center = pos2(o.x + header_l + 90.0, y + 37.0);
+        paint.led(led_center, 5.5, !muted);
+        if let Some(tr) = track {
+            // Track mute: click; solo: Ctrl+click or right-click [Manual: playlist, "Track Mute/Solo"].
+            let led_rect = Rect::from_center_size(led_center, vec2(14.0, 14.0));
+            let led = paint.hit(
+                &format!("playlist.track-mute.{}", tr.id),
+                led_rect,
+                "toggle",
+                true,
+                "Mute: click. Solo: Ctrl+click or right-click",
+            );
+            let ctrl = paint.ui.input(|i| i.modifiers.ctrl);
+            if led.clicked() && !ctrl {
+                actions.push(PlaylistAction::MuteTrack {
+                    id: tr.id,
+                    muted: !tr.muted,
+                });
+            } else if led.secondary_clicked() || (led.clicked() && ctrl) {
+                actions.push(PlaylistAction::SoloTrack(tr.id));
+            }
+        }
         if response.clicked()
             && let Some(tr) = track
         {
@@ -553,11 +620,16 @@ pub fn paint_playlist(
                     .any(|c| c.track == tr.id && start >= c.start && start < c.start + c.length)
             });
             if !occupied {
+                let length = view
+                    .patterns
+                    .iter()
+                    .find(|p| p.id == view.pattern_id)
+                    .map_or(view.ticks_per_bar, |p| p.length.max(1));
                 actions.push(PlaylistAction::AddClipOnRow {
                     row,
                     pattern: view.pattern_id,
                     start,
-                    length: view.ticks_per_bar,
+                    length,
                 });
             }
         }
@@ -567,6 +639,11 @@ pub fn paint_playlist(
     }
 
     // Pattern clips. No clip is visible in W, so the clip look is derived from capture A.
+    let tpb = view.ticks_per_bar.max(1);
+    let beat = (tpb / i64::from(view.beats_per_bar.max(1))).max(1);
+    let (alt, ctrl_down) = paint.ui.input(|i| (i.modifiers.alt, i.modifiers.ctrl));
+    let snap = if alt { 1 } else { beat };
+    let px_per_tick = bar_w / tpb as f32;
     for clip in &view.clips {
         let Some(row) = view.tracks.iter().position(|track| track.id == clip.track) else {
             continue;
@@ -574,14 +651,31 @@ pub fn paint_playlist(
         if view.ticks_per_bar <= 0 {
             continue;
         }
-        let x0 = bar_x(clip.start as f32 / view.ticks_per_bar as f32);
-        let x1 = bar_x((clip.start + clip.length) as f32 / view.ticks_per_bar as f32);
-        let y = grid.top() + (row as f32 - state.scroll_tracks) * l.track_h;
+        let (mut start, mut length, mut row_shown) = (clip.start, clip.length, row as i64);
+        match state.drag {
+            Some(ClipDrag::Move { id, dt, drow, .. }) if id == clip.id => {
+                start = (start + dt).max(0);
+                row_shown = (row_shown + drow).max(0);
+            }
+            Some(ClipDrag::Resize { id, dl, .. }) if id == clip.id => {
+                length = (length + dl).max(snap);
+            }
+            _ => {}
+        }
+        let x0 = bar_x(start as f32 / view.ticks_per_bar as f32);
+        let x1 = bar_x((start + length) as f32 / view.ticks_per_bar as f32);
+        let y = grid.top() + (row_shown as f32 - state.scroll_tracks) * l.track_h;
         let clip_rect = Rect::from_min_max(pos2(x0 + 1.0, y + 1.0), pos2(x1, y + l.track_h - 3.0));
         if !clip_rect.intersects(grid) {
             continue;
         }
-        let color = theme::model_color(clip.color, t.clip_default);
+        let base = theme::model_color(clip.color, t.clip_default);
+        // A muted clip is drawn faded.
+        let color = if clip.muted {
+            theme::shade(base, 0.55)
+        } else {
+            base
+        };
         let selected = state.selected_clip == Some(clip.id);
         grid_painter.rect_filled(clip_rect, 1.0, theme::shade(color, 0.45));
         grid_painter.rect_filled(
@@ -608,11 +702,105 @@ pub fn paint_playlist(
             clip_rect.intersect(grid),
             "pattern-clip",
             true,
-            &format!("Pattern clip: {}", clip.label),
+            &format!(
+                "Pattern clip: {} - drag to move, drag the right edge to resize, right-click deletes, Ctrl+click mutes",
+                clip.label
+            ),
         );
+        // Gestures are measured from where the button went down, not from where egui's drag
+        // threshold was crossed, so a drag of N bars moves the clip N bars.
+        let pointer = paint
+            .ui
+            .input(|i| i.pointer.press_origin().or(i.pointer.interact_pos()));
+        let on_edge = pointer.is_some_and(|p| p.x > clip_rect.right() - 6.0);
         if response.clicked() {
             state.selected_clip = Some(clip.id);
+            if ctrl_down {
+                actions.push(PlaylistAction::MuteClip {
+                    id: clip.id,
+                    muted: !clip.muted,
+                });
+            }
         }
+        // Right-click deletes [Manual: playlist, "Draw mode ... Right-Click to delete Clips"].
+        if response.secondary_clicked() {
+            actions.push(PlaylistAction::DeleteClip(clip.id));
+        }
+        if response.drag_started_by(PointerButton::Primary)
+            && let Some(p) = pointer
+        {
+            state.selected_clip = Some(clip.id);
+            state.drag = Some(if on_edge {
+                ClipDrag::Resize {
+                    id: clip.id,
+                    anchor: p,
+                    dl: 0,
+                }
+            } else {
+                ClipDrag::Move {
+                    id: clip.id,
+                    anchor: p,
+                    dt: 0,
+                    drow: 0,
+                }
+            });
+        }
+        if response.dragged()
+            && let Some(p) = paint.ui.input(|i| i.pointer.hover_pos())
+        {
+            match &mut state.drag {
+                Some(ClipDrag::Move {
+                    id,
+                    anchor,
+                    dt,
+                    drow,
+                }) if *id == clip.id => {
+                    let raw = ((p.x - anchor.x) / px_per_tick).round() as i64;
+                    *dt = (raw + snap / 2).div_euclid(snap) * snap;
+                    *drow = ((p.y - anchor.y) / l.track_h).round() as i64;
+                }
+                Some(ClipDrag::Resize { id, anchor, dl }) if *id == clip.id => {
+                    let raw = ((p.x - anchor.x) / px_per_tick).round() as i64;
+                    *dl = (raw + snap / 2).div_euclid(snap) * snap;
+                }
+                _ => {}
+            }
+        }
+        if response.drag_stopped() {
+            match state.drag.take() {
+                Some(ClipDrag::Move { id, dt, drow, .. }) if dt != 0 || drow != 0 => {
+                    actions.push(PlaylistAction::MoveClip {
+                        id,
+                        row: (row as i64 + drow).max(0) as usize,
+                        start: (clip.start + dt).max(0),
+                    });
+                }
+                Some(ClipDrag::Resize { id, dl, .. }) if dl != 0 => {
+                    actions.push(PlaylistAction::ResizeClip {
+                        id,
+                        length: (clip.length + dl).max(snap),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Clicking the bar ruler relocates the playback position [Manual: playlist,
+    // "Relocate the playback position - Click on the upper timeline"].
+    let ruler_response =
+        paint
+            .ui
+            .interact(ruler, Id::new("playlist.ruler"), Sense::click_and_drag());
+    paint
+        .probe
+        .insert("playlist.ruler", ruler, "ruler", true, None);
+    if (ruler_response.clicked() || ruler_response.dragged())
+        && let Some(p) = paint.ui.input(|i| i.pointer.interact_pos())
+    {
+        let tick =
+            (((p.x - grid.left() - 1.0) / bar_w + state.scroll_bars) * tpb as f32).max(0.0) as i64;
+        actions.push(PlaylistAction::Seek((tick / beat) * beat));
     }
 
     // Song-position line while playing in SONG mode.

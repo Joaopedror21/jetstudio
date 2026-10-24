@@ -225,6 +225,14 @@ static SPECS: &[CommandSpec] = &[
         Step
     ),
     spec!(
+        "pattern.length.auto",
+        "Pattern length: Auto",
+        "PATTERNS",
+        None,
+        "{id:uint}",
+        Step
+    ),
+    spec!(
         "channel.add",
         "Add channel",
         "ADD",
@@ -733,6 +741,22 @@ static SPECS: &[CommandSpec] = &[
     spec!(
         "playlist.clip.delete",
         "Delete clip",
+        "",
+        None,
+        "{id:uint}",
+        Step
+    ),
+    spec!(
+        "playlist.clip.mute.set",
+        "Mute clip",
+        "",
+        None,
+        "{id:uint,muted:bool}",
+        Step
+    ),
+    spec!(
+        "playlist.track.solo",
+        "Solo track",
         "",
         None,
         "{id:uint}",
