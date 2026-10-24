@@ -32,6 +32,12 @@ pub struct ChannelSettingsData {
     pub mono: bool,
     pub porta: bool,
     pub slide_ms: u16,
+    /// Time section: gate in ticks (0 = off), shift in ticks, Full porta.
+    pub gate: u32,
+    pub time_shift: u16,
+    pub full_porta: bool,
+    pub step_ticks: i64,
+    pub bar_ticks: i64,
     pub sampler: SamplerSettings,
     pub synth: Option<SynthParams>,
 }
@@ -223,6 +229,39 @@ pub fn paint_channel_settings(
         "channel.swing_mix.set",
         &|v| json!({"id": id, "value": v}),
     );
+    // Time [Manual: chansettings_misc]: "Gate ... To disable the gate effect turn the knob fully
+    // clockwise. Look in the hint bar ... in STEPS:TICKS format"; "Shift ... up to ... one step".
+    let (step, bar) = (c.step_ticks.max(1), c.bar_ticks.max(1));
+    let steps_ticks = |ticks: i64| format!("{}:{:02}", ticks / step, ticks % step);
+    let gate_off = (bar + 1) as i32;
+    edit(
+        paint,
+        row(ROW_H),
+        "gate",
+        "Gate",
+        if c.gate == 0 { gate_off } else { c.gate as i32 },
+        1,
+        gate_off,
+        if c.gate == 0 {
+            "off".to_owned()
+        } else {
+            steps_ticks(i64::from(c.gate))
+        },
+        "channel.time.set",
+        &|v| json!({"id": id, "gate": if v >= gate_off { 0 } else { v }}),
+    );
+    edit(
+        paint,
+        row(ROW_H),
+        "shift",
+        "Shift",
+        i32::from(c.time_shift),
+        0,
+        (step - 1) as i32,
+        steps_ticks(i64::from(c.time_shift)),
+        "channel.time.set",
+        &|v| json!({"id": id, "shift": v}),
+    );
     edit(
         paint,
         row(ROW_H),
@@ -313,6 +352,19 @@ pub fn paint_channel_settings(
         actions.push(SettingsAction::Engine {
             id: "channel.polyphony.set",
             params: json!({"id": id, "max": c.poly_max, "mono": !c.mono}),
+            gesture: None,
+        });
+    }
+    if paint.toggle(
+        "channel-settings.full-porta",
+        Rect::from_min_size(r.min + vec2(152.0, 0.0), vec2(90.0, r.height())),
+        "Full porta",
+        c.full_porta,
+        "Porta notes ignore the Gate and play their full length",
+    ) {
+        actions.push(SettingsAction::Engine {
+            id: "channel.time.set",
+            params: json!({"id": id, "full_porta": !c.full_porta}),
             gesture: None,
         });
     }

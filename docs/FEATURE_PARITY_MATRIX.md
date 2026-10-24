@@ -11,7 +11,7 @@ Legenda: ✅ disponível e testado · 🟡 parcial (o que falta está ao lado) �
 |---|---:|---:|---:|---:|---:|
 | Interface e controles globais (GLB) | 23 | 8 | 8 | 7 | 0 |
 | Channel Rack e Step Sequencer (CR) | 33 | 14 | 9 | 9 | 1 |
-| Sampler e instrumentos (SMP/INS) | 20 | 8 | 3 | 9 | 0 |
+| Sampler e instrumentos (SMP/INS) | 20 | 9 | 3 | 8 | 0 |
 | Piano Roll (PR) | 27 | 9 | 13 | 5 | 0 |
 | Playlist (PL) | 17 | 5 | 9 | 3 | 0 |
 | Mixer (MX) | 17 | 10 | 3 | 4 | 0 |
@@ -20,7 +20,7 @@ Legenda: ✅ disponível e testado · 🟡 parcial (o que falta está ao lado) �
 | Plugins externos (PLG) | 4 | 0 | 0 | 4 | 0 |
 | Browser e arquivos (BR/FILE) | 12 | 2 | 5 | 4 | 1 |
 | Automação, MIDI, gravação (AUT/MIDI/REC) | 10 | 0 | 4 | 6 | 0 |
-| **Total** | **192** | **74** | **57** | **59** | **2** |
+| **Total** | **192** | **75** | **57** | **58** | **2** |
 
 As contagens foram geradas por script a partir da coluna Estado do inventário: ✅ = Testado; 🟡 = Implementado ou Parcialmente compatível; ⬜ = Pesquisado ou Especificado; ⛔ = Bloqueado. 
 

@@ -343,6 +343,14 @@ static SPECS: &[CommandSpec] = &[
         Step
     ),
     spec!(
+        "channel.time.set",
+        "Channel time (gate, shift, full porta)",
+        "",
+        None,
+        "{id:uint,gate?:uint,shift?:uint,full_porta?:bool}",
+        Coalesce
+    ),
+    spec!(
         "channel.cut.set",
         "Cut groups",
         "",

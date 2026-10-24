@@ -2186,6 +2186,11 @@ impl JetApp {
             mono: channel.polyphony.mono,
             porta: channel.polyphony.porta,
             slide_ms: channel.polyphony.slide_ms,
+            gate: channel.gate,
+            time_shift: channel.time_shift,
+            full_porta: channel.full_porta,
+            step_ticks: project.settings.step_ticks().unwrap_or(24),
+            bar_ticks: project.settings.bar_ticks().unwrap_or(384),
             sampler: channel.sampler,
             synth: match &channel.kind {
                 ChannelKind::Synth(params) => Some(params.clone()),
@@ -3535,11 +3540,36 @@ mod tests {
             app.session.project().channels[0].polyphony.mono,
             "the slide time keeps the other polyphony settings"
         );
+        // Time: Gate near its left end is a short gate; at its right end it is off.
+        let gate = app.probe().entries()["channel-settings.gate"].rect;
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(pos2(gate.left() + 1.0, gate.center().y), vec2(1.0, 1.0)),
+        );
+        let g = app.session.project().channels[0].gate;
+        assert!((1..=10).contains(&g), "{g}");
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(pos2(gate.right(), gate.center().y), vec2(1.0, 1.0)),
+        );
+        assert_eq!(
+            app.session.project().channels[0].gate,
+            0,
+            "fully clockwise is off"
+        );
+        let full = app.probe().entries()["channel-settings.full-porta"].rect;
+        click(&mut app, &ctx, full);
+        assert!(app.session.project().channels[0].full_porta);
         // Volume envelope toggle on the Sampler.
         let envelope = app.probe().entries()["channel-settings.envelope"].rect;
         click(&mut app, &ctx, envelope);
         assert!(app.session.project().channels[0].sampler.envelope.is_some());
-        // Clicking the Channel button again closes the window.
+        // Clicking the Channel button again closes the window (with the rack in front, as the
+        // settings window may cover the button).
+        app.pending_focus = Some(WindowKind::ChannelRack);
+        run_frame(&mut app, &ctx, Vec::new());
         let button = app.probe().entries()["channel-rack.channel.1"].rect;
         click(&mut app, &ctx, button);
         run_frame(&mut app, &ctx, Vec::new());

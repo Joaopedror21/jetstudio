@@ -51,6 +51,17 @@ struct MoveParams {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct TimeParams {
+    id: u64,
+    #[serde(default)]
+    gate: Option<u32>,
+    #[serde(default)]
+    shift: Option<u16>,
+    #[serde(default)]
+    full_porta: Option<bool>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CutParams {
     id: u64,
     cut: u8,
@@ -267,6 +278,31 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
             }
             session.edit_project(|project| {
                 channel_mut(project, p.id)?.swing_mix = p.value;
+                Ok(())
+            })
+        }
+        // Time: Gate, Shift, Full porta [Manual: chansettings_misc, "Time"].
+        "channel.time.set" => {
+            let p: TimeParams = parse(id, params)?;
+            session.edit_project(|project| {
+                let step = project.settings.step_ticks().unwrap_or(24);
+                let bar = project.settings.bar_ticks().unwrap_or(384);
+                if p.shift.is_some_and(|s| i64::from(s) >= step) {
+                    return Err(CmdError::Failed("shift must stay below one step".into()));
+                }
+                if p.gate.is_some_and(|g| i64::from(g) > 16 * bar) {
+                    return Err(CmdError::Failed("gate must be at most 16 bars".into()));
+                }
+                let channel = channel_mut(project, p.id)?;
+                if let Some(gate) = p.gate {
+                    channel.gate = gate;
+                }
+                if let Some(shift) = p.shift {
+                    channel.time_shift = shift;
+                }
+                if let Some(full) = p.full_porta {
+                    channel.full_porta = full;
+                }
                 Ok(())
             })
         }

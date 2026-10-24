@@ -166,60 +166,88 @@ pub fn pattern_events(project: &Project, pattern: &Pattern, out: &mut Vec<NoteEv
         if channel.mute {
             continue; // Mute applies to Step Sequencer and Piano roll playback [Manual: channelrack].
         }
-        if let Some(notes) = pattern.notes.get(&channel.id).filter(|n| !n.is_empty()) {
-            for note in notes.iter().filter(|note| !note.muted) {
-                out.push(NoteEvent {
-                    tick: note.start.0,
-                    length: note.length.0,
-                    channel: channel.id,
-                    key: note.key,
-                    velocity: note.velocity,
-                    pan: note.pan,
-                    fine_pitch: note.fine_pitch,
-                    release: note.release,
-                    mod_x: note.mod_x,
-                    mod_y: note.mod_y,
-                    slide: note.slide,
-                    porta: note.porta,
-                    color: note.color,
-                    audio: false,
-                    audio_offset: 0,
-                    clip: jet_model::AudioClipProps::default(),
-                    audio_elapsed: 0,
-                });
-            }
-            continue;
+        let first = out.len();
+        channel_events(project, pattern, channel, limit, out);
+        apply_time(channel, step, &mut out[first..]);
+    }
+}
+
+/// The channel's Time settings [Manual: chansettings_misc, "Time"]: Shift delays every note;
+/// Gate truncates notes "when they pass the specified length" (step notes count as one step),
+/// except porta notes with Full porta on. Slide notes keep their length (it is their slide time).
+fn apply_time(channel: &jet_model::Channel, step: i64, events: &mut [NoteEvent]) {
+    let shift = i64::from(channel.time_shift).clamp(0, step - 1);
+    let gate = i64::from(channel.gate);
+    for event in events {
+        event.tick += shift;
+        if gate > 0 && !event.slide && !(channel.full_porta && event.porta) {
+            let length = if event.length > 0 { event.length } else { step };
+            event.length = length.min(gate);
         }
-        let Some(seq) = pattern.steps.get(&channel.id) else {
-            continue;
-        };
-        for (index, cell) in seq.cells.iter().enumerate().take(limit) {
-            if !cell.on {
-                continue;
-            }
-            let shift = i64::from(cell.props.shift).clamp(0, step - 1);
+    }
+}
+
+/// Notes or steps of one (unmuted) channel in `pattern`.
+fn channel_events(
+    project: &Project,
+    pattern: &Pattern,
+    channel: &jet_model::Channel,
+    limit: usize,
+    out: &mut Vec<NoteEvent>,
+) {
+    let settings = &project.settings;
+    let step = step_ticks(settings);
+    if let Some(notes) = pattern.notes.get(&channel.id).filter(|n| !n.is_empty()) {
+        for note in notes.iter().filter(|note| !note.muted) {
             out.push(NoteEvent {
-                tick: index as i64 * step
-                    + shift
-                    + swing_offset(settings, channel.swing_mix, index),
-                length: 0,
+                tick: note.start.0,
+                length: note.length.0,
                 channel: channel.id,
-                key: cell.props.note,
-                velocity: cell.props.velocity,
-                pan: cell.props.pan,
-                fine_pitch: cell.props.pitch,
-                release: cell.props.release,
-                mod_x: cell.props.mod_x,
-                mod_y: cell.props.mod_y,
-                slide: false,
-                porta: false,
-                color: 0,
+                key: note.key,
+                velocity: note.velocity,
+                pan: note.pan,
+                fine_pitch: note.fine_pitch,
+                release: note.release,
+                mod_x: note.mod_x,
+                mod_y: note.mod_y,
+                slide: note.slide,
+                porta: note.porta,
+                color: note.color,
                 audio: false,
                 audio_offset: 0,
                 clip: jet_model::AudioClipProps::default(),
                 audio_elapsed: 0,
             });
         }
+        return;
+    }
+    let Some(seq) = pattern.steps.get(&channel.id) else {
+        return;
+    };
+    for (index, cell) in seq.cells.iter().enumerate().take(limit) {
+        if !cell.on {
+            continue;
+        }
+        let shift = i64::from(cell.props.shift).clamp(0, step - 1);
+        out.push(NoteEvent {
+            tick: index as i64 * step + shift + swing_offset(settings, channel.swing_mix, index),
+            length: 0,
+            channel: channel.id,
+            key: cell.props.note,
+            velocity: cell.props.velocity,
+            pan: cell.props.pan,
+            fine_pitch: cell.props.pitch,
+            release: cell.props.release,
+            mod_x: cell.props.mod_x,
+            mod_y: cell.props.mod_y,
+            slide: false,
+            porta: false,
+            color: 0,
+            audio: false,
+            audio_offset: 0,
+            clip: jet_model::AudioClipProps::default(),
+            audio_elapsed: 0,
+        });
     }
 }
 

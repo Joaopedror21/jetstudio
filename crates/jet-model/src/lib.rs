@@ -552,6 +552,18 @@ pub struct Channel {
     pub sampler: SamplerSettings,
     #[serde(default)]
     pub polyphony: Polyphony,
+    /// Time > Gate: the longest a note plays, in ticks; 0 is off ("To disable the gate effect turn
+    /// the knob fully clockwise") [Manual: chansettings_misc, "Time"].
+    #[serde(default)]
+    pub gate: u32,
+    /// Time > Shift: "delay notes' triggering with up to 16-th note time period (one step)",
+    /// in ticks.
+    #[serde(default)]
+    pub time_shift: u16,
+    /// "Full porta - When Portamento notes are used selecting this will ignore the Gate time
+    /// setting and play the full note length."
+    #[serde(default)]
+    pub full_porta: bool,
 }
 
 fn default_root_key() -> u8 {
@@ -589,6 +601,9 @@ impl Channel {
             cut_by: 0,
             sampler: SamplerSettings::default(),
             polyphony: Polyphony::default(),
+            gate: 0,
+            time_shift: 0,
+            full_porta: false,
         }
     }
 

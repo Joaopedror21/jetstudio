@@ -1326,3 +1326,61 @@ fn ins_filter_pitch_envelope_and_pan_lfo_change_the_sampler() {
     assert!(rms(&left[1_000..11_000]) < 1e-4 && rms(&right[1_000..11_000]) > 0.1);
     assert!(rms(&right[13_000..23_000]) < 1e-4 && rms(&left[13_000..23_000]) > 0.1);
 }
+
+#[test]
+fn channel_gate_shift_and_full_porta() {
+    let mut session = session_120();
+    session
+        .execute("channel.add", json!({"name": "Lead", "kind": "synth"}))
+        .unwrap();
+    let id = session.selected_channel().unwrap().0;
+    session
+        .execute(
+            "channel.synth.set",
+            json!({"id": id, "params": {"waveform": "Sine", "attack_ms": 0, "decay_ms": 0,
+                "sustain": 1000, "release_ms": 5, "cutoff_hz": 20000, "resonance": 0, "detune_cents": 0}}),
+        )
+        .unwrap();
+    // One note of two beats (one second).
+    session
+        .execute(
+            "note.add",
+            json!({"pattern": 1, "channel": id, "start": 0, "length": 192, "key": 69}),
+        )
+        .unwrap();
+    let loud = |d: &[f32]| d.iter().any(|v| v.abs() > 0.05);
+    let (plain, _) = export(&mut session, "pattern");
+    assert!(loud(&plain[40_000..47_000]));
+    // Gate of one beat (half a second) and a half-step shift (12 ticks = 3 000 frames).
+    session
+        .execute(
+            "channel.time.set",
+            json!({"id": id, "gate": 96, "shift": 12}),
+        )
+        .unwrap();
+    let (gated, _) = export(&mut session, "pattern");
+    assert!(gated[..2_900].iter().all(|v| *v == 0.0), "shifted");
+    assert!(loud(&gated[3_100..20_000]));
+    assert!(
+        !loud(&gated[3_000 + 24_000 + 600..47_000]),
+        "cut after one beat"
+    );
+    // Full porta: a porta note ignores the gate.
+    session
+        .execute(
+            "note.props.set",
+            json!({"pattern": 1, "channel": id, "indices": [0], "porta": true}),
+        )
+        .unwrap();
+    session
+        .execute("channel.time.set", json!({"id": id, "full_porta": true}))
+        .unwrap();
+    let (full, _) = export(&mut session, "pattern");
+    assert!(loud(&full[40_000..47_000]));
+    assert!(
+        session
+            .execute("channel.time.set", json!({"id": id, "shift": 24}))
+            .is_err(),
+        "a shift of a whole step is refused"
+    );
+}
