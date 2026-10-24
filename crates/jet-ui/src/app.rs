@@ -661,11 +661,14 @@ impl JetApp {
                     base(json!({"indices": indices, "delta": delta})),
                 );
             }
-            PianoAction::Velocity { indices, value } => {
-                self.execute(
-                    "note.props.set",
-                    base(json!({"indices": indices, "velocity": value})),
-                );
+            PianoAction::Prop {
+                indices,
+                field,
+                value,
+            } => {
+                let mut params = base(json!({"indices": indices}));
+                params[field] = json!(value);
+                self.execute("note.props.set", params);
             }
             PianoAction::Mute { indices, muted } => {
                 self.execute(
@@ -1699,6 +1702,11 @@ impl JetApp {
                         muted: n.muted,
                         slide: n.slide,
                         porta: n.porta,
+                        pan: n.pan,
+                        release: n.release,
+                        fine_pitch: n.fine_pitch,
+                        mod_x: n.mod_x,
+                        mod_y: n.mod_y,
                     })
                     .collect()
             })
@@ -3323,6 +3331,98 @@ mod tests {
         let porta = app.probe().entries()["piano-roll.porta"].rect;
         click(&mut app, &ctx, porta);
         assert!(app.piano.porta_mode);
+    }
+
+    #[test]
+    fn event_editor_targets_edit_note_properties() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("channel.add", json!({"name": "Keys", "kind": "synth"}));
+        for (start, key) in [(0, 60), (96, 64)] {
+            app.execute(
+                "note.add",
+                json!({"pattern": 1, "channel": 1, "start": start, "length": 48, "key": key}),
+            );
+        }
+        toggle(&mut app, &ctx, Key::F7);
+        run_frame(&mut app, &ctx, Vec::new());
+        let grid = app.probe().entries()["piano-roll.grid"].rect;
+        let lane = app.probe().entries()["piano-roll.velocity"].rect;
+        let x_of = |app: &JetApp, tick: i64| {
+            grid.left() + (tick as f32 - app.piano.scroll_ticks) * app.piano.px_per_tick
+        };
+        let prop = |app: &JetApp, i: usize| {
+            let n = &app.session.project().patterns[0].notes[&ChannelId(1)][i];
+            (n.velocity, n.pan)
+        };
+
+        // The target control cycles Velocity -> Pan.
+        let selector = app.probe().entries()["piano-roll.lane-target"].rect;
+        click(&mut app, &ctx, selector);
+        assert_eq!(app.piano.lane_target, crate::piano_roll::LaneTarget::Pan);
+
+        let (x0, x96) = (x_of(&app, 0), x_of(&app, 96));
+        // Clicking at the top of the first note's line pans it hard right.
+        let top = lane.top() + 4.0;
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(pos2(x0, top), vec2(1.0, 1.0)),
+        );
+        assert_eq!(prop(&app, 0), (100, 1000));
+        assert_eq!(prop(&app, 1), (100, 0), "the other note is untouched");
+
+        // Shift+drag across both notes sets both to the value where the drag started (bottom).
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        run_frame(&mut app, &ctx, vec![Event::ModifiersChanged(shift)]);
+        drag(
+            &mut app,
+            &ctx,
+            pos2(x0 - 2.0, lane.bottom() - 4.0),
+            pos2(x96 + 2.0, lane.top() + 10.0),
+        );
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(Modifiers::default())],
+        );
+        assert_eq!(prop(&app, 0), (100, -1000));
+        assert_eq!(prop(&app, 1), (100, -1000));
+
+        // Alt+click resets a note's pan to the center.
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        let spot = pos2(x96, lane.center().y - 10.0);
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(alt), Event::PointerMoved(spot)],
+        );
+        for pressed in [true, false] {
+            run_frame(
+                &mut app,
+                &ctx,
+                vec![Event::PointerButton {
+                    pos: spot,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: alt,
+                }],
+            );
+        }
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(Modifiers::default())],
+        );
+        assert_eq!(prop(&app, 1), (100, 0));
+        assert_eq!(prop(&app, 0), (100, -1000));
     }
 
     #[test]

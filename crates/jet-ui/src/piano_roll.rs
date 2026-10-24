@@ -87,12 +87,28 @@ impl Snap {
 
 #[derive(Clone, Debug)]
 enum Drag {
-    Move { anchor: Pos2, dt: i64, dkey: i16 },
-    Resize { anchor: Pos2, dl: i64 },
-    Rect { from: Pos2, to: Pos2 },
-    Paint { last_cell: i64 },
+    Move {
+        anchor: Pos2,
+        dt: i64,
+        dkey: i16,
+    },
+    Resize {
+        anchor: Pos2,
+        dl: i64,
+    },
+    Rect {
+        from: Pos2,
+        to: Pos2,
+    },
+    Paint {
+        last_cell: i64,
+    },
     Erase,
-    Velocity { value: u8 },
+    /// Event editor drag: the value, and with Shift the x span dragged across.
+    Lane {
+        value: i32,
+        across: Option<(f32, f32)>,
+    },
 }
 
 pub struct PianoRollState {
@@ -121,6 +137,7 @@ pub struct PianoRollState {
     /// "Slide & Portamento - These are flags that can be set per-note"].
     pub slide_mode: bool,
     pub porta_mode: bool,
+    pub lane_target: LaneTarget,
     tools_menu: Option<egui::Pos2>,
 }
 
@@ -162,6 +179,7 @@ impl Default for PianoRollState {
             stamp: None,
             slide_mode: false,
             porta_mode: false,
+            lane_target: LaneTarget::Velocity,
             tools_menu: None,
         }
     }
@@ -176,6 +194,11 @@ pub struct NoteView {
     pub muted: bool,
     pub slide: bool,
     pub porta: bool,
+    pub pan: i16,
+    pub release: u8,
+    pub fine_pitch: i16,
+    pub mod_x: u8,
+    pub mod_y: u8,
 }
 
 pub struct PianoRollView {
@@ -205,9 +228,11 @@ pub enum PianoAction {
         indices: Vec<usize>,
         delta: i64,
     },
-    Velocity {
+    /// Set a note property (`note.props.set` field) on notes.
+    Prop {
         indices: Vec<usize>,
-        value: u8,
+        field: &'static str,
+        value: i32,
     },
     Mute {
         indices: Vec<usize>,
@@ -1149,6 +1174,89 @@ fn paint_keyboard(
     }
 }
 
+/// Note property shown in the event editor [Manual: pianoroll, "Note Properties & Event
+/// Editor": "velocity, pan, release (where supported), Mod X & Y (where supported), pitch"].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LaneTarget {
+    #[default]
+    Velocity,
+    Pan,
+    Release,
+    FinePitch,
+    ModX,
+    ModY,
+}
+
+impl LaneTarget {
+    pub const ALL: [Self; 6] = [
+        Self::Velocity,
+        Self::Pan,
+        Self::Release,
+        Self::FinePitch,
+        Self::ModX,
+        Self::ModY,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Velocity => "Velocity",
+            Self::Pan => "Pan",
+            Self::Release => "Release",
+            Self::FinePitch => "Fine pitch",
+            Self::ModX => "Mod X",
+            Self::ModY => "Mod Y",
+        }
+    }
+
+    /// Field name in `note.props.set`.
+    pub fn field(self) -> &'static str {
+        match self {
+            Self::Velocity => "velocity",
+            Self::Pan => "pan",
+            Self::Release => "release",
+            Self::FinePitch => "fine_pitch",
+            Self::ModX => "mod_x",
+            Self::ModY => "mod_y",
+        }
+    }
+
+    fn range(self) -> (i32, i32) {
+        match self {
+            Self::Pan => (-1000, 1000),
+            Self::FinePitch => (-1200, 1200),
+            Self::Velocity | Self::Release | Self::ModX | Self::ModY => (0, 127),
+        }
+    }
+
+    /// "To reset a property, use (Alt/Opt+Left-Click)": the value a new note gets.
+    fn default_value(self) -> i32 {
+        match self {
+            Self::Velocity => i32::from(jet_model::DEFAULT_VELOCITY),
+            _ => 0,
+        }
+    }
+
+    fn get(self, note: &NoteView) -> i32 {
+        match self {
+            Self::Velocity => i32::from(note.velocity),
+            Self::Pan => i32::from(note.pan),
+            Self::Release => i32::from(note.release),
+            Self::FinePitch => i32::from(note.fine_pitch),
+            Self::ModX => i32::from(note.mod_x),
+            Self::ModY => i32::from(note.mod_y),
+        }
+    }
+
+    fn bipolar(self) -> bool {
+        matches!(self, Self::Pan | Self::FinePitch)
+    }
+
+    fn cycle(self, step: isize) -> Self {
+        let i = Self::ALL.iter().position(|t| *t == self).unwrap_or(0) as isize;
+        Self::ALL[(i + step).rem_euclid(Self::ALL.len() as isize) as usize]
+    }
+}
+
 fn paint_velocity_lane(
     paint: &mut PaintCtx<'_>,
     painter: &egui::Painter,
@@ -1159,15 +1267,52 @@ fn paint_velocity_lane(
 ) {
     let t = *paint.tokens;
     let lane = geo.lane;
+    let target = state.lane_target;
     painter.rect_filled(lane, 0.0, t.ruler_bg);
     let lp = painter.with_clip_rect(lane);
-    lp.text(
-        pos2(lane.left() - KEYS_W + 4.0, lane.top() + 10.0),
+
+    // Target control: click for the next target, right-click for the previous one, mouse wheel
+    // over it or Shift+F cycles [Manual: pianoroll, "Selecting Targets"].
+    let selector = Rect::from_min_size(
+        pos2(lane.left() - KEYS_W + 2.0, lane.top() + 2.0),
+        vec2(KEYS_W - 4.0, 18.0),
+    );
+    let selector_response = paint.hit(
+        "piano-roll.lane-target",
+        selector,
+        "menu",
+        true,
+        "Event editor target: click or mouse wheel to change (Shift+F)",
+    );
+    painter.text(
+        pos2(selector.left() + 2.0, selector.center().y),
         Align2::LEFT_CENTER,
-        "Velocity",
+        format!("{} >", target.label()),
         theme::regular(12.0),
         t.ruler_text,
     );
+    if selector_response.clicked() {
+        state.lane_target = target.cycle(1);
+    }
+    if selector_response.secondary_clicked() {
+        state.lane_target = target.cycle(-1);
+    }
+    if selector_response.hovered() {
+        // One target per wheel notch (MouseWheel events, not the smoothed scroll).
+        let wheel: f32 = paint.ui.input(|i| {
+            i.events
+                .iter()
+                .map(|e| match e {
+                    Event::MouseWheel { delta, .. } => delta.y,
+                    _ => 0.0,
+                })
+                .sum()
+        });
+        if wheel != 0.0 {
+            state.lane_target = target.cycle(if wheel < 0.0 { 1 } else { -1 });
+        }
+    }
+
     let response = paint.ui.interact(
         lane,
         egui::Id::new("piano-roll.velocity"),
@@ -1176,23 +1321,16 @@ fn paint_velocity_lane(
     paint
         .probe
         .insert("piano-roll.velocity", lane, "event-editor", true, None);
-    let pointer = paint.ui.input(|i| i.pointer.hover_pos());
+    let (min, max) = target.range();
+    let span = (max - min) as f32;
+    let inner = lane.height() - 8.0;
+    let y_of = |value: i32| lane.bottom() - 4.0 - (value - min) as f32 / span * inner;
     let value_at = |y: f32| {
-        (((lane.bottom() - 4.0 - y) / (lane.height() - 8.0)) * 127.0)
-            .round()
-            .clamp(0.0, 127.0) as u8
+        (min as f32 + ((lane.bottom() - 4.0 - y) / inner).clamp(0.0, 1.0) * span).round() as i32
     };
-    if (response.dragged() || response.clicked())
-        && let Some(p) = pointer
-    {
-        state.drag = Some(Drag::Velocity {
-            value: value_at(p.y),
-        });
-    }
-    let live = match state.drag {
-        Some(Drag::Velocity { value }) => Some(value),
-        _ => None,
-    };
+    let (pointer, shift, alt) = paint
+        .ui
+        .input(|i| (i.pointer.hover_pos(), i.modifiers.shift, i.modifiers.alt));
     let near = pointer.filter(|p| lane.contains(*p)).and_then(|p| {
         view.notes
             .iter()
@@ -1201,38 +1339,106 @@ fn paint_velocity_lane(
             .filter(|(_, n)| (geo.x_of(state, n.start) - p.x).abs() < 8.0)
             .map(|(i, _)| i)
     });
-    for (i, note) in view.notes.iter().enumerate() {
-        let x = geo.x_of(state, note.start);
-        let affected = live.is_some()
-            && if state.selection.is_empty() {
+    if (response.dragged() || response.clicked())
+        && let Some(p) = pointer
+    {
+        let origin = paint.ui.input(|i| i.pointer.press_origin()).unwrap_or(p);
+        state.drag = Some(if alt {
+            Drag::Lane {
+                value: target.default_value(),
+                across: None,
+            }
+        } else if shift {
+            // "To set each note's property to the same value, use (Shift+Left-Click) and drag
+            // across the area that should be affected": the value is where the drag started.
+            Drag::Lane {
+                value: value_at(origin.y),
+                across: Some((origin.x.min(p.x), origin.x.max(p.x))),
+            }
+        } else {
+            Drag::Lane {
+                value: value_at(p.y),
+                across: None,
+            }
+        });
+    }
+    let (live, across) = match state.drag {
+        Some(Drag::Lane { value, across }) => (Some(value), across),
+        _ => (None, None),
+    };
+    let in_span = |x: f32| across.is_some_and(|(a, b)| x >= a - 4.0 && x <= b + 4.0);
+    let affected = |i: usize, x: f32| {
+        live.is_some()
+            && if across.is_some() {
+                in_span(x)
+            } else if state.selection.is_empty() {
                 Some(i) == near
             } else {
                 state.selection.contains(&i)
-            };
-        let velocity = if affected {
-            live.unwrap_or(note.velocity)
-        } else {
-            note.velocity
-        };
-        let h = f32::from(velocity) / 127.0 * (lane.height() - 8.0);
-        let top = lane.bottom() - 4.0 - h;
+            }
+    };
+    let baseline = if target.bipolar() {
+        y_of(0)
+    } else {
+        lane.bottom() - 4.0
+    };
+    if target.bipolar() {
         lp.line_segment(
-            [pos2(x, lane.bottom() - 4.0), pos2(x, top)],
+            [pos2(lane.left(), baseline), pos2(lane.right(), baseline)],
+            Stroke::new(1.0, theme::shade(t.ruler_bg, 1.4)),
+        );
+    }
+    let mut changed = Vec::new();
+    for (i, note) in view.notes.iter().enumerate() {
+        let x = geo.x_of(state, note.start);
+        let value = match live {
+            Some(value) if affected(i, x) => {
+                changed.push(i);
+                value
+            }
+            _ => target.get(note),
+        };
+        let top = y_of(value);
+        // "Note properties - are displayed as vertical lines with a small circle at the top. The
+        // right-facing tail allows you to see the independent values of notes with the same
+        // start time."
+        lp.line_segment(
+            [pos2(x, baseline), pos2(x, top)],
             Stroke::new(2.0, t.step_on),
         );
         lp.circle_filled(pos2(x, top), 3.0, t.step_on);
+        let tail = (geo.x_of(state, note.start + note.length.max(1)) - x).clamp(0.0, 40.0);
+        lp.line_segment(
+            [pos2(x, top), pos2(x + tail, top)],
+            Stroke::new(1.0, t.step_on),
+        );
+    }
+    if let Some(p) = pointer.filter(|p| lane.contains(*p)) {
+        let value = live.unwrap_or_else(|| value_at(p.y));
+        *paint.hint = format!("{}: {}", target.label(), display_lane(target, value));
     }
     if (response.drag_stopped() || response.clicked())
-        && let Some(Drag::Velocity { value }) = state.drag.take()
+        && let Some(Drag::Lane { value, .. }) = state.drag.take()
+        && !changed.is_empty()
     {
-        let indices: Vec<usize> = if state.selection.is_empty() {
-            near.into_iter().collect()
-        } else {
-            targets(state)
-        };
-        if !indices.is_empty() {
-            actions.push(PianoAction::Velocity { indices, value });
-        }
+        actions.push(PianoAction::Prop {
+            indices: changed,
+            field: target.field(),
+            value,
+        });
+    }
+}
+
+fn display_lane(target: LaneTarget, value: i32) -> String {
+    match target {
+        LaneTarget::Pan if value == 0 => "Centered".to_owned(),
+        LaneTarget::Pan => format!(
+            "{}% {}",
+            value.abs() / 10,
+            if value < 0 { "left" } else { "right" }
+        ),
+        LaneTarget::FinePitch => format!("{value:+} cents"),
+        _ => format!("{}%", (value as f32 / 1.27).round()),
     }
 }
 
@@ -1330,6 +1536,9 @@ fn keyboard(
             }
             // "Portamento Toggle ( O )", "Slide Toggle ( S )" [Manual: pianoroll].
             Key::S if plain && !view.typing => state.slide_mode = !state.slide_mode,
+            Key::F if only(m(false, true, false)) => {
+                state.lane_target = state.lane_target.cycle(1);
+            }
             Key::O if plain && !view.typing => state.porta_mode = !state.porta_mode,
             _ if plain && !view.typing => {
                 if let Some((tool, ..)) = Tool::ALL.iter().find(|(_, _, _, k)| *k == key) {

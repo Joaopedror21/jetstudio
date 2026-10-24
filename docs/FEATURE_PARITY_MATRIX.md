@@ -51,7 +51,7 @@ As contagens foram geradas por script a partir da coluna Estado do inventário: 
 | Piano roll: Draw/Paint/Delete/Mute/Select | sim | ✅ | `piano_roll_click_adds_a_note...` |
 | Piano roll: mover/redimensionar/snap | sim | ✅ | `piano_roll_editing_tools` (engine) |
 | Quantize, chop, glue, duplicate, transpose, discard lengths | sim | ✅ | `piano_roll_editing_tools` |
-| Editor de eventos | só velocity | 🟡 | pan, release, Mod X/Y, pitch |
+| Editor de eventos | Velocity, Pan, Release, Fine pitch, Mod X/Y | 🟡 | `event_editor_targets_edit_note_properties`; faltam cutoff/resonance e eventos de automação |
 | Teclado de preview | notas ao vivo | ✅ | `live_notes_sound_until_note_off` |
 | Copy/Paste de notas | Ctrl+C/X/V | ✅ | PR-020 |
 | Chord stamp, snap to scale, flip, strum, limit, arpeggiate | menu Tools e seletores | 🟡 | `piano_roll_tools_flip_strum_limit_stamp_arpeggiate_and_snap`; faltam diálogos com parâmetros, Flam, Randomize, Articulate |
