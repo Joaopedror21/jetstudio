@@ -4,3 +4,6 @@ reference/
 references/comparisons/
 *.local.*
 .env
+
+# Never commit autosave output
+/Backup/

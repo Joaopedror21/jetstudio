@@ -80,7 +80,7 @@
 | GLB-018 | Gerenciamento de janelas | [Manual: basics_windows] | Janelas flutuantes que encaixam umas nas outras (Alt desliga), maximizar, F5/F6/F7/F9, F12 fecha todas | — | M | P0 | Testado (Playlist, Channel rack, Piano roll, Mixer) | `workspace::tests::*` |
 | GLB-019 | Detach de janelas | [Manual: basics_windows] | Janela vira janela do sistema operacional | GLB-018 | M | P3 | Pesquisado | — |
 | GLB-020 | Atalhos globais | [Manual: basics_shortcuts] | F5, F6, F7, F9, Alt+F8, Ctrl+S/O, Space, L, F4, +/−, Ctrl+Z, Ctrl+L, Ctrl+R | — | S | P1 | Implementado (lista ao lado) | `app::tests::*` |
-| GLB-021 | Configurações (F10) | [Manual: envsettings_*] "press F10 to open the settings panel" | Áudio, MIDI, general, arquivos | AE | L | P1 | Parcialmente compatível: aba Audio (dispositivo, taxa, buffer com latência, status, callbacks atrasados), guardada em `Documentos/JetStudio/settings.json`; faltam MIDI, General, File | `f10_opens_audio_settings_and_apply_keeps_the_choice` |
+| GLB-021 | Configurações (F10) | [Manual: envsettings_*] "press F10 to open the settings panel" | Áudio, MIDI, general, arquivos | AE | L | P1 | Parcialmente compatível: aba Audio (dispositivo, taxa, buffer com latência, status, callbacks atrasados), guardada em `%APPDATA%\JetStudio\settings.json`; faltam MIDI, General, File | `f10_opens_audio_settings_and_apply_keeps_the_choice` |
 | GLB-022 | Personalização do toolbar | [Manual: toolbar_panels] | Painéis configuráveis | — | M | P3 | Pesquisado | — |
 | GLB-023 | Main volume / main pitch | [Manual: toolbar_panels] | Knobs globais | AE | S | P2 | Pesquisado (campos no modelo, sem efeito no áudio) | — |
 
@@ -283,7 +283,7 @@
 | BR-006 | Favoritos e histórico | — | — | S | P2 | Pesquisado |
 | FILE-001 | Formato próprio .jetproj (JSON versionado, save atômico) | ARQ §6 | — | S | P0 | Testado | `save_load_and_replace_existing_file`, `save_and_load_keep_samples_and_render_identically` |
 | FILE-002 | Caminhos relativos de samples | [Manual: songsettings_settings "Project Data Folder"] | Relativo ao projeto, mais hint absoluto | S | P0 | Testado | `save_and_load_keep_samples...` |
-| FILE-003 | Autosave e backups | [Manual: envsettings_files]: "Regularly (every 5 minutes)", adiado enquanto toca; backup a cada save manual; "Revert to last autosave" | — | M | P1 | Parcialmente compatível: modo Regularly fixo em `Documentos\JetStudio\Backup`, revert no menu File; faltam os outros modos e o versionamento sequencial. Teste: `autosave_backs_up_changes_and_revert_restores_them` |
+| FILE-003 | Autosave e backups | [Manual: envsettings_files]: "Regularly (every 5 minutes)", adiado enquanto toca; backup a cada save manual; "Revert to last autosave" | — | M | P1 | Parcialmente compatível: modo Regularly fixo em `Documentos\JetStudio Projects\Backup`, revert no menu File; faltam os outros modos e o versionamento sequencial. Teste: `autosave_backs_up_changes_and_revert_restores_them` |
 | FILE-004 | Templates | [Manual: menu_file] | — | S | P2 | Pesquisado |
 | FILE-005 | Zip com samples | [Manual: fformats_project] | — | M | P2 | Pesquisado |
 | FILE-006 | Ler .flp | [Manual: fformats_project] esquema não publicado | — | — | — | Bloqueado (sem especificação pública; fora de escopo pela ADR) |

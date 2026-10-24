@@ -186,16 +186,21 @@ impl JetApp {
     /// system clock, silently, and the hint bar says why.
     pub fn with_audio() -> Self {
         let mut app = Self::default();
-        // Backups go to the user data folder, like FL's ...\Projects\Backup.
-        let documents = std::env::var_os("USERPROFILE")
-            .or_else(|| std::env::var_os("HOME"))
-            .map(|home| std::path::PathBuf::from(home).join("Documents"));
-        app.session.set_backup_dir(
-            documents
-                .as_ref()
-                .map(|d| d.join("JetStudio").join("Backup")),
-        );
-        app.settings_file = documents.map(|d| d.join("JetStudio").join("settings.json"));
+        // Backups go to a projects folder in Documents, like FL's ...\FL Studio\Projects\Backup;
+        // settings go to the per-user application data folder. (A folder named just
+        // "JetStudio" in Documents could be a source checkout: Windows paths ignore case.)
+        let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"));
+        let projects = home.as_ref().map(|h| {
+            std::path::PathBuf::from(h)
+                .join("Documents")
+                .join("JetStudio Projects")
+        });
+        app.session
+            .set_backup_dir(projects.map(|d| d.join("Backup")));
+        let config = std::env::var_os("APPDATA")
+            .map(std::path::PathBuf::from)
+            .or_else(|| home.map(|h| std::path::PathBuf::from(h).join(".config")));
+        app.settings_file = config.map(|d| d.join("JetStudio").join("settings.json"));
         app.audio_request = app.load_audio_settings();
         app.audio_pending = app.audio_request.clone();
         app.hardware_audio = true;
