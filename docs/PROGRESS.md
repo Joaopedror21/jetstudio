@@ -49,7 +49,7 @@
 | `4da59c7` | Canal: seção Time (Gate, Shift, Full porta) |
 | `9a51c4f` | Channel rack: botões vermelhos para samples ausentes; religar pelas pastas do Browser |
 | `08dc7a9` | Settings: abas MIDI (Enable por dispositivo) e File (modos de autosave) |
-| (este) | Menus PATTERNS, TOOLS, HELP e itens novos em EDIT/VIEW; Ctrl+H |
+| `d1761c4` | Menus PATTERNS, TOOLS, HELP e itens novos em EDIT/VIEW; Ctrl+H |
 
 ## 1. Funcionalidades pesquisadas
 
