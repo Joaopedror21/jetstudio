@@ -48,6 +48,7 @@ fn main() {
                 "piano" => Some(jet_ui::WindowKind::PianoRoll),
                 "mixer" => Some(jet_ui::WindowKind::Mixer),
                 "settings" => Some(jet_ui::WindowKind::ChannelSettings),
+                "graph" => Some(jet_ui::WindowKind::GraphEditor),
                 _ => None,
             };
             if let Some(kind) = kind {

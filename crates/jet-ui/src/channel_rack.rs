@@ -58,6 +58,7 @@ pub struct ChannelView {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RackMenu {
     PianoRoll,
+    GraphEditor,
     Rename,
     LoadSample,
     CutItself,
@@ -225,6 +226,7 @@ const MIXER_STEP_PX: f32 = 6.0;
 fn menu_items(channel: &ChannelView) -> Vec<(RackMenu, &'static str, &'static str, bool)> {
     vec![
         (RackMenu::PianoRoll, "Piano roll", "", true),
+        (RackMenu::GraphEditor, "Graph editor", "Ctrl+K", true),
         (RackMenu::Rename, "Rename...", "F2", true),
         (
             RackMenu::LoadSample,

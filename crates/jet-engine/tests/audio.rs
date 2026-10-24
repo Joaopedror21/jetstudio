@@ -119,6 +119,37 @@ fn step_fill_and_graph_editor_change_what_plays() {
 }
 
 #[test]
+fn graph_editor_pan_and_shift_change_the_render() {
+    let mut session = session_120();
+    let id = add_sampler_with_click(&mut session);
+    for index in [0, 8] {
+        session
+            .execute(
+                "step.set",
+                json!({"pattern": 1, "channel": id, "index": index, "on": true}),
+            )
+            .unwrap();
+    }
+    // Step 0 hard right; step 8 shifted by half a step (12 of 24 ticks = 3 000 frames).
+    session
+        .execute(
+            "step.props.set",
+            json!({"pattern": 1, "channel": id, "index": 0, "pan": 1000}),
+        )
+        .unwrap();
+    session
+        .execute(
+            "step.props.set",
+            json!({"pattern": 1, "channel": id, "index": 8, "shift": 12}),
+        )
+        .unwrap();
+    let (left, right) = export(&mut session, "pattern");
+    assert_eq!(left[50], 0.0, "the panned step is silent on the left");
+    assert!(right[50] > 0.3);
+    assert_eq!(onsets(&left), vec![48_000 + 3_000]);
+}
+
+#[test]
 fn channel_volume_pan_and_mute_change_the_audio() {
     let mut session = session_120();
     let id = add_sampler_with_click(&mut session);

@@ -8,6 +8,7 @@ pub enum WindowKind {
     Mixer,
     ChannelSettings,
     AudioSettings,
+    GraphEditor,
 }
 
 impl WindowKind {
@@ -19,6 +20,7 @@ impl WindowKind {
             Self::Mixer => "Mixer",
             Self::ChannelSettings => "Channel settings",
             Self::AudioSettings => "Audio settings",
+            Self::GraphEditor => "Graph editor",
         }
     }
 
@@ -30,6 +32,7 @@ impl WindowKind {
             Self::Mixer => "mixer",
             Self::ChannelSettings => "channel-settings",
             Self::AudioSettings => "audio-settings",
+            Self::GraphEditor => "graph-editor",
         }
     }
 }
@@ -162,6 +165,27 @@ impl Workspace {
                             pos2(
                                 (desktop.center().x - size.x / 2.0).max(desktop.left()),
                                 desktop.top() + 30.0,
+                            ),
+                            size,
+                        )
+                    },
+                    visible: false,
+                    maximized: false,
+                    restore_rect: None,
+                },
+                // UNMEASURED: the Graph editor opens docked under the Channel rack in FL; here it
+                // is a child window placed near the bottom of the desktop.
+                WinState {
+                    kind: WindowKind::GraphEditor,
+                    rect: {
+                        let size = vec2(
+                            620.0_f32.min(desktop.width() - 40.0).max(240.0),
+                            240.0_f32.min(desktop.height() - 40.0).max(160.0),
+                        );
+                        Rect::from_min_size(
+                            pos2(
+                                desktop.left() + 300.0_f32.min((desktop.width() - size.x).max(0.0)),
+                                (desktop.bottom() - size.y - 20.0).max(desktop.top()),
                             ),
                             size,
                         )

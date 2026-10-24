@@ -38,7 +38,7 @@ As contagens foram geradas por script a partir da coluna Estado do inventário: 
 | Volume/Pan de canal | knobs arrastáveis; curva H-VOL-1 | 🟡 | curva intermediária não verificada |
 | Roteamento canal → mixer, Ctrl+L | arrastar o seletor; insert livre | ✅ | `mixer_routing_faders...` |
 | Step sequencer (clique, pintura) | sim | ✅ | `channel_rack_steps_render_at_the_step_grid` |
-| Graph editor | engine aplica note, vel, pan, pitch, shift | 🟡 | falta o editor visual e "Rep" |
+| Graph editor | janela Ctrl+K com 8 abas, arrastar, rampa, reset | 🟡 | `graph_editor_sets_ramps_and_resets_step_properties`; falta "Rep" |
 | Swing global/canal | knob global no cabeçalho do rack | 🟡 | H-SEQ-1; swing por canal só por comando |
 | Comprimento do pattern | LCD no cabeçalho do rack | ✅ | CR-014 |
 | Fill each 2/4/8 | menu do canal | ✅ | `context_menu_fill_each_four_steps_sets_real_steps` |

@@ -43,7 +43,7 @@ pub enum SettingsAction {
     LoadSample(u64),
 }
 
-fn note_name(key: u8) -> String {
+pub(crate) fn note_name(key: u8) -> String {
     const NAMES: [&str; 12] = [
         "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
     ];

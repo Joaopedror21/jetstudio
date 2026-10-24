@@ -6,6 +6,7 @@ mod browser;
 mod channel_rack;
 mod channel_settings;
 pub mod demo;
+mod graph_editor;
 mod icons;
 mod mixer;
 mod piano_roll;

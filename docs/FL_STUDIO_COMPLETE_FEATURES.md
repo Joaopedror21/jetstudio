@@ -56,6 +56,8 @@
 | H-KB-1 | Mapa do teclado de digitação | Duas fileiras: Z…M + teclas pretas em S, D, G, H, J (oitava inferior); Q…P + 2, 3, 5, 6, 7, 9 (superior); Z = C4 | O manual menciona "Standard keyboard layouts" sem mostrar o mapa | `jet-ui/src/app.rs` |
 | H-REC-1 | Início da take | A take começa na posição do transporte no primeiro quadro de UI depois do Play (granularidade de ~30 ms) | O FL usa os relógios do driver | `jet-ui/src/app.rs` |
 | H-PR-3 | Arpeggiate | Cada acorde vira uma sequência de notas de `step` sobre sua duração (up, down, updown) | A página do Arpeggiator do manual responde 404 | `jet-engine/src/cmd/note_tools.rs` |
+| H-CR-2 | Faixa da aba Note do Graph editor | Duas oitavas para cada lado da nota raiz do canal | O manual não dá a faixa | `jet-ui/src/graph_editor.rs` |
+| H-CR-3 | Ctrl no Graph editor | Todas as colunas mudam pelo mesmo deslocamento da coluna segura | O manual diz só "the others will follow" | `jet-ui/src/graph_editor.rs` |
 | H-UI-1 | Sensibilidade dos knobs e faders | 200 px por curso de knob; 150 px por curso de fader; 6 px por insert | Não medido | `jet-ui` |
 
 ## 3. Interface e controles globais (GLB)
@@ -105,7 +107,7 @@
 | CR-013 | Step sequencer | §13: cada step é uma semicolcheia; clique esquerdo liga, direito desliga | Grade de steps | jet-seq | S | P0 | Testado (clique e pintura arrastando) | `step_buttons_and_playlist_grid_change_the_project`, `channel_rack_steps_render_at_the_step_grid` |
 | CR-014 | Comprimento do pattern | §4: Auto = "end of the last bar with data"; 1–512 steps | — | jet-seq | S | P1 | Testado (LCD no cabeçalho: arrastar define os steps, botão direito volta ao Auto) | `auto_length_rounds...`, `rack_header_sets_swing_and_pattern_length` |
 | CR-015 | Swing global e por canal | §3: dois multiplicadores; os dois > 0 para haver swing; move os steps pares | — | jet-seq | S | P1 | Parcialmente compatível (H-SEQ-1); knob global no cabeçalho do rack; swing por canal só por comando | `swing_needs_both...`, `rack_header_sets_swing_and_pattern_length` |
-| CR-016 | Graph editor | §6: Note, Velocity, Release, Fine pitch (±100 cents), Pan, Mod X/Y, Shift (até ~1 step), Rep | Propriedades por step | CR-013 | M | P1 | Parcialmente compatível: o engine aplica Note, Velocity, Pan, Fine pitch e Shift (`step.props.set`); falta o editor gráfico e Rep | `step_fill_and_graph_editor_change_what_plays` |
+| CR-016 | Graph editor | §6: Note, Velocity, Release, Fine pitch (±100 cents), Pan, Mod X/Y, Shift (até ~1 step), Rep | Propriedades por step | CR-013 | M | P1 | Parcialmente compatível: janela Graph editor (Ctrl+K ou menu do canal) com abas Note, Velocity, Release, Fine pitch, Pan, Mod X, Mod Y e Shift; arrastar define as barras (arrasto rápido preenche as colunas do meio), Ctrl+arrastar desloca todas (H-CR-3), botão direito arrastado faz rampa, Alt+clique/arrasto volta ao padrão; faixa da aba Note é H-CR-2; nossos instrumentos ignoram Release e Mod X/Y; faltam Rep e o modo acoplado ao rack | `graph_editor_sets_ramps_and_resets_step_properties`, `graph_editor_pan_and_shift_change_the_render`, `step_fill_and_graph_editor_change_what_plays` |
 | CR-017 | Fill each 2/4/8 steps | Menu do canal | — | CR-013 | S | P1 | Testado | `context_menu_fill_each_four_steps_sets_real_steps` |
 | CR-018 | Advanced fill | [Manual: stepsequencer_advancedfilltool] | Preenchimento por regras | CR-013 | M | P2 | Pesquisado | — |
 | CR-019 | Rotate left/right | "Shift+Ctrl+Left/Right ... Step-notes are unaffected" | Move as notas do Piano roll | PR | S | P2 | Pesquisado | — |

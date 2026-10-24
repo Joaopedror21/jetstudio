@@ -15,6 +15,7 @@ use crate::channel_rack::{
     ChannelView, RackAction, RackMenu, RackState, RackView, paint_channel_rack,
 };
 use crate::channel_settings::{ChannelSettingsData, SettingsAction, paint_channel_settings};
+use crate::graph_editor::{GraphAction, GraphState, GraphView, paint_graph_editor};
 use crate::icons;
 use crate::mixer::{MixerAction, MixerState, MixerTrackView, MixerView, paint_mixer};
 use crate::piano_roll::{NoteView, PianoAction, PianoRollState, PianoRollView, paint_piano_roll};
@@ -100,6 +101,7 @@ pub struct JetApp {
     audio: Option<AudioHost>,
     audio_status: Option<String>,
     piano: PianoRollState,
+    graph: GraphState,
     mixer: MixerState,
     workspace: Option<Workspace>,
     browser: BrowserState,
@@ -141,6 +143,7 @@ impl Default for JetApp {
             audio: None,
             audio_status: None,
             piano: PianoRollState::default(),
+            graph: GraphState::default(),
             mixer: MixerState::default(),
             workspace: None,
             browser: BrowserState::default(),
@@ -176,6 +179,7 @@ enum UiAction {
     Mixer(MixerAction),
     Settings(SettingsAction),
     AudioSettings(AudioSettingsAction),
+    Graph(GraphAction),
     ToggleRecord,
     ToggleTyping,
     OpenProject,
@@ -600,6 +604,17 @@ impl JetApp {
             }
             RackMenu::MakeSynth => {
                 self.execute("channel.kind.set", json!({"id": id, "kind": "synth"}));
+            }
+            RackMenu::GraphEditor => {
+                self.rack.selected_channel = Some(id);
+                self.execute("channel.select", json!({"id": id}));
+                if let Some(ws) = &mut self.workspace
+                    && !ws
+                        .window(WindowKind::GraphEditor)
+                        .is_some_and(|w| w.visible)
+                {
+                    self.pending_show.push(WindowKind::GraphEditor);
+                }
             }
             RackMenu::Rename => {}
         }
@@ -1115,6 +1130,22 @@ impl JetApp {
             UiAction::Mixer(action) => self.run_mixer(action),
             UiAction::AudioSettings(action) => self.run_audio_settings(action),
             UiAction::ToggleRecord => self.toggle_record(),
+            UiAction::Graph(action) => match action {
+                GraphAction::Set {
+                    pattern,
+                    channel,
+                    field,
+                    values,
+                } => {
+                    for (index, value) in values {
+                        let mut params =
+                            json!({"pattern": pattern, "channel": channel, "index": index});
+                        params[field] = json!(value);
+                        self.gesture(&format!("graph.{channel}"), "step.props.set", params);
+                    }
+                }
+                GraphAction::EndGesture => self.session.end_gesture(),
+            },
             UiAction::Settings(action) => match action {
                 SettingsAction::Engine {
                     id,
@@ -1418,6 +1449,12 @@ impl JetApp {
         if pressed(Key::O) && modifiers.ctrl {
             actions.push(UiAction::OpenProject);
         }
+        // "Open the graph editor ( Ctrl+K )" [Manual: channelrack, "6. Graph Editor"].
+        if pressed(Key::K) && modifiers.ctrl {
+            actions.push(UiAction::Workspace(WsAction::Toggle(
+                WindowKind::GraphEditor,
+            )));
+        }
         if pressed(Key::S) && modifiers.ctrl {
             actions.push(if modifiers.shift {
                 UiAction::SaveProjectAs
@@ -1557,6 +1594,40 @@ impl JetApp {
                 })
                 .collect();
             self.waveforms.insert(resource.id, columns);
+        }
+    }
+
+    /// Steps of the selected channel in the selected pattern, as many as the Channel rack shows.
+    fn graph_view(&self) -> GraphView {
+        let project = self.session.project();
+        let channel = self
+            .selected_channel_id()
+            .and_then(|id| project.channel(ChannelId(id)));
+        let default_steps = usize::from(project.settings.steps_per_beat)
+            * usize::from(project.settings.time_sig.num);
+        let steps = channel
+            .map(|channel| {
+                let sequence = self
+                    .selected_pattern()
+                    .and_then(|p| p.steps.get(&channel.id));
+                let length =
+                    sequence.map_or(default_steps, |seq| seq.cells.len().max(default_steps));
+                (0..length)
+                    .map(|index| {
+                        sequence.and_then(|seq| seq.cells.get(index)).map_or_else(
+                            || (false, jet_model::StepProps::default()),
+                            |step| (step.on, step.props.clone()),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        GraphView {
+            channel: channel.map(|c| (c.id.0, c.name.clone())),
+            pattern: self.session.selected_pattern().0,
+            steps,
+            step_ticks: project.settings.step_ticks().unwrap_or(24),
+            root_key: channel.map_or(jet_model::DEFAULT_ROOT_KEY, |c| c.root_key),
         }
     }
 
@@ -1922,6 +1993,7 @@ impl JetApp {
         let playlist_view = self.playlist_view();
         let piano_view = self.piano_view();
         let mixer_view = self.mixer_view();
+        let graph_view = self.graph_view();
         let windows = self
             .workspace
             .as_ref()
@@ -1974,6 +2046,8 @@ impl JetApp {
                 mixer_view: &mixer_view,
                 settings_view: settings_view.as_ref(),
                 audio_settings_view: &audio_settings_view,
+                graph_state: &mut self.graph,
+                graph_view: &graph_view,
                 focused,
             };
             for win in windows.iter().filter(|win| win.visible) {
@@ -2075,6 +2149,8 @@ struct Surfaces<'a> {
     mixer_view: &'a MixerView,
     settings_view: Option<&'a ChannelSettingsData>,
     audio_settings_view: &'a AudioSettingsView,
+    graph_state: &'a mut GraphState,
+    graph_view: &'a GraphView,
     focused: Option<WindowKind>,
 }
 
@@ -2122,7 +2198,8 @@ fn paint_window(
         | WindowKind::PianoRoll
         | WindowKind::Mixer
         | WindowKind::ChannelSettings
-        | WindowKind::AudioSettings => 22.0,
+        | WindowKind::AudioSettings
+        | WindowKind::GraphEditor => 22.0,
     };
     let title_drag = Rect::from_min_max(
         pos2(title.left() + drag_left, title.top()),
@@ -2200,9 +2277,15 @@ fn paint_window(
         WindowKind::PianoRoll
         | WindowKind::Mixer
         | WindowKind::ChannelSettings
-        | WindowKind::AudioSettings => {
+        | WindowKind::AudioSettings
+        | WindowKind::GraphEditor => {
             let label = if win.kind == WindowKind::AudioSettings {
                 "Settings - Audio".to_owned()
+            } else if win.kind == WindowKind::GraphEditor {
+                surfaces.graph_view.channel.as_ref().map_or_else(
+                    || "Graph editor".to_owned(),
+                    |(_, name)| format!("Graph editor - {name}"),
+                )
             } else if win.kind == WindowKind::ChannelSettings {
                 surfaces
                     .settings_view
@@ -2314,6 +2397,14 @@ fn paint_window(
                 paint_channel_settings(paint, surfaces.settings_view, content)
                     .into_iter()
                     .map(UiAction::Settings),
+            );
+        }
+        WindowKind::GraphEditor => {
+            let content = Rect::from_min_max(pos2(rect.left(), title.bottom()), rect.max);
+            actions.extend(
+                paint_graph_editor(paint, surfaces.graph_state, surfaces.graph_view, content)
+                    .into_iter()
+                    .map(UiAction::Graph),
             );
         }
     }
@@ -3019,6 +3110,168 @@ mod tests {
         assert_eq!(
             app.session.project().active().map(|a| a.markers.len()),
             Some(1)
+        );
+    }
+
+    fn drag_button(
+        app: &mut JetApp,
+        ctx: &egui::Context,
+        from: egui::Pos2,
+        to: egui::Pos2,
+        button: PointerButton,
+    ) {
+        run_frame(app, ctx, vec![Event::PointerMoved(from)]);
+        run_frame(
+            app,
+            ctx,
+            vec![Event::PointerButton {
+                pos: from,
+                button,
+                pressed: true,
+                modifiers: Modifiers::default(),
+            }],
+        );
+        for step in 1..=10 {
+            let t = step as f32 / 10.0;
+            run_frame(app, ctx, vec![Event::PointerMoved(from + (to - from) * t)]);
+        }
+        run_frame(
+            app,
+            ctx,
+            vec![Event::PointerButton {
+                pos: to,
+                button,
+                pressed: false,
+                modifiers: Modifiers::default(),
+            }],
+        );
+        run_frame(app, ctx, Vec::new());
+    }
+
+    #[test]
+    fn graph_editor_sets_ramps_and_resets_step_properties() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("channel.add", json!({"name": "Kick"}));
+        let ctrl = Modifiers {
+            ctrl: true,
+            command: true,
+            ..Modifiers::default()
+        };
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(ctrl), key(Key::K, true, ctrl)],
+        );
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(Modifiers::default())],
+        );
+        run_frame(&mut app, &ctx, Vec::new());
+        let bars = app.probe().entries()["graph-editor.bars"].rect;
+        let column_w = bars.width() / 16.0;
+        let at = |column: f32, frac: f32| {
+            pos2(
+                bars.left() + (column + 0.5) * column_w,
+                bars.bottom() - frac * bars.height(),
+            )
+        };
+        let velocity = |app: &JetApp, index: usize| {
+            // Cells past the last edited one hold the default properties.
+            app.session.project().patterns[0].steps[&ChannelId(1)]
+                .cells
+                .get(index)
+                .map_or(100, |c| c.props.velocity)
+        };
+
+        // Left drag across columns 0..=3 at the top sets each to the maximum, in one undo step.
+        drag(&mut app, &ctx, at(0.0, 1.0), at(3.0, 1.0));
+        for index in 0..4 {
+            assert_eq!(velocity(&app, index), 127, "step {index}");
+        }
+        app.execute("edit.undo_step", json!({}));
+        assert!(
+            app.session.project().patterns[0]
+                .steps
+                .get(&ChannelId(1))
+                .is_none_or(|seq| seq.cells.iter().all(|c| c.props.velocity == 100)),
+            "one undo restores every column of the drag"
+        );
+
+        // Right drag from column 0 at the bottom to column 4 at the top ramps between them.
+        drag_button(
+            &mut app,
+            &ctx,
+            at(0.0, 0.0),
+            at(4.0, 1.0),
+            PointerButton::Secondary,
+        );
+        let ramp: Vec<u8> = (0..5).map(|i| velocity(&app, i)).collect();
+        assert_eq!(ramp[0], 0);
+        assert_eq!(ramp[4], 127);
+        assert!(ramp.windows(2).all(|w| w[0] < w[1]), "{ramp:?}");
+        assert_eq!(ramp[2], 64, "{ramp:?}");
+
+        // Alt+click resets a column to the default velocity.
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        let spot = at(4.0, 0.5);
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(alt), Event::PointerMoved(spot)],
+        );
+        for pressed in [true, false] {
+            run_frame(
+                &mut app,
+                &ctx,
+                vec![Event::PointerButton {
+                    pos: spot,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: alt,
+                }],
+            );
+        }
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(Modifiers::default())],
+        );
+        assert_eq!(velocity(&app, 4), 100);
+
+        // Ctrl+drag on column 5 (100) to the top moves every column by the same +27 (H-CR-3).
+        let before: Vec<u8> = (0..16).map(|i| velocity(&app, i)).collect();
+        run_frame(&mut app, &ctx, vec![Event::ModifiersChanged(ctrl)]);
+        drag(&mut app, &ctx, at(5.0, 0.5), at(5.0, 1.0));
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(Modifiers::default())],
+        );
+        let after: Vec<u8> = (0..16).map(|i| velocity(&app, i)).collect();
+        for (b, a) in before.iter().zip(&after) {
+            assert_eq!(*a, (*b + 27).min(127), "{before:?} -> {after:?}");
+        }
+
+        // The Pan tab edits pan: the top of column 0 is hard right.
+        let tab = app.probe().entries()["graph-editor.tab.pan"].rect;
+        click(&mut app, &ctx, tab);
+        assert_eq!(app.graph.prop, crate::graph_editor::GraphProp::Pan);
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(at(0.0, 1.0), vec2(1.0, 1.0)),
+        );
+        assert_eq!(
+            app.session.project().patterns[0].steps[&ChannelId(1)].cells[0]
+                .props
+                .pan,
+            1000
         );
     }
 
