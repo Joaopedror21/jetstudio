@@ -171,6 +171,8 @@ pub struct PlaylistState {
     audio_menu: Option<(u64, egui::Pos2)>,
     /// Arrangements menu opened from the title bar.
     arrangement_menu: Option<egui::Pos2>,
+    /// "Merge with" options for a source arrangement: (source id, where it opened).
+    merge_menu: Option<(u64, egui::Pos2)>,
     /// Ctrl+drag on the ruler in progress: (anchor tick, current tick).
     selecting: Option<(i64, i64)>,
     /// Marker menu: (marker index, where it opened).
@@ -198,6 +200,7 @@ impl Default for PlaylistState {
             audio_drag: None,
             audio_menu: None,
             arrangement_menu: None,
+            merge_menu: None,
             selecting: None,
             marker_menu: None,
             zoom: 1.0,
@@ -259,6 +262,11 @@ pub enum PlaylistAction {
     AddArrangement,
     CloneArrangement,
     DeleteArrangement(u64),
+    MergeArrangement {
+        source: u64,
+        position: &'static str,
+        mode: &'static str,
+    },
     AddMarker,
     DeleteMarker(usize),
     MarkerAction {
@@ -1644,6 +1652,7 @@ pub fn paint_playlist(
     paint_audio_menu(paint, state, view, &mut actions);
     paint_marker_menu(paint, state, view, &mut actions);
     paint_arrangement_menu(paint, state, view, &mut actions);
+    paint_merge_menu(paint, state, &mut actions);
     actions
 }
 
@@ -1842,6 +1851,12 @@ fn paint_arrangement_menu(
             "Clone".to_owned(),
             "Delete".to_owned(),
         ])
+        .chain(
+            view.arrangements
+                .iter()
+                .filter(|(id, _)| *id != view.arrangement_id)
+                .map(|(_, name)| format!("Merge with {name}...")),
+        )
         .collect();
     let count = view.arrangements.len();
     let items: Vec<crate::widgets::MenuItem<'_>> = labels
@@ -1864,8 +1879,15 @@ fn paint_arrangement_menu(
                 actions.push(PlaylistAction::AddArrangement);
             } else if i == count + 1 {
                 actions.push(PlaylistAction::CloneArrangement);
-            } else {
+            } else if i == count + 2 {
                 actions.push(PlaylistAction::DeleteArrangement(view.arrangement_id));
+            } else if let Some((source, _)) = view
+                .arrangements
+                .iter()
+                .filter(|(id, _)| *id != view.arrangement_id)
+                .nth(i - count - 3)
+            {
+                state.merge_menu = Some((*source, origin));
             }
         }
     }
@@ -2170,4 +2192,49 @@ fn zoom_at(state: &mut PlaylistState, base_bar_w: f32, grid_left: f32, anchor_x:
     state.zoom = (state.zoom * factor).clamp(0.25, 6.0);
     let new_w = base_bar_w * state.zoom;
     state.scroll_bars = (bars_at_anchor - (anchor_x - grid_left) / new_w).max(0.0);
+}
+
+/// "Merge with" options: Position (Start, Current selection, End) x Mode (Insert, Merge, Replace)
+/// [Manual: playlist, "Arrangements"].
+fn paint_merge_menu(
+    paint: &mut PaintCtx<'_>,
+    state: &mut PlaylistState,
+    actions: &mut Vec<PlaylistAction>,
+) {
+    let Some((source, origin)) = state.merge_menu else {
+        return;
+    };
+    const OPTIONS: [(&str, &str, &str); 9] = [
+        ("Insert at start", "start", "insert"),
+        ("Insert at selection", "current", "insert"),
+        ("Append at end", "end", "insert"),
+        ("Merge at start", "start", "merge"),
+        ("Merge at selection", "current", "merge"),
+        ("Merge at end", "end", "merge"),
+        ("Replace from start", "start", "replace"),
+        ("Replace from selection", "current", "replace"),
+        ("Replace at end", "end", "replace"),
+    ];
+    let items: Vec<crate::widgets::MenuItem<'_>> = OPTIONS
+        .iter()
+        .map(|(label, ..)| crate::widgets::MenuItem {
+            label,
+            shortcut: "",
+            enabled: true,
+        })
+        .collect();
+    match paint.popup_menu("playlist.merge-menu", origin, &items) {
+        crate::widgets::MenuResult::Open => {}
+        crate::widgets::MenuResult::Dismissed => state.merge_menu = None,
+        crate::widgets::MenuResult::Chosen(i) => {
+            state.merge_menu = None;
+            if let Some((_, position, mode)) = OPTIONS.get(i) {
+                actions.push(PlaylistAction::MergeArrangement {
+                    source,
+                    position,
+                    mode,
+                });
+            }
+        }
+    }
 }

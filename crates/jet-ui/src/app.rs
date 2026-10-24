@@ -1846,6 +1846,14 @@ impl JetApp {
                     self.execute("arrangement.select", json!({"id": id}));
                 }
                 PlaylistAction::AddArrangement => self.execute("arrangement.add", json!({})),
+                PlaylistAction::MergeArrangement {
+                    source,
+                    position,
+                    mode,
+                } => self.execute(
+                    "arrangement.merge",
+                    json!({"source": source, "position": position, "mode": mode}),
+                ),
                 PlaylistAction::CloneArrangement => self.execute("arrangement.clone", json!({})),
                 PlaylistAction::DeleteArrangement(id) => {
                     self.execute("arrangement.delete", json!({"id": id}));
@@ -5139,6 +5147,45 @@ mod tests {
             vec![Event::ModifiersChanged(Modifiers::default())],
         );
         assert!(!app.piano.ghosts_on);
+    }
+
+    #[test]
+    fn arrangement_menu_merges_another_arrangement() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute(
+            "playlist.clip.add",
+            json!({"pattern": 1, "start": 0, "length": 384}),
+        );
+        let first = app.session.project().active_arrangement.0;
+        app.execute("arrangement.add", json!({"name": "Verse"}));
+        app.execute(
+            "playlist.clip.add",
+            json!({"pattern": 1, "start": 0, "length": 768}),
+        );
+        app.execute("arrangement.select", json!({"id": first}));
+        run_frame(&mut app, &ctx, Vec::new());
+        let title = app.probe().entries()["playlist.arrangements"].rect;
+        click(&mut app, &ctx, title);
+        run_frame(&mut app, &ctx, Vec::new());
+        // Items: the two arrangements, Add one, Clone, Delete, then "Merge with Verse...".
+        let merge = app.probe().entries()["playlist.arrangement-menu.item.5"].rect;
+        click(&mut app, &ctx, merge);
+        run_frame(&mut app, &ctx, Vec::new());
+        let append = app.probe().entries()["playlist.merge-menu.item.2"].rect;
+        click(&mut app, &ctx, append);
+        let mut starts: Vec<i64> = app
+            .session
+            .project()
+            .active()
+            .unwrap()
+            .clips
+            .iter()
+            .map(|c| c.start.0)
+            .collect();
+        starts.sort_unstable();
+        assert_eq!(starts, vec![0, 384], "Verse appended after the first bar");
     }
 
     #[test]

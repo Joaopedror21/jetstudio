@@ -1001,6 +1001,14 @@ static SPECS: &[CommandSpec] = &[
         Step
     ),
     spec!(
+        "arrangement.merge",
+        "Merge arrangement",
+        "",
+        None,
+        "{source:uint,position:start|current|end,mode:insert|merge|replace}",
+        Step
+    ),
+    spec!(
         "marker.action.set",
         "Time marker action",
         "",

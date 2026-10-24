@@ -330,3 +330,97 @@ fn automation_settings_rerange_flip_normalize_time_and_lfo() {
             .is_err()
     );
 }
+
+#[test]
+fn merging_arrangements_by_position_and_mode() {
+    let mut session = Session::with_clock(Box::new(ManualClock::new(48_000)));
+    let clips = |session: &Session| -> Vec<(i64, i64)> {
+        let mut c: Vec<(i64, i64)> = session
+            .project()
+            .active()
+            .unwrap()
+            .clips
+            .iter()
+            .map(|c| (c.start.0, c.length.0))
+            .collect();
+        c.sort_unstable();
+        c
+    };
+    // Arrangement 1: one bar at 0. Arrangement 2: two bars at 0.
+    session
+        .execute(
+            "playlist.clip.add",
+            json!({"pattern": 1, "start": 0, "length": 384}),
+        )
+        .unwrap();
+    let first = session.project().active_arrangement.0;
+    session.execute("arrangement.add", json!({})).unwrap();
+    let second = session.project().active_arrangement.0;
+    session
+        .execute(
+            "playlist.clip.add",
+            json!({"pattern": 1, "start": 0, "length": 768}),
+        )
+        .unwrap();
+    session
+        .execute("arrangement.select", json!({"id": first}))
+        .unwrap();
+
+    // Merge at End appends after the current data.
+    session
+        .execute(
+            "arrangement.merge",
+            json!({"source": second, "position": "end", "mode": "merge"}),
+        )
+        .unwrap();
+    assert_eq!(clips(&session), vec![(0, 384), (384, 768)]);
+    session.execute("edit.undo_step", json!({})).unwrap();
+
+    // Insert at Start moves the existing data right by the merged length.
+    session
+        .execute(
+            "arrangement.merge",
+            json!({"source": second, "position": "start", "mode": "insert"}),
+        )
+        .unwrap();
+    assert_eq!(clips(&session), vec![(0, 768), (768, 384)]);
+    session.execute("edit.undo_step", json!({})).unwrap();
+
+    // Replace at Start removes what the merged span covers.
+    session
+        .execute(
+            "arrangement.merge",
+            json!({"source": second, "position": "start", "mode": "replace"}),
+        )
+        .unwrap();
+    assert_eq!(clips(&session), vec![(0, 768)]);
+    session.execute("edit.undo_step", json!({})).unwrap();
+
+    // Current = the timeline selection start; the source arrangement stays intact.
+    session
+        .execute("playlist.selection.set", json!({"start": 192, "end": 384}))
+        .unwrap();
+    session
+        .execute(
+            "arrangement.merge",
+            json!({"source": second, "position": "current", "mode": "merge"}),
+        )
+        .unwrap();
+    assert_eq!(clips(&session), vec![(0, 384), (192, 768)]);
+    let source = session
+        .project()
+        .arrangements
+        .iter()
+        .find(|a| a.id.0 == second)
+        .unwrap();
+    assert_eq!(source.clips.len(), 1);
+    assert!(
+        session
+            .execute(
+                "arrangement.merge",
+                json!({"source": first, "position": "start", "mode": "merge"}),
+            )
+            .is_err(),
+        "an arrangement cannot merge into itself"
+    );
+}

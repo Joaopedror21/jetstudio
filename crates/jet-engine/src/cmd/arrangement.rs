@@ -30,6 +30,17 @@ struct Add {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Merge {
+    /// Arrangement merged into the active one (it stays intact).
+    source: u64,
+    /// "start", "current" (timeline selection start) or "end" (after the current data).
+    position: String,
+    /// "insert", "merge" or "replace".
+    mode: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MarkerAdd {
     at: i64,
     #[serde(default)]
@@ -161,6 +172,91 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                     && let Some(first) = project.arrangements.first()
                 {
                     project.active_arrangement = first.id;
+                }
+                Ok(())
+            })
+        }
+        // "Merge with - Select another arrangement to Merge with the current Arrangement":
+        // "Position - Start ... Current: Merge from the start of the current selection, End: Append
+        // to the end of the current Playlist data"; "Mode - Insert: The inserted data moves the
+        // existing data to the right. Merge: The merged data is blended with the destination data.
+        // Replace: The source data replaces destination arrangement" [Manual: playlist]. Hypothesis
+        // H-PL-4: Replace removes the destination clips over the merged span; source clips keep
+        // their track row (tracks are added when needed).
+        "arrangement.merge" => {
+            let p: Merge = parse(id, params)?;
+            if !matches!(p.mode.as_str(), "insert" | "merge" | "replace") {
+                return Err(invalid(id, "mode must be insert, merge or replace"));
+            }
+            let selection = session.time_selection();
+            session.edit_project(|project| {
+                let source = project
+                    .arrangements
+                    .iter()
+                    .find(|a| a.id == ArrangementId(p.source))
+                    .cloned()
+                    .ok_or_else(|| CmdError::Failed("arrangement does not exist".into()))?;
+                if source.id == project.active_arrangement {
+                    return Err(CmdError::Failed(
+                        "choose another arrangement to merge".into(),
+                    ));
+                }
+                let bar = project.settings.bar_ticks().unwrap_or(384).max(1);
+                let span = source.clips.iter().map(|c| c.end().0).max().unwrap_or(0);
+                let destination_end = active_mut(project)?
+                    .clips
+                    .iter()
+                    .map(|c| c.end().0)
+                    .max()
+                    .unwrap_or(0);
+                let at = match p.position.as_str() {
+                    "start" => 0,
+                    "current" => selection.map_or(0, |(start, _)| start),
+                    "end" => (destination_end + bar - 1) / bar * bar,
+                    _ => return Err(invalid(id, "position must be start, current or end")),
+                };
+                // Fresh ids first (they come from the project counters).
+                let new_ids: Vec<jet_model::ClipId> =
+                    source.clips.iter().map(|_| project.ids.clip()).collect();
+                let rows_needed = source
+                    .clips
+                    .iter()
+                    .filter_map(|c| source.tracks.iter().position(|t| t.id == c.track))
+                    .max()
+                    .map_or(0, |r| r + 1);
+                let existing = active_mut(project)?.tracks.len();
+                let new_tracks: Vec<jet_model::TrackId> = (existing..rows_needed)
+                    .map(|_| project.ids.track())
+                    .collect();
+                let arrangement = active_mut(project)?;
+                for (i, track) in new_tracks.into_iter().enumerate() {
+                    let name = format!("Track {}", existing + i + 1);
+                    arrangement
+                        .tracks
+                        .push(jet_model::PlaylistTrack::new(track, name));
+                }
+                match p.mode.as_str() {
+                    "insert" => {
+                        for clip in &mut arrangement.clips {
+                            if clip.start.0 >= at {
+                                clip.start = Tick(clip.start.0 + span);
+                            }
+                        }
+                    }
+                    "replace" => arrangement
+                        .clips
+                        .retain(|c| c.end().0 <= at || c.start.0 >= at + span),
+                    _ => {}
+                }
+                for (clip, new_id) in source.clips.iter().zip(new_ids) {
+                    let Some(row) = source.tracks.iter().position(|t| t.id == clip.track) else {
+                        continue;
+                    };
+                    let mut placed = clip.clone();
+                    placed.id = new_id;
+                    placed.track = arrangement.tracks[row].id;
+                    placed.start = Tick(clip.start.0 + at);
+                    arrangement.clips.push(placed);
                 }
                 Ok(())
             })
