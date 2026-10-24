@@ -49,6 +49,10 @@
 | H-SEQ-4 | Fim da música | No modo Song, o playback volta ao início no fim do último compasso com dados | O manual descreve o marcador "Loop" de retorno, mas não o comportamento sem marcador | `jet-audio-graph` (loop) |
 | H-PR-1 | Ctrl+B no Piano roll | Duplica com intervalo = vão da seleção arredondado para cima ao snap | O manual diz "to the right of the current location" | `jet-engine/src/cmd/note.rs` |
 | H-BR-1 | Nível do preview do Browser | Ganho unitário direto no Master | Não documentado | `jet-audio-graph/src/render.rs` |
+| H-PL-1 | Snap da Playlist | Clips andam de 1 em 1 batida; Alt desliga o snap | O snap padrão "Line" do FL acompanha o zoom | `jet-ui/src/playlist.rs` |
+| H-AUT-1 | Valor depois de uma Automation Clip | O último valor se mantém até a próxima clip; antes da primeira vale o knob; com o transporte parado vale o knob | O manual descreve só o valor inicial ("Initialized controls") | `jet-seq/src/automation.rs` |
+| H-AUT-2 | Formas das 10 curvas | Fórmulas próprias (potência 8^tensão, S, degraus, pulso, seno) | O manual dá só os nomes | `jet-seq/src/automation.rs` |
+| H-AUT-3 | Taxa de controle | Uma avaliação por bloco (até 1024 frames) | Não documentado | `jet-audio-graph/src/render.rs` |
 | H-UI-1 | Sensibilidade dos knobs e faders | 200 px por curso de knob; 150 px por curso de fader; 6 px por insert | Não medido | `jet-ui` |
 
 ## 3. Interface e controles globais (GLB)
@@ -96,8 +100,8 @@
 | CR-011 | Seletor de mixer track | §14: "Click and drag vertically"; "---" = Master | Roteamento canal → insert | MX | S | P0 | Testado | `mixer_routing_faders_sends_and_effects_change_the_output` |
 | CR-012 | Assign to free mixer track (Ctrl+L) | §1 | Primeiro insert livre, com o nome do canal | MX | S | P1 | Testado | idem |
 | CR-013 | Step sequencer | §13: cada step é uma semicolcheia; clique esquerdo liga, direito desliga | Grade de steps | jet-seq | S | P0 | Testado (clique e pintura arrastando) | `step_buttons_and_playlist_grid_change_the_project`, `channel_rack_steps_render_at_the_step_grid` |
-| CR-014 | Comprimento do pattern | §4: Auto = "end of the last bar with data"; 1–512 steps | — | jet-seq | S | P1 | Testado no engine; falta o controle na UI | `auto_length_rounds_to_bars_and_explicit_length_truncates` |
-| CR-015 | Swing global e por canal | §3: dois multiplicadores; os dois > 0 para haver swing; move os steps pares | — | jet-seq | S | P1 | Parcialmente compatível (H-SEQ-1); sem knob na UI | `swing_needs_both_multipliers_and_moves_only_even_steps` |
+| CR-014 | Comprimento do pattern | §4: Auto = "end of the last bar with data"; 1–512 steps | — | jet-seq | S | P1 | Testado (LCD no cabeçalho: arrastar define os steps, botão direito volta ao Auto) | `auto_length_rounds...`, `rack_header_sets_swing_and_pattern_length` |
+| CR-015 | Swing global e por canal | §3: dois multiplicadores; os dois > 0 para haver swing; move os steps pares | — | jet-seq | S | P1 | Parcialmente compatível (H-SEQ-1); knob global no cabeçalho do rack; swing por canal só por comando | `swing_needs_both...`, `rack_header_sets_swing_and_pattern_length` |
 | CR-016 | Graph editor | §6: Note, Velocity, Release, Fine pitch (±100 cents), Pan, Mod X/Y, Shift (até ~1 step), Rep | Propriedades por step | CR-013 | M | P1 | Parcialmente compatível: o engine aplica Note, Velocity, Pan, Fine pitch e Shift (`step.props.set`); falta o editor gráfico e Rep | `step_fill_and_graph_editor_change_what_plays` |
 | CR-017 | Fill each 2/4/8 steps | Menu do canal | — | CR-013 | S | P1 | Testado | `context_menu_fill_each_four_steps_sets_real_steps` |
 | CR-018 | Advanced fill | [Manual: stepsequencer_advancedfilltool] | Preenchimento por regras | CR-013 | M | P2 | Pesquisado | — |
@@ -180,10 +184,10 @@
 | PL-001 | Faixas multipropósito | [Manual: playlist] "multi-purpose 'Clip Tracks'"; não são ligadas ao mixer | — | — | S | P0 | Testado | `playlist_clips_share_pattern_source` |
 | PL-002 | Pattern clips | Clip = "window over the original data" | Janela sobre os dados do pattern | jet-seq | S | P0 | Testado | `song_mode_places_clip_windows_and_skips_muted_tracks`, `playlist_song_mode_plays_clips...` |
 | PL-003 | Audio clips | [Manual: playlist_audioclip] | Ganho, fades, crossfades, stretch | SMP | L | P1 | Pesquisado | — |
-| PL-004 | Automation clips | [Manual: playlist_automationclip] | Pontos de controle, curvas (single/double curve, hold, half sine, ...), LFO | AUT | L | P1 | Pesquisado | — |
-| PL-005 | Draw/Paint/Delete/Mute/Slip/Slice/Select/Zoom/Play | Ferramentas P, B, D, T, S, C, E, Shift+Z, Y | — | — | L | P1 | Parcialmente compatível: clique numa linha cria um clip do pattern selecionado; move, resize e delete existem só no engine | `clicking_an_empty_placeholder_row_creates_tracks_and_a_clip` |
-| PL-006 | Mute/solo de faixa | "Track Mute/Solo" | Mute de faixa vale para seus clips | jet-seq | S | P0 | Testado no engine | `playlist_song_mode_plays_clips...` |
-| PL-007 | Mute de clip | Ferramenta Mute | Independente do mute da faixa | — | S | P1 | Testado no engine (campo `muted`) | `song_mode_places_clip_windows...` |
+| PL-004 | Automation clips | [Manual: playlist_automationclip] | Pontos de controle, 10 tipos de curva, LFO; o clip se move pela barra de título | AUT | L | P1 | Parcialmente compatível: criar, desenhar envelope, adicionar (botão direito), mover (arrastar), apagar (Alt+clique ou menu) e tipo de curva por ponto; faltam tensão arrastável, LFO, step/slide | `knob_menu_creates_an_automation_clip_whose_envelope_takes_points` |
+| PL-005 | Draw/Paint/Delete/Mute/Slip/Slice/Select/Zoom/Play | Ferramentas P, B, D, T, S, C, E, Shift+Z, Y | Draw: clique adiciona, arrastar move, botão direito apaga | — | L | P1 | Parcialmente compatível: comportamento de Draw (adicionar, mover com snap de 1 batida e Alt sem snap, redimensionar pela borda, apagar com botão direito, Ctrl+clique muta, H-PL-1); faltam as demais ferramentas e a seleção múltipla | `playlist_clips_move_and_delete_with_the_mouse`, `clicking_an_empty_placeholder_row...` |
+| PL-006 | Mute/solo de faixa | "Track Mute/Solo" | Mute de faixa vale para seus clips; Ctrl+clique ou botão direito faz solo | jet-seq | S | P0 | Testado (LED da faixa na UI) | `playlist_song_mode_plays_clips...`, `clip_mute_and_track_solo_change_the_song` |
+| PL-007 | Mute de clip | Ferramenta Mute | Independente do mute da faixa | — | S | P1 | Testado (Ctrl+clique) | `clip_mute_and_track_solo_change_the_song` |
 | PL-008 | Arranjos múltiplos | "Arrangements ... share the Channel Rack and Mixer" | Clone, rename, delete, merge | jet-model | M | P2 | Especificado (entidade no modelo; um ativo) | — |
 | PL-009 | Time markers e song loop | "Time Markers", "Song Loop" | Alt+T; tipos | — | M | P2 | Parcialmente compatível: marcadores no modelo e desenhados; sem tipos/loop | — |
 | PL-010 | Seleção de timeline | Ctrl+arrastar no ruler | Loop da seleção | — | M | P1 | Pesquisado | — |
@@ -193,7 +197,7 @@
 | PL-014 | Performance mode | [Manual: playlist_performance] | Disparo ao vivo | — | L | P3 | Pesquisado | — |
 | PL-015 | Duplicar (Ctrl+B), merge de pattern clips, make unique | [Manual: playlist] | — | — | M | P2 | Pesquisado | — |
 | PL-016 | Arrastar arquivos para a Playlist (cria audio clip) | [Manual: chansettings_sampler] | — | PL-003 | M | P1 | Pesquisado | — |
-| PL-017 | Playhead | "Play Position Marker" | Arrastável | — | S | P0 | Parcialmente compatível (exibição; sem arrastar) | — |
+| PL-017 | Playhead | "Play Position Marker"; clique no ruler reposiciona | Arrastável | — | S | P0 | Parcialmente compatível: clique ou arraste no ruler reposiciona (com snap de batida); sempre visível no modo Song | — |
 
 ## 8. Mixer (MX)
 
@@ -286,7 +290,7 @@
 
 | ID | Nome | Referência | Cx | P | Estado |
 |---|---|---|---|---|---|
-| AUT-001 | Automation clips (pontos, tensão, curvas, LFO, clone, decimate, flip) | [Manual: playlist_automationclip] | L | P1 | Pesquisado |
+| AUT-001 | Automation clips (pontos, tensão, curvas, LFO, clone, decimate, flip) | [Manual: playlist_automationclip] | L | P1 | Parcialmente compatível: alvos volume/pan/pitch de canal, volume/pan de faixa e mix de slot de FX; 10 curvas (H-AUT-2); avaliação por bloco no renderizador, sem alocação; o último valor se mantém depois do clip (H-AUT-1); só no modo Song; faltam LFO, gravação, tempo e parâmetros internos de FX. Testes: `automation_clips_drive_parameters_in_song_mode`, `song_mode_automation_does_not_allocate`, `lanes_hold_the_last_value...` |
 | AUT-002 | Gravação de automação | [Manual: recording_automation] | M | P2 | Pesquisado |
 | AUT-003 | Event editor e eventos em patterns | [Manual: automation_eventeditor] | L | P2 | Pesquisado |
 | AUT-004 | Link to controller / MIDI learn | [Manual: automation_linking] | M | P2 | Pesquisado |

@@ -1,4 +1,5 @@
 //! Stable command identifiers shared by CLI, UI and future control clients.
+mod automation;
 mod channel;
 mod edit;
 mod file;
@@ -762,6 +763,54 @@ static SPECS: &[CommandSpec] = &[
         "{id:uint}",
         Step
     ),
+    spec!(
+        "automation.create",
+        "Create automation clip",
+        "",
+        None,
+        "{target:AutoTarget}",
+        Step
+    ),
+    spec!(
+        "automation.point.add",
+        "Add control point",
+        "",
+        None,
+        "{id:uint,at:int,value:uint}",
+        Step
+    ),
+    spec!(
+        "automation.point.move",
+        "Move control point",
+        "",
+        None,
+        "{id:uint,index:uint,at:int,value:uint}",
+        Coalesce
+    ),
+    spec!(
+        "automation.point.delete",
+        "Delete control point",
+        "",
+        None,
+        "{id:uint,index:uint}",
+        Step
+    ),
+    spec!(
+        "automation.point.shape.set",
+        "Curve type",
+        "",
+        None,
+        "{id:uint,index:uint,shape:CurveShape,tension:int}",
+        Coalesce
+    ),
+    spec!(
+        "automation.delete",
+        "Delete automation clip",
+        "",
+        None,
+        "{id:uint}",
+        Step
+    ),
 ];
 
 #[derive(Deserialize)]
@@ -805,6 +854,7 @@ pub(super) fn dispatch(session: &mut Session, id: &str, params: Value) -> Result
         Some("playlist") => playlist::run(session, id, params),
         Some("note") => note::run(session, id, params),
         Some("mixer") => mixer::run(session, id, params),
+        Some("automation") => automation::run(session, id, params),
         _ => Err(CmdError::UnknownCommand(id.to_owned())),
     }
 }

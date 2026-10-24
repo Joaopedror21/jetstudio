@@ -8,7 +8,7 @@
 mod plan;
 mod render;
 
-pub use plan::{ChannelPlan, Instrument, RenderPlan, TRACK_COUNT, build_plan};
+pub use plan::{AutoApply, ChannelPlan, Instrument, PlanLane, RenderPlan, TRACK_COUNT, build_plan};
 pub use render::{MAX_VOICES, Renderer, TransportSync};
 
 use std::sync::Arc;

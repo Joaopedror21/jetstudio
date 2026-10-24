@@ -486,3 +486,77 @@ fn clip_mute_and_track_solo_change_the_song() {
     let (left, _) = export(&mut session, "song");
     assert_eq!(onsets(&left), vec![0], "solo silences the other tracks");
 }
+
+#[test]
+fn automation_clips_drive_parameters_in_song_mode() {
+    let mut session = session_120();
+    // A long click so the level can be read at several points of the bar.
+    let wav = temp("long.wav");
+    write_wav(&wav, 48_000, 1, &vec![1.0; 96_000], WavFormat::Float32).unwrap();
+    session
+        .execute("channel.add", json!({"name": "Pad"}))
+        .unwrap();
+    session
+        .execute("channel.sample.load", json!({"id": 1, "path": wav}))
+        .unwrap();
+    session
+        .execute("channel.volume.set", json!({"id": 1, "value": 1000}))
+        .unwrap();
+    session
+        .execute(
+            "step.set",
+            json!({"pattern":1,"channel":1,"index":0,"on":true}),
+        )
+        .unwrap();
+    session
+        .execute("playlist.track.add", json!({"name": "Track 1"}))
+        .unwrap();
+    session
+        .execute(
+            "playlist.clip.add",
+            json!({"track":1,"pattern":1,"start":0,"length":384}),
+        )
+        .unwrap();
+    // Right-click > Create automation clip on the channel volume.
+    session
+        .execute("automation.create", json!({"target": {"ChannelVolume": 1}}))
+        .unwrap();
+    let project = session.project();
+    assert_eq!(project.automations.len(), 1);
+    assert_eq!(project.automations[0].name, "long - Volume");
+    assert_eq!(
+        project.automations[0].points[0].value, 1000,
+        "starts at the knob value"
+    );
+    let length = project.automations[0].points[1].at.0;
+    assert_eq!(length, 4 * 384, "spans at least four bars");
+    // Ramp the volume from 0 to full over the first bar.
+    session
+        .execute(
+            "automation.point.move",
+            json!({"id":1,"index":0,"at":0,"value":0}),
+        )
+        .unwrap();
+    session
+        .execute(
+            "automation.point.add",
+            json!({"id":1,"at":384,"value":1000}),
+        )
+        .unwrap();
+    let (left, _) = export(&mut session, "song");
+    let early = left[2_000].abs();
+    let late = left[90_000].abs();
+    assert!(early < 0.05, "starts silent: {early}");
+    assert!(late > 0.5, "reaches full volume: {late}");
+    // Pattern mode plays no Playlist automation: the knob value applies.
+    let (pattern, _) = export(&mut session, "pattern");
+    assert!(pattern[2_000].abs() > 0.5);
+    session
+        .execute("automation.delete", json!({"id": 1}))
+        .unwrap();
+    let (left, _) = export(&mut session, "song");
+    assert!(
+        left[2_000].abs() > 0.5,
+        "deleting the clip restores the knob value"
+    );
+}

@@ -262,6 +262,13 @@ impl JetApp {
                 }
             }
             RackAction::Menu(id, item) => self.rack_menu(id, item),
+            RackAction::CreateAutomation(channel, param) => {
+                let target = match param {
+                    crate::channel_rack::KnobParam::Volume => json!({"ChannelVolume": channel}),
+                    crate::channel_rack::KnobParam::Pan => json!({"ChannelPan": channel}),
+                };
+                self.execute("automation.create", json!({ "target": target }));
+            }
             RackAction::SetSwing(value) => {
                 self.gesture("rack.swing", "project.swing.set", json!({"value": value}));
             }
@@ -500,6 +507,14 @@ impl JetApp {
                 json!({"track": track, "value": value}),
             ),
             MixerAction::EndGesture => self.session.end_gesture(),
+            MixerAction::CreateAutomation { track, fader } => {
+                let target = if fader {
+                    json!({ "MixerVolume": track })
+                } else {
+                    json!({ "MixerPan": track })
+                };
+                self.execute("automation.create", json!({ "target": target }));
+            }
         }
     }
 
@@ -616,6 +631,34 @@ impl JetApp {
                 }
                 PlaylistAction::SoloTrack(id) => {
                     self.execute("playlist.track.solo", json!({"id": id}))
+                }
+                PlaylistAction::AutoAddPoint { id, at, value } => self.execute(
+                    "automation.point.add",
+                    json!({"id": id, "at": at, "value": value}),
+                ),
+                PlaylistAction::AutoMovePoint {
+                    id,
+                    index,
+                    at,
+                    value,
+                } => self.execute(
+                    "automation.point.move",
+                    json!({"id": id, "index": index, "at": at, "value": value}),
+                ),
+                PlaylistAction::AutoDeletePoint { id, index } => {
+                    self.execute("automation.point.delete", json!({"id": id, "index": index}))
+                }
+                PlaylistAction::AutoShape { id, index, shape } => {
+                    let tension = self
+                        .session
+                        .project()
+                        .automation(jet_model::AutomationId(id))
+                        .and_then(|a| a.points.get(index))
+                        .map_or(0, |p| p.tension);
+                    self.execute(
+                        "automation.point.shape.set",
+                        json!({"id": id, "index": index, "shape": shape, "tension": tension}),
+                    );
                 }
                 PlaylistAction::Seek(tick) => {
                     self.execute("transport.position.set", json!({"tick": tick}));
@@ -1029,15 +1072,37 @@ impl JetApp {
             a.clips
                 .iter()
                 .map(|clip| {
-                    let ClipSource::Pattern(pattern_id) = clip.source;
-                    let pattern = project.patterns.iter().find(|p| p.id == pattern_id);
+                    let (label, color, automation) = match clip.source {
+                        ClipSource::Pattern(pattern_id) => {
+                            let pattern = project.patterns.iter().find(|p| p.id == pattern_id);
+                            (
+                                pattern.map_or_else(|| "Pattern".to_owned(), |p| p.name.clone()),
+                                pattern.and_then(|p| p.color),
+                                None,
+                            )
+                        }
+                        ClipSource::Automation(id) => {
+                            let auto = project.automation(id);
+                            (
+                                auto.map_or_else(|| "Automation".to_owned(), |a| a.name.clone()),
+                                // Automation Clips get their own colour (ours; UNMEASURED).
+                                Some(0x5A_7A8C),
+                                auto.map(|a| crate::playlist::AutomationView {
+                                    id: a.id.0,
+                                    points: a.points.clone(),
+                                    offset: clip.offset.0,
+                                }),
+                            )
+                        }
+                    };
                     ClipView {
                         id: clip.id.0,
                         track: clip.track.0,
                         start: clip.start.0,
                         length: clip.length.0,
-                        label: pattern.map_or_else(|| "Pattern".to_owned(), |p| p.name.clone()),
-                        color: pattern.and_then(|p| p.color),
+                        label,
+                        color,
+                        automation,
                         muted: clip.muted,
                     }
                 })
@@ -1917,6 +1982,45 @@ mod tests {
         assert_eq!(
             app.session.project().patterns[0].length,
             jet_model::PatternLength::Auto
+        );
+    }
+
+    #[test]
+    fn knob_menu_creates_an_automation_clip_whose_envelope_takes_points() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        open_rack(&mut app, &ctx);
+        let add = app.probe().entries()["channel-rack.add"].rect;
+        click(&mut app, &ctx, add);
+        run_frame(&mut app, &ctx, Vec::new());
+        let knob = app.probe().entries()["channel-rack.volume.1"].rect;
+        click_button(&mut app, &ctx, knob, PointerButton::Secondary);
+        run_frame(&mut app, &ctx, Vec::new());
+        let item = app.probe().entries()["channel-rack.knob-menu.item.0"].rect;
+        click(&mut app, &ctx, item);
+        assert_eq!(app.session.project().automations.len(), 1);
+        let arrangement = &app.session.project().arrangements[0];
+        assert_eq!(arrangement.clips.len(), 1);
+        assert!(matches!(
+            arrangement.clips[0].source,
+            ClipSource::Automation(_)
+        ));
+        // Close the rack so the Playlist envelope is reachable, then right-click inside it.
+        toggle(&mut app, &ctx, Key::F6);
+        run_frame(&mut app, &ctx, Vec::new());
+        let body = app.probe().entries()["playlist.automation.1"].rect;
+        let spot = Rect::from_center_size(
+            pos2(body.left() + body.width() * 0.3, body.top() + 6.0),
+            vec2(2.0, 2.0),
+        );
+        click_button(&mut app, &ctx, spot, PointerButton::Secondary);
+        let points = &app.session.project().automations[0].points;
+        assert_eq!(points.len(), 3, "a point was added between the two ends");
+        assert!(
+            points[1].value > 800,
+            "near the top of the clip: {}",
+            points[1].value
         );
     }
 }

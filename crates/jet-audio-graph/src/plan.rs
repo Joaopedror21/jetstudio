@@ -6,6 +6,7 @@ use jet_dsp::{SampleData, channel_volume_gain, mixer_fader_gain, send_gain};
 use jet_model::{
     ChannelId, ChannelKind, FxKind, MAX_INSERTS, PanLaw, Project, ResourceId, SynthParams,
 };
+use jet_seq::automation::AutoLane;
 use jet_seq::{Sequence, Source};
 use std::sync::Arc;
 
@@ -25,6 +26,10 @@ pub struct ChannelPlan {
     pub gain: f32,
     pub pan: i16,
     pub pitch_cents: i16,
+    /// Values set by automation for the current block (`None` = the knob's own value).
+    pub auto_gain: Option<f32>,
+    pub auto_pan: Option<i16>,
+    pub auto_pitch: Option<i16>,
     pub root_key: u8,
     /// Index into [`RenderPlan::tracks`].
     pub track_slot: usize,
@@ -36,6 +41,7 @@ pub struct FxInstance {
     pub kind: FxKind,
     pub enabled: bool,
     pub mix: f32,
+    pub auto_mix: Option<f32>,
     pub effect: Option<Box<dyn Effect>>,
 }
 
@@ -44,6 +50,8 @@ pub struct TrackPlan {
     pub index: u16,
     pub gain: f32,
     pub pan: i16,
+    pub auto_gain: Option<f32>,
+    pub auto_pan: Option<i16>,
     pub mute: bool,
     pub stereo_sep: f32,
     pub invert: bool,
@@ -61,6 +69,22 @@ pub struct TrackPlan {
     pub scratch_right: Vec<f32>,
 }
 
+/// Where an automation lane writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutoApply {
+    ChannelVolume(usize),
+    ChannelPan(usize),
+    ChannelPitch(usize),
+    TrackVolume(usize),
+    TrackPan(usize),
+    FxMix(usize, usize),
+}
+
+pub struct PlanLane {
+    pub lane: AutoLane,
+    pub apply: AutoApply,
+}
+
 /// Everything the audio thread needs, built off the audio thread.
 pub struct RenderPlan {
     pub rate: u32,
@@ -75,6 +99,8 @@ pub struct RenderPlan {
     /// Processing order: every source precedes its destinations; Master is last.
     pub tracks: Vec<TrackPlan>,
     pub master_slot: usize,
+    /// Song-mode automation; empty in Pattern mode.
+    pub automation: Vec<PlanLane>,
 }
 
 impl RenderPlan {
@@ -174,6 +200,8 @@ pub fn build_plan(
                 index,
                 gain: mixer_fader_gain(track.volume) as f32,
                 pan: track.pan,
+                auto_gain: None,
+                auto_pan: None,
                 mute: track.mute,
                 stereo_sep: f32::from(track.stereo_sep) / 1000.0,
                 invert: track.invert_phase,
@@ -194,6 +222,7 @@ pub fn build_plan(
                         kind: slot.kind.clone(),
                         enabled: slot.enabled,
                         mix: f32::from(slot.mix) / 1000.0,
+                        auto_mix: None,
                         effect: Some(fx::build(&slot.kind, rate, tempo_bpm)),
                     })
                     .collect(),
@@ -217,6 +246,9 @@ pub fn build_plan(
             gain: channel_volume_gain(channel.volume) as f32,
             pan: channel.pan,
             pitch_cents: channel.pitch,
+            auto_gain: None,
+            auto_pan: None,
+            auto_pitch: None,
             root_key: channel.root_key,
             track_slot: slot_of
                 .get(usize::from(channel.mixer_target))
@@ -233,7 +265,41 @@ pub fn build_plan(
         .map(|(i, channel)| (channel.id, i))
         .collect();
     channel_index.sort_by_key(|(id, _)| *id);
+    let automation = if source == Source::Song {
+        jet_seq::automation::lanes(project)
+            .into_iter()
+            .filter_map(|lane| {
+                use jet_model::AutoTarget;
+                let channel = |id| {
+                    channel_index
+                        .iter()
+                        .find(|(c, _)| *c == id)
+                        .map(|(_, i)| *i)
+                };
+                let track = |index: u16| {
+                    slot_of
+                        .get(usize::from(index))
+                        .copied()
+                        .filter(|s| *s != usize::MAX)
+                };
+                let apply = match lane.target {
+                    AutoTarget::ChannelVolume(id) => AutoApply::ChannelVolume(channel(id)?),
+                    AutoTarget::ChannelPan(id) => AutoApply::ChannelPan(channel(id)?),
+                    AutoTarget::ChannelPitch(id) => AutoApply::ChannelPitch(channel(id)?),
+                    AutoTarget::MixerVolume(index) => AutoApply::TrackVolume(track(index)?),
+                    AutoTarget::MixerPan(index) => AutoApply::TrackPan(track(index)?),
+                    AutoTarget::FxMix { track: index, slot } => {
+                        AutoApply::FxMix(track(index)?, usize::from(slot))
+                    }
+                };
+                Some(PlanLane { lane, apply })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     RenderPlan {
+        automation,
         rate,
         ppq: project.settings.ppq.0,
         tempo_milli: project.settings.tempo.0,

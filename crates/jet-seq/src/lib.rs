@@ -7,6 +7,8 @@
 //! rendering consume the same [`Sequence`], which is what makes the bounce
 //! identical to live playback.
 
+pub mod automation;
+
 use jet_model::{
     ChannelId, ClipSource, Pattern, PatternId, PatternLength, Project, ProjectSettings,
 };
@@ -225,7 +227,9 @@ pub fn compile(project: &Project, source: Source) -> Sequence {
                     if clip.muted || track_muted {
                         continue;
                     }
-                    let ClipSource::Pattern(pattern_id) = clip.source;
+                    let ClipSource::Pattern(pattern_id) = clip.source else {
+                        continue;
+                    };
                     let Some(pattern) = project.pattern(pattern_id) else {
                         continue;
                     };

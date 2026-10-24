@@ -32,7 +32,30 @@ pub struct ClipView {
     pub label: String,
     pub color: Option<u32>,
     pub muted: bool,
+    /// For Automation Clips: the clip definition id, its control points and the clip offset.
+    pub automation: Option<AutomationView>,
 }
+
+#[derive(Clone)]
+pub struct AutomationView {
+    pub id: u64,
+    pub points: Vec<jet_model::AutoPoint>,
+    pub offset: i64,
+}
+
+/// Curve types in the order of the manual's Curve Type Menu [Manual: playlist_automationclip].
+pub const CURVES: [(jet_model::CurveShape, &str); 10] = [
+    (jet_model::CurveShape::SingleCurve, "Single curve"),
+    (jet_model::CurveShape::DoubleCurve, "Double curve"),
+    (jet_model::CurveShape::AltSingleCurve, "Alt single curve"),
+    (jet_model::CurveShape::AltDoubleCurve, "Alt double curve"),
+    (jet_model::CurveShape::Hold, "Hold"),
+    (jet_model::CurveShape::Stairs, "Stairs"),
+    (jet_model::CurveShape::SmoothStairs, "Smooth stairs"),
+    (jet_model::CurveShape::Pulse, "Pulse"),
+    (jet_model::CurveShape::Wave, "Wave"),
+    (jet_model::CurveShape::HalfSine, "Half sine"),
+];
 
 pub struct PatternEntry {
     pub id: u64,
@@ -62,6 +85,10 @@ pub struct PlaylistState {
     pub selected_track: Option<u64>,
     pub selected_clip: Option<u64>,
     drag: Option<ClipDrag>,
+    /// Control point being dragged: (automation id, index, tick, value).
+    point_drag: Option<(u64, usize, i64, u16)>,
+    /// Control point menu: (automation id, point index, where it opened).
+    point_menu: Option<(u64, usize, egui::Pos2)>,
     /// Horizontal zoom as a multiple of the measured default bar width.
     pub zoom: f32,
     pub scroll_bars: f32,
@@ -74,6 +101,8 @@ impl Default for PlaylistState {
             selected_track: None,
             selected_clip: None,
             drag: None,
+            point_drag: None,
+            point_menu: None,
             zoom: 1.0,
             scroll_bars: 0.0,
             scroll_tracks: 0.0,
@@ -113,6 +142,26 @@ pub enum PlaylistAction {
     },
     SoloTrack(u64),
     Seek(i64),
+    AutoAddPoint {
+        id: u64,
+        at: i64,
+        value: u16,
+    },
+    AutoMovePoint {
+        id: u64,
+        index: usize,
+        at: i64,
+        value: u16,
+    },
+    AutoDeletePoint {
+        id: u64,
+        index: usize,
+    },
+    AutoShape {
+        id: u64,
+        index: usize,
+        shape: jet_model::CurveShape,
+    },
 }
 
 // Clip edits snap to one beat; Alt bypasses snap [Manual: playlist, "Holding the Alt key
@@ -451,7 +500,8 @@ pub fn paint_playlist(
     let beats = view.beats_per_bar.max(1) as usize;
     let first_bar = state.scroll_bars.floor() as usize;
     let bar_count = (grid.width() / bar_w).ceil() as usize + 2;
-    let bar_x = |bar: f32| grid.left() + 1.0 + (bar - state.scroll_bars) * bar_w;
+    let scroll_bars = state.scroll_bars;
+    let bar_x = |bar: f32| grid.left() + 1.0 + (bar - scroll_bars) * bar_w;
     for bar in first_bar..first_bar.saturating_add(bar_count) {
         let x = bar_x(bar as f32);
         let dark = (bar / 4) % 2 == 1;
@@ -697,13 +747,44 @@ pub fn paint_playlist(
                 theme::medium(13.0),
                 t.picker_text,
             );
+        // Automation Clips are moved by their title bar because "the lower clip area is used to
+        // edit Control Points" [Manual: playlist, "Resizing & Slip-editing Clips"].
+        if let Some(auto) = &clip.automation {
+            let body =
+                Rect::from_min_max(pos2(clip_rect.left(), label_band.bottom()), clip_rect.max);
+            automation_body(
+                paint,
+                state,
+                &grid_painter,
+                auto,
+                body.intersect(grid),
+                x0 + 1.0,
+                px_per_tick,
+                snap,
+                &mut actions,
+            );
+        }
+        let handle = if clip.automation.is_some() {
+            label_band
+        } else {
+            clip_rect
+        };
         let response = paint.hit(
             &format!("playlist.clip.{}", clip.id),
-            clip_rect.intersect(grid),
-            "pattern-clip",
+            handle.intersect(grid),
+            if clip.automation.is_some() {
+                "automation-clip"
+            } else {
+                "pattern-clip"
+            },
             true,
             &format!(
-                "Pattern clip: {} - drag to move, drag the right edge to resize, right-click deletes, Ctrl+click mutes",
+                "{}: {} - drag to move, drag the right edge to resize, right-click deletes, Ctrl+click mutes",
+                if clip.automation.is_some() {
+                    "Automation clip"
+                } else {
+                    "Pattern clip"
+                },
                 clip.label
             ),
         );
@@ -786,6 +867,8 @@ pub fn paint_playlist(
         }
     }
 
+    paint_point_menu(paint, state, &mut actions);
+
     // Clicking the bar ruler relocates the playback position [Manual: playlist,
     // "Relocate the playback position - Click on the upper timeline"].
     let ruler_response =
@@ -826,4 +909,175 @@ pub fn paint_playlist(
         .probe
         .insert("playlist.grid", grid, "timeline", true, None);
     actions
+}
+
+/// Envelope of an Automation Clip and its control-point gestures [Manual:
+/// playlist_automationclip]: right-click adds a point, left-drag moves one, Alt+click deletes
+/// one, right-click on a point opens Delete and the Curve Type Menu.
+#[allow(clippy::too_many_arguments)]
+fn automation_body(
+    paint: &mut PaintCtx<'_>,
+    state: &mut PlaylistState,
+    painter: &egui::Painter,
+    auto: &AutomationView,
+    body: Rect,
+    clip_left: f32,
+    px_per_tick: f32,
+    snap: i64,
+    actions: &mut Vec<PlaylistAction>,
+) {
+    if body.width() <= 0.0 || body.height() <= 4.0 {
+        return;
+    }
+    let t = *paint.tokens;
+    let inner = body.shrink2(vec2(0.0, 3.0));
+    let x_of = |at: i64| clip_left + (at - auto.offset) as f32 * px_per_tick;
+    let y_of = |value: u16| inner.bottom() - f32::from(value) / 1000.0 * inner.height();
+    let tick_at = |x: f32| ((x - clip_left) / px_per_tick).round() as i64 + auto.offset;
+    let value_at =
+        |y: f32| (((inner.bottom() - y) / inner.height()).clamp(0.0, 1.0) * 1000.0).round() as u16;
+    // Points as shown (a dragged point follows the mouse).
+    let mut points = auto.points.clone();
+    if let Some((id, index, at, value)) = state.point_drag
+        && id == auto.id
+        && let Some(point) = points.get_mut(index)
+    {
+        point.at = jet_time::Tick(if index == 0 { 0 } else { at.max(0) });
+        point.value = value;
+        points.sort_by_key(|p| p.at);
+    }
+    // Envelope polyline, sampled every 2 px.
+    let clip_painter = painter.with_clip_rect(body);
+    let mut line = Vec::new();
+    let mut x = body.left();
+    while x <= body.right() {
+        if let Some(v) = jet_seq::automation::value_at(&points, tick_at(x)) {
+            line.push(pos2(x, inner.bottom() - v as f32 * inner.height()));
+        }
+        x += 2.0;
+    }
+    clip_painter.add(egui::Shape::line(line, Stroke::new(1.5, t.picker_text)));
+    for point in &points {
+        clip_painter.circle_stroke(
+            pos2(x_of(point.at.0), y_of(point.value)),
+            3.5,
+            Stroke::new(1.5, t.picker_text),
+        );
+    }
+    let response = paint.ui.interact(
+        body,
+        Id::new(("playlist.automation", auto.id, body.left() as i32)),
+        Sense::click_and_drag(),
+    );
+    paint.probe.insert(
+        format!("playlist.automation.{}", auto.id),
+        body,
+        "envelope",
+        true,
+        None,
+    );
+    let (pointer, origin, alt) = paint.ui.input(|i| {
+        (
+            i.pointer.hover_pos(),
+            i.pointer.press_origin(),
+            i.modifiers.alt,
+        )
+    });
+    let near = |p: egui::Pos2| {
+        auto.points
+            .iter()
+            .enumerate()
+            .find(|(_, pt)| pos2(x_of(pt.at.0), y_of(pt.value)).distance(p) <= 6.0)
+            .map(|(i, _)| i)
+    };
+    if response.hovered() {
+        *paint.hint = "Right-click adds a point; drag a point to move it; Alt+click deletes; right-click a point for curve types".to_owned();
+    }
+    if response.secondary_clicked()
+        && let Some(p) = pointer
+    {
+        match near(p) {
+            Some(index) => state.point_menu = Some((auto.id, index, p)),
+            None => {
+                let at = (tick_at(p.x) + snap / 2).div_euclid(snap.max(1)) * snap.max(1);
+                actions.push(PlaylistAction::AutoAddPoint {
+                    id: auto.id,
+                    at: at.max(0),
+                    value: value_at(p.y),
+                });
+            }
+        }
+    }
+    if response.clicked()
+        && alt
+        && let Some(index) = pointer.and_then(near)
+    {
+        actions.push(PlaylistAction::AutoDeletePoint { id: auto.id, index });
+    }
+    if response.drag_started_by(PointerButton::Primary)
+        && let Some(index) = origin.and_then(near)
+    {
+        let point = &auto.points[index];
+        state.point_drag = Some((auto.id, index, point.at.0, point.value));
+    }
+    if response.dragged()
+        && let (Some(p), Some(drag)) = (pointer, state.point_drag.as_mut())
+        && drag.0 == auto.id
+    {
+        let at = tick_at(p.x);
+        drag.2 = if alt {
+            at
+        } else {
+            (at + snap / 2).div_euclid(snap.max(1)) * snap.max(1)
+        };
+        drag.3 = value_at(p.y);
+        *paint.hint = format!("Value: {:.3}", f32::from(drag.3) / 1000.0);
+    }
+    if response.drag_stopped()
+        && let Some((id, index, at, value)) = state.point_drag.take()
+        && id == auto.id
+    {
+        actions.push(PlaylistAction::AutoMovePoint {
+            id,
+            index,
+            at: at.max(0),
+            value,
+        });
+    }
+}
+
+fn paint_point_menu(
+    paint: &mut PaintCtx<'_>,
+    state: &mut PlaylistState,
+    actions: &mut Vec<PlaylistAction>,
+) {
+    let Some((id, index, origin)) = state.point_menu else {
+        return;
+    };
+    let mut items = vec![crate::widgets::MenuItem {
+        label: "Delete",
+        shortcut: "",
+        enabled: true,
+    }];
+    items.extend(CURVES.iter().map(|(_, label)| crate::widgets::MenuItem {
+        label,
+        shortcut: "",
+        enabled: index > 0,
+    }));
+    match paint.popup_menu("playlist.point-menu", origin, &items) {
+        crate::widgets::MenuResult::Open => {}
+        crate::widgets::MenuResult::Dismissed => state.point_menu = None,
+        crate::widgets::MenuResult::Chosen(choice) => {
+            state.point_menu = None;
+            if choice == 0 {
+                actions.push(PlaylistAction::AutoDeletePoint { id, index });
+            } else if let Some((shape, _)) = CURVES.get(choice - 1) {
+                actions.push(PlaylistAction::AutoShape {
+                    id,
+                    index,
+                    shape: *shape,
+                });
+            }
+        }
+    }
 }

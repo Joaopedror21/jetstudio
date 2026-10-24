@@ -106,3 +106,80 @@ fn processing_a_busy_project_does_not_allocate() {
     });
     assert!(out.iter().all(|v| v.is_finite()));
 }
+
+#[test]
+fn song_mode_automation_does_not_allocate() {
+    use jet_model::{
+        AutoPoint, AutoTarget, AutomationClip, ClipInstance, ClipSource, CurveShape, PlaylistTrack,
+    };
+    let mut project = Project::new();
+    let id = project.ids.channel();
+    project.channels.push(Channel::synth(id, "Synth"));
+    let mut seq = StepSeq::with_len(16).unwrap();
+    seq.cells[0].on = true;
+    project.patterns[0].steps.insert(id, seq);
+    let track = project.ids.track();
+    project.arrangements[0]
+        .tracks
+        .push(PlaylistTrack::new(track, "T"));
+    let clip = project.ids.clip();
+    project.arrangements[0].clips.push(ClipInstance::pattern(
+        clip,
+        track,
+        project.patterns[0].id,
+        Tick(0),
+        Tick(768),
+    ));
+    for target in [
+        AutoTarget::ChannelVolume(id),
+        AutoTarget::MixerVolume(0),
+        AutoTarget::ChannelPan(id),
+    ] {
+        let automation = project.ids.automation();
+        project.automations.push(AutomationClip {
+            id: automation,
+            name: "auto".into(),
+            target,
+            points: vec![
+                AutoPoint {
+                    at: Tick(0),
+                    value: 0,
+                    tension: 0,
+                    shape: CurveShape::SingleCurve,
+                },
+                AutoPoint {
+                    at: Tick(768),
+                    value: 1000,
+                    tension: 300,
+                    shape: CurveShape::Wave,
+                },
+            ],
+            initial: 500,
+        });
+        let clip = project.ids.clip();
+        let mut instance =
+            ClipInstance::pattern(clip, track, project.patterns[0].id, Tick(0), Tick(768));
+        instance.source = ClipSource::Automation(automation);
+        project.arrangements[0].clips.push(instance);
+    }
+    assert_eq!(project.validate(), Ok(()));
+    let plan = build_plan(&project, Source::Song, 48_000, true, &|_| None);
+    assert_eq!(plan.automation.len(), 3);
+    let mut renderer = Renderer::new(
+        Box::new(plan),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(Meters::default()),
+    );
+    let mut out = vec![0.0_f32; 2 * 256];
+    renderer.sync(TransportSync {
+        playing: true,
+        anchor_tick: 0,
+        anchor_frame: 0,
+    });
+    assert_no_alloc(|| {
+        for _ in 0..800 {
+            renderer.process(&mut out);
+        }
+    });
+    assert!(out.iter().all(|v| v.is_finite()));
+}

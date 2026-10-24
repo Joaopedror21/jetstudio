@@ -54,6 +54,7 @@ id_type!(ArrangementId);
 id_type!(TrackId);
 id_type!(ClipId);
 id_type!(ResourceId);
+id_type!(AutomationId);
 
 /// Counters advance monotonically and are serialized with the project.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +65,12 @@ pub struct IdAllocator {
     pub next_track: u64,
     pub next_clip: u64,
     pub next_resource: u64,
+    #[serde(default = "first_id")]
+    pub next_automation: u64,
+}
+
+fn first_id() -> u64 {
+    1
 }
 
 impl Default for IdAllocator {
@@ -75,6 +82,7 @@ impl Default for IdAllocator {
             next_track: 1,
             next_clip: 1,
             next_resource: 1,
+            next_automation: 1,
         }
     }
 }
@@ -100,6 +108,10 @@ impl IdAllocator {
 
     pub fn track(&mut self) -> TrackId {
         TrackId(Self::allocate(&mut self.next_track))
+    }
+
+    pub fn automation(&mut self) -> AutomationId {
+        AutomationId(Self::allocate(&mut self.next_automation))
     }
 
     pub fn clip(&mut self) -> ClipId {
@@ -495,6 +507,104 @@ impl PlaylistTrack {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClipSource {
     Pattern(PatternId),
+    Automation(AutomationId),
+}
+
+/// Segment curve types [Manual: playlist_automationclip, "Change curve type"]. The shape is
+/// stored on the point that ends the segment, as FL edits it on "the right-most control point".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CurveShape {
+    #[default]
+    SingleCurve,
+    DoubleCurve,
+    AltSingleCurve,
+    AltDoubleCurve,
+    Hold,
+    Stairs,
+    SmoothStairs,
+    Pulse,
+    Wave,
+    HalfSine,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoPoint {
+    /// Position relative to the clip's data start.
+    pub at: Tick,
+    /// 0..=1000 (the manual's 0 to 1).
+    pub value: u16,
+    /// -1000..=1000; zero is a straight segment for `SingleCurve`.
+    pub tension: i16,
+    /// Shape of the segment that ends at this point.
+    pub shape: CurveShape,
+}
+
+/// Parameters an Automation Clip can drive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum AutoTarget {
+    ChannelVolume(ChannelId),
+    ChannelPan(ChannelId),
+    ChannelPitch(ChannelId),
+    MixerVolume(u16),
+    MixerPan(u16),
+    FxMix { track: u16, slot: u8 },
+}
+
+impl AutoTarget {
+    /// Normalised 0..=1000 value of the target's current setting in `project`.
+    pub fn current(self, project: &Project) -> Option<u16> {
+        Some(match self {
+            Self::ChannelVolume(id) => project.channel(id)?.volume,
+            Self::ChannelPan(id) => ((i32::from(project.channel(id)?.pan) + 1000) / 2) as u16,
+            Self::ChannelPitch(id) => {
+                ((i32::from(project.channel(id)?.pitch).clamp(-1200, 1200) + 1200) * 1000 / 2400)
+                    as u16
+            }
+            Self::MixerVolume(track) => project.mixer.track(track)?.volume,
+            Self::MixerPan(track) => {
+                ((i32::from(project.mixer.track(track)?.pan) + 1000) / 2) as u16
+            }
+            Self::FxMix { track, slot } => {
+                project.mixer.track(track)?.fx.get(usize::from(slot))?.mix
+            }
+        })
+    }
+
+    pub fn label(self, project: &Project) -> String {
+        let channel = |id: ChannelId| {
+            project
+                .channel(id)
+                .map_or_else(|| "Channel".to_owned(), |c| c.name.clone())
+        };
+        match self {
+            Self::ChannelVolume(id) => format!("{} - Volume", channel(id)),
+            Self::ChannelPan(id) => format!("{} - Panning", channel(id)),
+            Self::ChannelPitch(id) => format!("{} - Pitch", channel(id)),
+            Self::MixerVolume(0) => "Master - Volume".to_owned(),
+            Self::MixerVolume(track) => format!("Insert {track} - Volume"),
+            Self::MixerPan(0) => "Master - Pan".to_owned(),
+            Self::MixerPan(track) => format!("Insert {track} - Pan"),
+            Self::FxMix { track, slot } => format!("Insert {track} - Slot {} mix", slot + 1),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutomationClip {
+    pub id: AutomationId,
+    pub name: String,
+    pub target: AutoTarget,
+    /// Sorted by `at`; never empty.
+    pub points: Vec<AutoPoint>,
+    /// The value the control returns to when the song starts ("Initialized controls"
+    /// [Manual: playlist_automationclip]).
+    pub initial: u16,
+}
+
+impl AutomationClip {
+    pub fn length(&self) -> Tick {
+        self.points.last().map_or(Tick(0), |p| p.at)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -952,6 +1062,8 @@ pub struct Project {
     pub mixer: Mixer,
     pub resources: Vec<Resource>,
     pub ids: IdAllocator,
+    #[serde(default)]
+    pub automations: Vec<AutomationClip>,
 }
 
 impl Project {
@@ -968,7 +1080,12 @@ impl Project {
             mixer: Mixer::default(),
             resources: Vec::new(),
             ids,
+            automations: Vec::new(),
         }
+    }
+
+    pub fn automation(&self, id: AutomationId) -> Option<&AutomationClip> {
+        self.automations.iter().find(|a| a.id == id)
     }
 
     pub fn channel(&self, id: ChannelId) -> Option<&Channel> {
@@ -1034,6 +1151,23 @@ impl Project {
         let patterns = unique_ids(self.patterns.iter().map(|item| item.id), "pattern")?;
         let arrangements = unique_ids(self.arrangements.iter().map(|item| item.id), "arrangement")?;
         let resources = unique_ids(self.resources.iter().map(|item| item.id), "resource")?;
+        let automations = unique_ids(self.automations.iter().map(|item| item.id), "automation")?;
+        for clip in &self.automations {
+            if clip.points.is_empty()
+                || clip.name.len() > 4096
+                || clip.initial > 1000
+                || clip.points.windows(2).any(|w| w[1].at < w[0].at)
+                || clip
+                    .points
+                    .iter()
+                    .any(|p| p.at.0 < 0 || p.value > 1000 || i32::from(p.tension).abs() > 1000)
+            {
+                return Err(ModelError::InvalidValue("automation clip"));
+            }
+            if clip.target.current(self).is_none() {
+                return Err(ModelError::Orphan("automation target"));
+            }
+        }
         if !arrangements.contains(&self.active_arrangement) {
             return Err(ModelError::Orphan("active arrangement"));
         }
@@ -1126,7 +1260,10 @@ impl Project {
                     ClipSource::Pattern(id) if !patterns.contains(&id) => {
                         return Err(ModelError::Orphan("clip pattern"));
                     }
-                    ClipSource::Pattern(_) => {}
+                    ClipSource::Automation(id) if !automations.contains(&id) => {
+                        return Err(ModelError::Orphan("clip automation"));
+                    }
+                    ClipSource::Pattern(_) | ClipSource::Automation(_) => {}
                 }
             }
             for marker in &arrangement.markers {
@@ -1145,6 +1282,11 @@ impl Project {
         check_counter(self.ids.next_track, &all_tracks, "track allocator")?;
         check_counter(self.ids.next_clip, &all_clips, "clip allocator")?;
         check_counter(self.ids.next_resource, &resources, "resource allocator")?;
+        check_counter(
+            self.ids.next_automation,
+            &automations,
+            "automation allocator",
+        )?;
         Ok(())
     }
 
@@ -1165,6 +1307,11 @@ impl Project {
             }
             for marker in &mut arrangement.markers {
                 marker.at = rescale_tick(marker.at, old, next);
+            }
+        }
+        for clip in &mut candidate.automations {
+            for point in &mut clip.points {
+                point.at = rescale_tick(point.at, old, next);
             }
         }
         for pattern in &mut candidate.patterns {
@@ -1225,7 +1372,8 @@ id_into_u64!(
     ArrangementId,
     TrackId,
     ClipId,
-    ResourceId
+    ResourceId,
+    AutomationId
 );
 
 fn rescale_tick(tick: Tick, old: Ppq, next: Ppq) -> Tick {

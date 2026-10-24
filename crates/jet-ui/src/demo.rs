@@ -180,6 +180,21 @@ pub fn demo_project() -> Project {
 pub fn demo_session() -> Session {
     let mut session =
         Session::from_project(demo_project()).unwrap_or_else(|_| Session::new_default());
+    // An automation clip on the Master volume, shaped as a rise and a dip.
+    if session
+        .execute(
+            "automation.create",
+            serde_json::json!({ "target": { "MixerVolume": 0 } }),
+        )
+        .is_ok()
+    {
+        for (at, value) in [(16 * 384, 200), (24 * 384, 1000), (32 * 384, 500)] {
+            let _ = session.execute(
+                "automation.point.add",
+                serde_json::json!({ "id": 1, "at": at, "value": value }),
+            );
+        }
+    }
     let pad = session.project().channels.last().map(|c| c.id.0);
     if let Some(id) = pad {
         let _ = session.execute("channel.select", serde_json::json!({ "id": id }));

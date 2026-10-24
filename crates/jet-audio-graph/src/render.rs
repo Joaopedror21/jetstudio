@@ -1,6 +1,6 @@
 //! The real-time renderer. `process` never allocates, locks or does I/O.
 
-use crate::plan::{Instrument, RenderPlan, TRACK_COUNT};
+use crate::plan::{AutoApply, Instrument, RenderPlan, TRACK_COUNT};
 use crate::{MAX_BLOCK, Meters};
 use jet_dsp::sampler::SamplerVoice;
 use jet_dsp::synth::SynthVoice;
@@ -274,13 +274,15 @@ impl Renderer {
             Instrument::Sampler(None) => return,
             Instrument::Sampler(Some(sample)) => {
                 let semis = f64::from(event.key) - f64::from(channel.root_key);
-                let cents = f64::from(channel.pitch_cents) + f64::from(event.fine_pitch);
+                let pitch = channel.auto_pitch.unwrap_or(channel.pitch_cents);
+                let cents = f64::from(pitch) + f64::from(event.fine_pitch);
                 let mut voice = SamplerVoice::default();
                 voice.start(Arc::clone(sample), cents_ratio(semis * 100.0 + cents), rate);
                 VoiceKind::Sampler(voice)
             }
             Instrument::Synth(params) => {
-                let cents = f64::from(channel.pitch_cents) + f64::from(event.fine_pitch);
+                let pitch = channel.auto_pitch.unwrap_or(channel.pitch_cents);
+                let cents = f64::from(pitch) + f64::from(event.fine_pitch);
                 let mut voice = SynthVoice::default();
                 self.seed = self
                     .seed
@@ -340,6 +342,77 @@ impl Renderer {
         };
     }
 
+    /// Evaluate the automation lanes at the block start (block-rate control, our choice; FL's
+    /// control rate is not documented). Stopped transport returns every control to its knob.
+    fn apply_automation(&mut self, block_start: u64) {
+        let playing = self.transport.playing && block_start >= self.transport.anchor_frame;
+        let tick = if playing {
+            let t = self.tick_at(block_start);
+            if self.plan.looping {
+                t.rem_euclid(self.plan.sequence.length.max(1))
+            } else {
+                t
+            }
+        } else {
+            0
+        };
+        let plan = &mut self.plan;
+        for channel in &mut plan.channels {
+            channel.auto_gain = None;
+            channel.auto_pan = None;
+            channel.auto_pitch = None;
+        }
+        for track in &mut plan.tracks {
+            track.auto_gain = None;
+            track.auto_pan = None;
+            for fx in &mut track.fx {
+                fx.auto_mix = None;
+            }
+        }
+        if !playing {
+            return;
+        }
+        for lane in &plan.automation {
+            let Some(v) = lane.lane.value_at(tick) else {
+                continue;
+            };
+            let knob = (v * 1000.0).round() as u16;
+            let pan = (v * 2000.0 - 1000.0).round() as i16;
+            match lane.apply {
+                AutoApply::ChannelVolume(i) => {
+                    if let Some(c) = plan.channels.get_mut(i) {
+                        c.auto_gain = Some(jet_dsp::channel_volume_gain(knob) as f32);
+                    }
+                }
+                AutoApply::ChannelPan(i) => {
+                    if let Some(c) = plan.channels.get_mut(i) {
+                        c.auto_pan = Some(pan);
+                    }
+                }
+                AutoApply::ChannelPitch(i) => {
+                    if let Some(c) = plan.channels.get_mut(i) {
+                        c.auto_pitch = Some((v * 2400.0 - 1200.0).round() as i16);
+                    }
+                }
+                AutoApply::TrackVolume(s) => {
+                    if let Some(t) = plan.tracks.get_mut(s) {
+                        t.auto_gain = Some(jet_dsp::mixer_fader_gain(knob) as f32);
+                    }
+                }
+                AutoApply::TrackPan(s) => {
+                    if let Some(t) = plan.tracks.get_mut(s) {
+                        t.auto_pan = Some(pan);
+                    }
+                }
+                AutoApply::FxMix(s, slot) => {
+                    if let Some(fx) = plan.tracks.get_mut(s).and_then(|t| t.fx.get_mut(slot)) {
+                        fx.auto_mix = Some(v as f32);
+                    }
+                }
+            }
+        }
+    }
+
     /// Render `out` (interleaved stereo) and advance the clock.
     pub fn process(&mut self, out: &mut [f32]) {
         for chunk in out.chunks_mut(MAX_BLOCK * 2) {
@@ -355,6 +428,7 @@ impl Renderer {
             track.left[..frames].fill(0.0);
             track.right[..frames].fill(0.0);
         }
+        self.apply_automation(block_start);
         if self.transport.playing && block_end > self.transport.anchor_frame {
             // Event at tick T sounds at frame_of_tick(T); it belongs to this block when that
             // frame is below block_end, i.e. when T <= tick_at(block_end - 1).
@@ -399,9 +473,10 @@ impl Renderer {
                 continue;
             };
             let channel = &plan.channels[index];
-            let pan = (i32::from(channel.pan) + i32::from(voice.pan)).clamp(-1000, 1000) as i16;
+            let channel_pan = channel.auto_pan.unwrap_or(channel.pan);
+            let pan = (i32::from(channel_pan) + i32::from(voice.pan)).clamp(-1000, 1000) as i16;
             let (pl, pr) = pan_gains(pan, pan_law);
-            let gain = channel.gain * voice.velocity;
+            let gain = channel.auto_gain.unwrap_or(channel.gain) * voice.velocity;
             let (gl, gr) = (gain * pl as f32, gain * pr as f32);
             let track = &mut plan.tracks[channel.track_slot];
             let begin = voice.start_frame.saturating_sub(block_start) as usize;
@@ -520,7 +595,8 @@ fn process_track(track: &mut crate::plan::TrackPlan, frames: usize) {
             if !instance.enabled {
                 continue;
             }
-            if instance.mix >= 0.999 {
+            let mix = instance.auto_mix.unwrap_or(instance.mix);
+            if mix >= 0.999 {
                 effect.process(&mut track.left[..frames], &mut track.right[..frames]);
             } else {
                 track.scratch_left[..frames].copy_from_slice(&track.left[..frames]);
@@ -529,7 +605,7 @@ fn process_track(track: &mut crate::plan::TrackPlan, frames: usize) {
                     &mut track.scratch_left[..frames],
                     &mut track.scratch_right[..frames],
                 );
-                let wet = instance.mix;
+                let wet = mix;
                 for i in 0..frames {
                     track.left[i] += (track.scratch_left[i] - track.left[i]) * wet;
                     track.right[i] += (track.scratch_right[i] - track.right[i]) * wet;
@@ -537,7 +613,8 @@ fn process_track(track: &mut crate::plan::TrackPlan, frames: usize) {
             }
         }
     }
-    let p = f32::from(track.pan) / 1000.0;
+    let p = f32::from(track.auto_pan.unwrap_or(track.pan)) / 1000.0;
+    let gain = track.auto_gain.unwrap_or(track.gain);
     let sep = track.stereo_sep;
     for i in 0..frames {
         let (mut l, mut r) = (track.left[i], track.right[i]);
@@ -564,7 +641,7 @@ fn process_track(track: &mut crate::plan::TrackPlan, frames: usize) {
             l += r * -p;
             r *= 1.0 + p;
         }
-        track.left[i] = l * track.gain;
-        track.right[i] = r * track.gain;
+        track.left[i] = l * gain;
+        track.right[i] = r * gain;
     }
 }

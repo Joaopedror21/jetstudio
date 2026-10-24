@@ -26,6 +26,8 @@ pub struct MixerState {
 enum MixerMenu {
     AddFx(usize),
     Slot(usize),
+    /// Right-click on a fader (`true`) or pan knob (`false`) of a track.
+    Automate(u16, bool),
 }
 
 pub struct MixerTrackView {
@@ -102,6 +104,11 @@ pub enum MixerAction {
         value: bool,
     },
     EndGesture,
+    /// "Create automation clip" for a fader (`true`) or pan (`false`).
+    CreateAutomation {
+        track: u16,
+        fader: bool,
+    },
 }
 
 fn db_label(gain: f64) -> String {
@@ -238,6 +245,12 @@ fn paint_strip(
         &format!("Pan {}", track.pan / 10),
     );
     paint.knob(knob_c, 7.5, value);
+    if response.secondary_clicked() {
+        state.menu = paint
+            .ui
+            .input(|i| i.pointer.hover_pos())
+            .map(|p| (MixerMenu::Automate(track.index, false), p));
+    }
     if response.dragged() {
         let next = (value - response.drag_delta().y / KNOB_TRAVEL).clamp(0.0, 1.0);
         let pan = (next * 2000.0 - 1000.0).round() as i16;
@@ -324,6 +337,12 @@ fn paint_strip(
         ),
         StrokeKind::Inside,
     );
+    if response.secondary_clicked() {
+        state.menu = paint
+            .ui
+            .input(|i| i.pointer.hover_pos())
+            .map(|p| (MixerMenu::Automate(track.index, true), p));
+    }
     if response.dragged() {
         let next = (frac - response.drag_delta().y / FADER_TRAVEL).clamp(0.0, 1.0);
         let volume = (next * 1000.0).round() as u16;
@@ -854,6 +873,24 @@ fn paint_menus(
                     if let Some((name, _)) = names.get(i) {
                         actions.push(MixerAction::FxAdd { track, kind: name });
                     }
+                }
+            }
+        }
+        MixerMenu::Automate(index, fader) => {
+            let items = [MenuItem {
+                label: "Create automation clip",
+                shortcut: "",
+                enabled: true,
+            }];
+            match paint.popup_menu("mixer.automate-menu", origin, &items) {
+                MenuResult::Open => {}
+                MenuResult::Dismissed => state.menu = None,
+                MenuResult::Chosen(_) => {
+                    state.menu = None;
+                    actions.push(MixerAction::CreateAutomation {
+                        track: index,
+                        fader,
+                    });
                 }
             }
         }

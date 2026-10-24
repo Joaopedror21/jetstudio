@@ -15,6 +15,14 @@ pub struct RackState {
     pub menu: Option<(u64, Pos2)>,
     /// Inline rename: channel id and the text typed so far.
     pub rename: Option<(u64, String)>,
+    /// Knob context menu: channel, parameter and where it opened.
+    pub knob_menu: Option<(u64, KnobParam, Pos2)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KnobParam {
+    Volume,
+    Pan,
 }
 
 pub struct RackView {
@@ -99,6 +107,8 @@ pub enum RackAction {
     SetSwing(u8),
     /// `None` returns the pattern to Auto length.
     SetPatternLength(Option<u16>),
+    /// "Create automation clip" from a knob's right-click menu [Manual: playlist_automationclip].
+    CreateAutomation(u64, KnobParam),
 }
 
 /// Swing knob and pattern length display in the Channel rack title bar
@@ -381,6 +391,14 @@ pub fn paint_channel_rack(
                 &format!("{hint}: {readout}"),
             );
             paint.knob(knob.center(), KNOB_R, value);
+            if response.secondary_clicked() {
+                let param = if id == "pan" {
+                    KnobParam::Pan
+                } else {
+                    KnobParam::Volume
+                };
+                state.knob_menu = pointer.map(|p| (channel.id, param, p));
+            }
             if response.dragged() {
                 let dy = -response.drag_delta().y / KNOB_TRAVEL;
                 let next = (value + dy).clamp(0.0, 1.0);
@@ -619,6 +637,21 @@ pub fn paint_channel_rack(
 
     edit_name(paint, state, &mut actions);
     paint_menu(paint, state, view, &mut actions);
+    if let Some((channel, param, origin)) = state.knob_menu {
+        let items = [MenuItem {
+            label: "Create automation clip",
+            shortcut: "",
+            enabled: true,
+        }];
+        match paint.popup_menu("channel-rack.knob-menu", origin, &items) {
+            MenuResult::Open => {}
+            MenuResult::Dismissed => state.knob_menu = None,
+            MenuResult::Chosen(_) => {
+                state.knob_menu = None;
+                actions.push(RackAction::CreateAutomation(channel, param));
+            }
+        }
+    }
     actions
 }
 
