@@ -1,0 +1,144 @@
+#![forbid(unsafe_code)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
+//! The render graph shared by live playback and offline bounce: channels → mixer
+//! tracks (FX, pan, fader, sends) → Master. Identical input produces identical output
+//! in both paths because both drive the same [`Renderer`].
+
+mod plan;
+mod render;
+
+pub use plan::{ChannelPlan, Instrument, RenderPlan, TRACK_COUNT, build_plan};
+pub use render::{MAX_VOICES, Renderer, TransportSync};
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+/// Largest block processed at once; longer device buffers are split.
+pub const MAX_BLOCK: usize = 1024;
+
+/// Peak meters per mixer track, written by the audio thread and drained by the UI.
+pub struct Meters {
+    peaks: Vec<[AtomicU32; 2]>,
+}
+
+impl Default for Meters {
+    fn default() -> Self {
+        Self {
+            peaks: (0..TRACK_COUNT)
+                .map(|_| [AtomicU32::new(0), AtomicU32::new(0)])
+                .collect(),
+        }
+    }
+}
+
+impl Meters {
+    /// Raise the stored peaks; non-negative f32 bit patterns order like their values.
+    pub fn record(&self, track: usize, left: &[f32], right: &[f32]) {
+        let Some(slot) = self.peaks.get(track) else {
+            return;
+        };
+        let peak = |data: &[f32]| {
+            data.iter().fold(
+                0.0_f32,
+                |acc, v| if v.is_finite() { acc.max(v.abs()) } else { acc },
+            )
+        };
+        slot[0].fetch_max(peak(left).to_bits(), Ordering::Relaxed);
+        slot[1].fetch_max(peak(right).to_bits(), Ordering::Relaxed);
+    }
+
+    /// Read and reset the peaks of `track` since the last call.
+    pub fn take(&self, track: usize) -> (f32, f32) {
+        self.peaks.get(track).map_or((0.0, 0.0), |slot| {
+            (
+                f32::from_bits(slot[0].swap(0, Ordering::Relaxed)),
+                f32::from_bits(slot[1].swap(0, Ordering::Relaxed)),
+            )
+        })
+    }
+}
+
+/// How the end of an offline render is handled [Manual: fformats_save_export, "Tail"].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tail {
+    /// Extend the render until decaying sounds end.
+    LeaveRemainder,
+    /// Cut at the end of the material.
+    Cut,
+    /// Mix the decay after the end back into the start.
+    Wrap,
+}
+
+/// Longest tail rendered after the material ends (our limit).
+pub const MAX_TAIL_SECONDS: u32 = 30;
+/// Silence threshold that ends a "leave remainder" tail: -100 dBFS held for 100 ms.
+const SILENCE: f32 = 1e-5;
+
+/// Render `length_ticks` of the plan starting at tick 0 to interleaved stereo.
+pub fn render_offline(plan: RenderPlan, length_ticks: i64, tail: Tail) -> Vec<f32> {
+    let rate = plan.rate;
+    let frames_per_tick = |ticks: i64| -> usize {
+        let numerator = i128::from(ticks.max(0)) * i128::from(rate) * 60_000;
+        let denominator = i128::from(plan.tempo_milli) * i128::from(plan.ppq.max(1));
+        (numerator / denominator.max(1)) as usize
+    };
+    let body = frames_per_tick(length_ticks);
+    let mut renderer = Renderer::new(
+        Box::new(plan),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(Meters::default()),
+    );
+    renderer.stop_events_after(Some(length_ticks));
+    renderer.sync(TransportSync {
+        playing: true,
+        anchor_tick: 0,
+        anchor_frame: 0,
+    });
+    let mut out = vec![0.0_f32; body * 2];
+    renderer.process(&mut out);
+    if tail == Tail::Cut {
+        return out;
+    }
+    let max_tail = rate as usize * MAX_TAIL_SECONDS as usize;
+    let quiet_needed = rate as usize / 10;
+    let mut tail_buf = Vec::new();
+    let mut block = vec![0.0_f32; MAX_BLOCK * 2];
+    let mut quiet = 0;
+    while tail_buf.len() / 2 < max_tail {
+        renderer.process(&mut block);
+        let loud = block.iter().any(|v| v.abs() > SILENCE);
+        tail_buf.extend_from_slice(&block);
+        if loud || renderer.active_voices() > 0 {
+            quiet = 0;
+        } else {
+            quiet += MAX_BLOCK;
+            if quiet >= quiet_needed {
+                break;
+            }
+        }
+    }
+    // Trim trailing silence.
+    let last = tail_buf
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .rposition(|f| f[0].abs() > SILENCE || f[1].abs() > SILENCE)
+        .map_or(0, |i| i + 1);
+    tail_buf.truncate(last * 2);
+    match tail {
+        Tail::LeaveRemainder => {
+            out.extend_from_slice(&tail_buf);
+        }
+        Tail::Wrap => {
+            for (dst, src) in out.iter_mut().zip(tail_buf.iter()) {
+                *dst += *src;
+            }
+        }
+        Tail::Cut => {}
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests;

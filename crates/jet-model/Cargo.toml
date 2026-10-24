@@ -11,3 +11,6 @@ workspace = true
 jet-time = { path = "../jet-time" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"

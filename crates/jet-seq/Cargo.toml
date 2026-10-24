@@ -1,0 +1,11 @@
+[package]
+name = "jet-seq"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+jet-time = { path = "../jet-time" }
+jet-model = { path = "../jet-model" }
+
+[lints]
+workspace = true

@@ -174,6 +174,27 @@ impl Transport {
         }
     }
 
+    /// Replace the clock (e.g. when an audio device opens), keeping the musical position.
+    pub fn set_clock(&mut self, clock: Box<dyn Clock>, ppq: Ppq, tempo: Tempo) {
+        let position = self.snapshot(ppq, tempo).position;
+        self.clock = clock;
+        self.anchor_tick = position;
+        self.anchor_frame = self.clock.now_frames();
+    }
+
+    /// (playing, anchor tick, anchor frame) for mirroring into the renderer.
+    pub fn anchor(&self) -> (bool, Tick, u64) {
+        (
+            self.state == TransportState::Playing,
+            self.anchor_tick,
+            self.anchor_frame,
+        )
+    }
+
+    pub fn mode(&self) -> PlayMode {
+        self.mode
+    }
+
     pub fn toggle_mode(&mut self) {
         self.mode = if self.mode == PlayMode::Pattern {
             PlayMode::Song

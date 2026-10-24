@@ -1,0 +1,16 @@
+[package]
+name = "jet-audio-graph"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+jet-time = { path = "../jet-time" }
+jet-model = { path = "../jet-model" }
+jet-seq = { path = "../jet-seq" }
+jet-dsp = { path = "../jet-dsp" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+assert_no_alloc = "1.1.2"

@@ -1,0 +1,10 @@
+[package]
+name = "jet-dsp"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+jet-model = { path = "../jet-model" }
+
+[lints]
+workspace = true

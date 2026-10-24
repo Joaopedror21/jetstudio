@@ -2,6 +2,8 @@
 mod channel;
 mod edit;
 mod file;
+mod mixer;
+mod note;
 mod pattern;
 mod playlist;
 mod project;
@@ -73,7 +75,7 @@ macro_rules! spec {
 }
 
 static SPECS: &[CommandSpec] = &[
-    spec!("file.new", "New", "FILE", None, "{}", None),
+    spec!("file.new", "New", "FILE", Some("Ctrl+N"), "{}", None),
     spec!(
         "file.open",
         "Open",
@@ -89,6 +91,14 @@ static SPECS: &[CommandSpec] = &[
         "FILE",
         Some("Ctrl+Shift+S"),
         "{path:string}",
+        None
+    ),
+    spec!(
+        "file.export_wav",
+        "Export > Wave file",
+        "FILE",
+        Some("Ctrl+R"),
+        "{path:string,mode?:song|pattern,bits?:16|24|32,tail?:leave|cut|wrap,rate?:uint}",
         None
     ),
     spec!(
@@ -125,6 +135,7 @@ static SPECS: &[CommandSpec] = &[
         "{}",
         None
     ),
+    spec!("transport.panic", "Stop all notes", "", None, "{}", None),
     spec!(
         "transport.mode.toggle",
         "PAT/SONG",
@@ -218,22 +229,30 @@ static SPECS: &[CommandSpec] = &[
         "Add channel",
         "ADD",
         None,
-        "{name:string}",
+        "{name:string,kind?:sampler|synth}",
         Step
     ),
     spec!(
         "channel.remove",
-        "Remove channel",
+        "Delete",
         "",
-        None,
+        Some("Alt+Del"),
         "{id:uint}",
         Step
     ),
     spec!(
-        "channel.rename",
-        "Rename channel",
+        "channel.select",
+        "Select channel",
         "",
         None,
+        "{id:uint}",
+        None
+    ),
+    spec!(
+        "channel.rename",
+        "Rename",
+        "",
+        Some("F2"),
         "{id:uint,name:string}",
         Step
     ),
@@ -245,13 +264,14 @@ static SPECS: &[CommandSpec] = &[
         "{id:uint,mute:bool}",
         Step
     ),
+    spec!("channel.solo", "Solo channel", "", None, "{id:uint}", Step),
     spec!(
         "channel.volume.set",
         "Channel volume",
         "",
         None,
         "{id:uint,value:uint}",
-        Step
+        Coalesce
     ),
     spec!(
         "channel.pan.set",
@@ -259,6 +279,46 @@ static SPECS: &[CommandSpec] = &[
         "",
         None,
         "{id:uint,value:int}",
+        Coalesce
+    ),
+    spec!(
+        "channel.pitch.set",
+        "Channel pitch",
+        "",
+        None,
+        "{id:uint,value:int}",
+        Coalesce
+    ),
+    spec!(
+        "channel.root_key.set",
+        "Root key",
+        "",
+        None,
+        "{id:uint,value:uint}",
+        Step
+    ),
+    spec!(
+        "channel.swing_mix.set",
+        "Swing mix",
+        "",
+        None,
+        "{id:uint,value:uint}",
+        Step
+    ),
+    spec!(
+        "channel.cut.set",
+        "Cut groups",
+        "",
+        None,
+        "{id:uint,cut:uint,cut_by:uint}",
+        Step
+    ),
+    spec!(
+        "channel.color.set",
+        "Change color",
+        "",
+        None,
+        "{id:uint,color:uint|null}",
         Step
     ),
     spec!(
@@ -267,6 +327,62 @@ static SPECS: &[CommandSpec] = &[
         "",
         None,
         "{id:uint,value:uint}",
+        Step
+    ),
+    spec!(
+        "channel.mixer_target.free",
+        "Assign to free mixer track",
+        "",
+        Some("Ctrl+L"),
+        "{id:uint}",
+        Step
+    ),
+    spec!(
+        "channel.clone",
+        "Clone",
+        "",
+        Some("Alt+C"),
+        "{id:uint}",
+        Step
+    ),
+    spec!(
+        "channel.move",
+        "Move channel",
+        "",
+        Some("Alt+Up/Down"),
+        "{id:uint,delta:int}",
+        Step
+    ),
+    spec!(
+        "channel.kind.set",
+        "Replace",
+        "",
+        None,
+        "{id:uint,kind:sampler|synth}",
+        Step
+    ),
+    spec!(
+        "channel.synth.set",
+        "Synth parameters",
+        "",
+        None,
+        "{id:uint,params:SynthParams}",
+        Coalesce
+    ),
+    spec!(
+        "channel.sample.load",
+        "Load sample",
+        "",
+        None,
+        "{id:uint,path:string}",
+        Step
+    ),
+    spec!(
+        "channel.sample.remove",
+        "Remove sample",
+        "",
+        None,
+        "{id:uint}",
         Step
     ),
     spec!(
@@ -285,8 +401,287 @@ static SPECS: &[CommandSpec] = &[
         "{pattern:uint,channel:uint,from:uint,to:uint,on:bool}",
         Coalesce
     ),
-    spec!("project.swing.set", "Swing", "", None, "{value:uint}", Step),
+    spec!(
+        "step.props.set",
+        "Graph editor",
+        "",
+        None,
+        "{pattern:uint,channel:uint,index:uint,velocity?,pan?,release?,pitch?,mod_x?,mod_y?,shift?,note?}",
+        Coalesce
+    ),
+    spec!(
+        "step.fill",
+        "Fill each N steps",
+        "",
+        None,
+        "{pattern:uint,channel:uint,every:1|2|4|8}",
+        Step
+    ),
+    spec!(
+        "step.clear",
+        "Clear steps",
+        "",
+        None,
+        "{pattern:uint,channel:uint}",
+        Step
+    ),
+    spec!(
+        "note.add",
+        "Add note",
+        "",
+        None,
+        "{pattern:uint,channel:uint,start:int,length:int,key:uint,velocity?,pan?,slide?,porta?,color?}",
+        Step
+    ),
+    spec!(
+        "note.delete",
+        "Delete notes",
+        "",
+        Some("Del"),
+        "{pattern:uint,channel:uint,indices?:[uint]}",
+        Step
+    ),
+    spec!(
+        "note.move",
+        "Move notes",
+        "",
+        None,
+        "{pattern:uint,channel:uint,indices?:[uint],dt?:int,dkey?:int}",
+        Coalesce
+    ),
+    spec!(
+        "note.length.set",
+        "Resize notes",
+        "",
+        None,
+        "{pattern:uint,channel:uint,indices?:[uint],length?:int,delta?:int}",
+        Coalesce
+    ),
+    spec!(
+        "note.props.set",
+        "Note properties",
+        "",
+        None,
+        "{pattern:uint,channel:uint,indices?:[uint],velocity?,pan?,release?,fine_pitch?,mod_x?,mod_y?,muted?,slide?,porta?,color?}",
+        Step
+    ),
+    spec!(
+        "note.transpose",
+        "Transpose",
+        "",
+        Some("Shift+Up/Down"),
+        "{pattern:uint,channel:uint,indices?:[uint],semitones:int}",
+        Step
+    ),
+    spec!(
+        "note.quantize",
+        "Quick quantize",
+        "",
+        Some("Ctrl+Q"),
+        "{pattern:uint,channel:uint,indices?:[uint],grid:int,starts_only?:bool}",
+        Step
+    ),
+    spec!(
+        "note.duplicate",
+        "Duplicate",
+        "",
+        Some("Ctrl+B"),
+        "{pattern:uint,channel:uint,indices?:[uint],grid:int}",
+        Step
+    ),
+    spec!(
+        "note.chop",
+        "Quick chop",
+        "",
+        Some("Ctrl+U"),
+        "{pattern:uint,channel:uint,indices?:[uint],grid:int}",
+        Step
+    ),
+    spec!(
+        "note.glue",
+        "Glue",
+        "",
+        Some("Ctrl+G"),
+        "{pattern:uint,channel:uint,indices?:[uint]}",
+        Step
+    ),
+    spec!(
+        "note.discard_lengths",
+        "Discard lengths",
+        "",
+        Some("Shift+D"),
+        "{pattern:uint,channel:uint,indices?:[uint],grid:int}",
+        Step
+    ),
+    spec!(
+        "mixer.track.volume.set",
+        "Fader",
+        "",
+        None,
+        "{track:uint,value:int}",
+        Coalesce
+    ),
+    spec!(
+        "mixer.track.pan.set",
+        "Mixer pan",
+        "",
+        None,
+        "{track:uint,value:int}",
+        Coalesce
+    ),
+    spec!(
+        "mixer.track.stereo_sep.set",
+        "Stereo separation",
+        "",
+        None,
+        "{track:uint,value:int}",
+        Coalesce
+    ),
+    spec!(
+        "mixer.track.mute.set",
+        "Mute track",
+        "",
+        None,
+        "{track:uint,value:bool}",
+        Step
+    ),
+    spec!(
+        "mixer.track.solo",
+        "Solo track",
+        "",
+        None,
+        "{track:uint}",
+        Step
+    ),
+    spec!(
+        "mixer.track.invert.set",
+        "Invert phase",
+        "",
+        None,
+        "{track:uint,value:bool}",
+        Step
+    ),
+    spec!(
+        "mixer.track.swap.set",
+        "Swap channels",
+        "",
+        None,
+        "{track:uint,value:bool}",
+        Step
+    ),
+    spec!(
+        "mixer.track.to_master.set",
+        "Send to Master",
+        "",
+        None,
+        "{track:uint,value:bool}",
+        Step
+    ),
+    spec!(
+        "mixer.track.fx_enabled.set",
+        "FX master switch",
+        "",
+        None,
+        "{track:uint,value:bool}",
+        Step
+    ),
+    spec!(
+        "mixer.track.rename",
+        "Rename track",
+        "",
+        Some("F2"),
+        "{track:uint,name:string}",
+        Step
+    ),
+    spec!(
+        "mixer.send.set",
+        "Send",
+        "",
+        None,
+        "{from:uint,to:uint,level?:uint}",
+        Coalesce
+    ),
+    spec!(
+        "mixer.send.remove",
+        "Remove send",
+        "",
+        None,
+        "{from:uint,to:uint}",
+        Step
+    ),
+    spec!(
+        "mixer.fx.add",
+        "Add effect",
+        "",
+        None,
+        "{track:uint,kind:eq|delay|reverb|compressor|limiter|distortion|chorus|gate}",
+        Step
+    ),
+    spec!(
+        "mixer.fx.remove",
+        "Delete effect",
+        "",
+        None,
+        "{track:uint,slot:uint}",
+        Step
+    ),
+    spec!(
+        "mixer.fx.move",
+        "Move effect",
+        "",
+        None,
+        "{track:uint,slot:uint,delta:int}",
+        Step
+    ),
+    spec!(
+        "mixer.fx.enabled.set",
+        "Effect on/off",
+        "",
+        None,
+        "{track:uint,slot:uint,value:bool}",
+        Step
+    ),
+    spec!(
+        "mixer.fx.mix.set",
+        "Effect mix",
+        "",
+        None,
+        "{track:uint,slot:uint,value:uint}",
+        Coalesce
+    ),
+    spec!(
+        "mixer.fx.set",
+        "Effect parameters",
+        "",
+        None,
+        "{track:uint,slot:uint,kind:FxKind}",
+        Coalesce
+    ),
+    spec!(
+        "project.swing.set",
+        "Swing",
+        "",
+        None,
+        "{value:uint}",
+        Coalesce
+    ),
     spec!("project.ppq.set", "PPQ", "", None, "{value:uint}", Step),
+    spec!(
+        "project.pan_law.set",
+        "Panning law",
+        "",
+        None,
+        "{value:circular|triangular}",
+        Step
+    ),
+    spec!(
+        "project.time_sig.set",
+        "Time signature",
+        "",
+        None,
+        "{num:uint,den:uint}",
+        Step
+    ),
     spec!(
         "playlist.track.add",
         "Add track",
@@ -356,6 +751,13 @@ pub(super) fn parse<T: DeserializeOwned>(id: &str, params: Value) -> Result<T, C
     })
 }
 
+pub(super) fn invalid(id: &str, message: impl Into<String>) -> CmdError {
+    CmdError::InvalidParams {
+        command: id.to_owned(),
+        message: message.into(),
+    }
+}
+
 pub(super) fn empty(id: &str, params: Value) -> Result<(), CmdError> {
     let _: Empty = parse(id, params)?;
     Ok(())
@@ -377,6 +779,8 @@ pub(super) fn dispatch(session: &mut Session, id: &str, params: Value) -> Result
         Some("step") => step::run(session, id, params),
         Some("project") => project::run(session, id, params),
         Some("playlist") => playlist::run(session, id, params),
+        Some("note") => note::run(session, id, params),
+        Some("mixer") => mixer::run(session, id, params),
         _ => Err(CmdError::UnknownCommand(id.to_owned())),
     }
 }

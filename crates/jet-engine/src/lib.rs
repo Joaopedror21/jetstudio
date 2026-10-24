@@ -1,16 +1,20 @@
-//! Headless session, commands, history and silent transport for M1.
+//! Headless session, commands, history, transport and the audio render seam.
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 mod cmd;
 mod history;
+mod samples;
 mod transport;
 
 pub use cmd::{CommandSpec, DisabledReason, command_specs};
 pub use history::History;
+pub use samples::SamplePool;
 pub use transport::{Clock, ManualClock, PlayMode, TransportSnapshot, TransportState, WallClock};
 
-use jet_model::{PatternId, Project};
+use jet_audio_graph::{RenderPlan, TransportSync};
+use jet_model::{ChannelId, PatternId, Project};
+use jet_seq::Source;
 use jet_time::Tick;
 use serde::Serialize;
 use serde_json::Value;
@@ -51,15 +55,25 @@ impl SnapshotPublisher for NullPublisher {
     fn on_change(&mut self, _revision: u64, _project: Arc<Project>) {}
 }
 
+/// What the render plan depends on; a change means the plan must be rebuilt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlanKey {
+    pub revision: u64,
+    pub source: Source,
+    pub samples: u64,
+}
+
 pub struct Session {
     project: Arc<Project>,
     history: History,
     transport: transport::Transport,
     selected_pattern: PatternId,
-    selected_channel: Option<jet_model::ChannelId>,
+    selected_channel: Option<ChannelId>,
     path: Option<PathBuf>,
     revision: u64,
     publisher: Box<dyn SnapshotPublisher>,
+    samples: SamplePool,
+    panic_requested: bool,
 }
 
 impl Session {
@@ -83,6 +97,8 @@ impl Session {
             path: None,
             revision: 0,
             publisher: Box::new(NullPublisher),
+            samples: SamplePool::default(),
+            panic_requested: false,
         }
     }
 
@@ -90,30 +106,26 @@ impl Session {
         project
             .validate()
             .map_err(|e| CmdError::Failed(e.to_string()))?;
-        let selected_pattern = project
+        let mut session = Self::new_default();
+        session.selected_pattern = project
             .patterns
             .first()
             .map(|p| p.id)
             .unwrap_or(PatternId(1));
-        Ok(Self {
-            project: Arc::new(project),
-            history: History::default(),
-            transport: transport::Transport::new(Box::new(WallClock::default())),
-            selected_pattern,
-            selected_channel: None,
-            path: None,
-            revision: 0,
-            publisher: Box::new(NullPublisher),
-        })
+        session.project = Arc::new(project);
+        Ok(session)
     }
 
     pub fn project(&self) -> &Project {
         &self.project
     }
+    pub fn project_arc(&self) -> Arc<Project> {
+        Arc::clone(&self.project)
+    }
     pub fn selected_pattern(&self) -> PatternId {
         self.selected_pattern
     }
-    pub fn selected_channel(&self) -> Option<jet_model::ChannelId> {
+    pub fn selected_channel(&self) -> Option<ChannelId> {
         self.selected_channel
     }
     pub fn path(&self) -> Option<&std::path::Path> {
@@ -122,9 +134,72 @@ impl Session {
     pub fn revision(&self) -> u64 {
         self.revision
     }
+    pub fn samples(&self) -> &SamplePool {
+        &self.samples
+    }
+
+    /// Material the transport plays now [Manual: toolbar_panels, "PAT/SONG"].
+    pub fn play_source(&self) -> Source {
+        match self.transport.mode() {
+            PlayMode::Pattern => Source::Pattern(self.selected_pattern),
+            PlayMode::Song => Source::Song,
+        }
+    }
+
+    /// Loop length of the playing material in ticks.
+    pub fn loop_length(&self) -> i64 {
+        match self.play_source() {
+            Source::Pattern(id) => self
+                .project
+                .pattern(id)
+                .map(|pattern| jet_seq::pattern_length(&self.project, pattern))
+                .unwrap_or(1),
+            Source::Song => jet_seq::song_length(&self.project),
+        }
+        .max(1)
+    }
+
+    /// Transport position wrapped into the playing material, as the renderer loops it.
     pub fn transport_snapshot(&self) -> TransportSnapshot {
-        self.transport
-            .snapshot(self.project.settings.ppq, self.project.settings.tempo)
+        let mut snapshot = self
+            .transport
+            .snapshot(self.project.settings.ppq, self.project.settings.tempo);
+        snapshot.position = Tick(snapshot.position.0.rem_euclid(self.loop_length()));
+        snapshot
+    }
+
+    /// Transport state for the renderer; both use the same frame counter and formula.
+    pub fn transport_sync(&self) -> TransportSync {
+        let (playing, anchor_tick, anchor_frame) = self.transport.anchor();
+        TransportSync {
+            playing,
+            anchor_tick: anchor_tick.0,
+            anchor_frame,
+        }
+    }
+
+    /// Swap the transport clock, e.g. to the audio device's frame counter.
+    pub fn set_clock(&mut self, clock: Box<dyn Clock>) {
+        self.transport.set_clock(
+            clock,
+            self.project.settings.ppq,
+            self.project.settings.tempo,
+        );
+    }
+
+    pub fn plan_key(&self) -> PlanKey {
+        PlanKey {
+            revision: self.revision,
+            source: self.play_source(),
+            samples: self.samples.generation(),
+        }
+    }
+
+    /// Compile the current project for live playback at `rate`.
+    pub fn build_plan(&self, rate: u32) -> RenderPlan {
+        jet_audio_graph::build_plan(&self.project, self.play_source(), rate, true, &|id| {
+            self.samples.get(id)
+        })
     }
 
     pub fn set_publisher(&mut self, publisher: Box<dyn SnapshotPublisher>) {
@@ -211,6 +286,11 @@ impl Session {
         self.revision = self.revision.saturating_add(1);
         self.publisher
             .on_change(self.revision, Arc::clone(&self.project));
+    }
+
+    /// True once after `transport.panic`; the audio host then stops every voice.
+    pub fn take_panic(&mut self) -> bool {
+        std::mem::take(&mut self.panic_requested)
     }
 
     pub fn seek(&mut self, tick: Tick) {

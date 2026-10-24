@@ -3,7 +3,6 @@ use crate::{CmdError, Session};
 use jet_model::{Pattern, PatternId, PatternLength};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,13 +69,9 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                     return Err(CmdError::Disabled("Pattern limit reached".into()));
                 }
                 new_id = project.ids.pattern();
-                project.patterns.push(Pattern {
-                    id: new_id,
-                    name: format!("Pattern {}", new_id.0),
-                    color: None,
-                    length: PatternLength::Auto,
-                    steps: BTreeMap::new(),
-                });
+                project
+                    .patterns
+                    .push(Pattern::new(new_id, format!("Pattern {}", new_id.0)));
                 Ok(())
             })?;
             session.selected_pattern = new_id;

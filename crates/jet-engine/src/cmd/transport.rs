@@ -37,6 +37,11 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                 .pause(session.project.settings.ppq, session.project.settings.tempo);
             Ok(true)
         }
+        "transport.panic" => {
+            empty(id, params)?;
+            session.panic_requested = true;
+            Ok(true)
+        }
         "transport.mode.toggle" => {
             empty(id, params)?;
             session.transport.toggle_mode();

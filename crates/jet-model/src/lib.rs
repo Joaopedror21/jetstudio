@@ -1,9 +1,11 @@
 #![forbid(unsafe_code)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 //! Persistent project data. Selection, scroll, focus and open windows belong to the UI.
 
 use jet_time::{Ppq, Tempo, Tick, TimeError, TimeSig};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
@@ -14,6 +16,17 @@ pub const MAX_INSERTS: usize = 500;
 pub const MAX_TRACKS: usize = 10_000; // Our file-input safety limit.
 pub const MAX_CLIPS: usize = 1_000_000; // Our file-input safety limit.
 pub const MAX_RESOURCES: usize = 100_000; // Our file-input safety limit.
+pub const MAX_NOTES_PER_SEQUENCE: usize = 1_000_000; // Our file-input safety limit.
+/// Highest note key. FL's keyboard spans C0..B10, 132 keys [Manual: pianoroll]; 60 = C5.
+pub const MAX_KEY: u8 = 131;
+/// Default Sampler root key [Manual: chansettings_misc, "The default Root Key is C5"].
+pub const DEFAULT_ROOT_KEY: u8 = 60;
+/// Default Sampler volume knob position [Manual: channelrack, "-5.2 dB (78%)"].
+pub const DEFAULT_CHANNEL_VOLUME: u16 = 781;
+/// Default velocity [Manual: mixer_levelsandmixing, "The default note velocity ... is 100"].
+pub const DEFAULT_VELOCITY: u8 = 100;
+/// Fader position that maps to 0 dB. Hypothesis H-MIX-1 in docs/FL_STUDIO_COMPLETE_FEATURES.md.
+pub const MIXER_UNITY: u16 = 800;
 
 macro_rules! id_type {
     ($name:ident) => {
@@ -98,6 +111,16 @@ impl IdAllocator {
     }
 }
 
+/// Project panning law [Manual: songsettings_settings, "Panning law"].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PanLaw {
+    /// Level drops 3 dB at center pan.
+    #[default]
+    Circular,
+    /// No level compensation as a function of pan position.
+    Triangular,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectSettings {
     pub ppq: Ppq,
@@ -109,6 +132,8 @@ pub struct ProjectSettings {
     pub main_volume: u16,
     /// Internal fixed-point parameter, -1000..=1000. This is not a measured UI scale.
     pub main_pitch: i16,
+    #[serde(default)]
+    pub pan_law: PanLaw,
 }
 
 impl Default for ProjectSettings {
@@ -121,13 +146,85 @@ impl Default for ProjectSettings {
             swing: 0,
             main_volume: 1000,
             main_pitch: 0,
+            pan_law: PanLaw::Circular,
         }
+    }
+}
+
+impl ProjectSettings {
+    /// Ticks in one Step Sequencer step, or `None` when the PPQ cannot represent it.
+    pub fn step_ticks(&self) -> Option<i64> {
+        let beat = i64::from(self.time_sig.ticks_per_beat(self.ppq).ok()?);
+        let per_beat = i64::from(self.steps_per_beat);
+        (per_beat > 0 && beat % per_beat == 0).then(|| beat / per_beat)
+    }
+
+    pub fn beat_ticks(&self) -> Option<i64> {
+        self.time_sig.ticks_per_beat(self.ppq).ok().map(i64::from)
+    }
+
+    pub fn bar_ticks(&self) -> Option<i64> {
+        Some(self.beat_ticks()? * i64::from(self.time_sig.num))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Waveform {
+    #[default]
+    Saw,
+    Square,
+    Triangle,
+    Sine,
+    Noise,
+}
+
+/// Parameters of the built-in synthesizer (our own design, not a copy of an FL plugin).
+/// Times are milliseconds; levels are 0..=1000.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SynthParams {
+    pub waveform: Waveform,
+    pub attack_ms: u16,
+    pub decay_ms: u16,
+    pub sustain: u16,
+    pub release_ms: u16,
+    /// Low-pass cutoff in Hz.
+    pub cutoff_hz: u16,
+    pub resonance: u16,
+    /// Detune of a second oscillator in cents; zero disables it.
+    pub detune_cents: i16,
+}
+
+impl Default for SynthParams {
+    fn default() -> Self {
+        Self {
+            waveform: Waveform::Saw,
+            attack_ms: 5,
+            decay_ms: 200,
+            sustain: 700,
+            release_ms: 120,
+            cutoff_hz: 4000,
+            resonance: 200,
+            detune_cents: 7,
+        }
+    }
+}
+
+impl SynthParams {
+    pub fn valid(&self) -> bool {
+        self.sustain <= 1000
+            && self.resonance <= 1000
+            && (20..=20_000).contains(&self.cutoff_hz)
+            && self.attack_ms <= 10_000
+            && self.decay_ms <= 10_000
+            && self.release_ms <= 10_000
+            && i32::from(self.detune_cents).abs() <= 100
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChannelKind {
     Sampler { sample: Option<ResourceId> },
+    Synth(SynthParams),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,20 +241,63 @@ pub struct Channel {
     /// Zero refers to Master; positive values refer to inserts.
     pub mixer_target: u16,
     pub group: Option<String>,
+    /// Channel pitch offset in cents [Manual: channelrack, "Transpose selected"].
+    #[serde(default)]
+    pub pitch: i16,
+    /// Key that plays a sample at its recorded pitch.
+    #[serde(default = "default_root_key")]
+    pub root_key: u8,
+    /// Per-channel swing multiplier 0..=1000, 100% by default [Manual: channelrack, "Global Swing"].
+    #[serde(default = "default_swing_mix")]
+    pub swing_mix: u16,
+    /// Cut group; 0 means none [Manual: chansettings_misc, "Cut Groups"].
+    #[serde(default)]
+    pub cut: u8,
+    /// Cut-by group; 0 means none.
+    #[serde(default)]
+    pub cut_by: u8,
+}
+
+fn default_root_key() -> u8 {
+    DEFAULT_ROOT_KEY
+}
+
+fn default_swing_mix() -> u16 {
+    1000
 }
 
 impl Channel {
     pub fn sampler(id: ChannelId, name: impl Into<String>) -> Self {
+        Self::with_kind(id, name, ChannelKind::Sampler { sample: None })
+    }
+
+    pub fn synth(id: ChannelId, name: impl Into<String>) -> Self {
+        Self::with_kind(id, name, ChannelKind::Synth(SynthParams::default()))
+    }
+
+    pub fn with_kind(id: ChannelId, name: impl Into<String>, kind: ChannelKind) -> Self {
         Self {
             id,
             name: name.into(),
             color: None,
-            kind: ChannelKind::Sampler { sample: None },
+            kind,
             mute: false,
-            volume: 1000,
+            volume: DEFAULT_CHANNEL_VOLUME,
             pan: 0,
             mixer_target: 0,
             group: None,
+            pitch: 0,
+            root_key: DEFAULT_ROOT_KEY,
+            swing_mix: 1000,
+            cut: 0,
+            cut_by: 0,
+        }
+    }
+
+    pub fn sample(&self) -> Option<ResourceId> {
+        match &self.kind {
+            ChannelKind::Sampler { sample } => *sample,
+            ChannelKind::Synth(_) => None,
         }
     }
 }
@@ -168,28 +308,47 @@ pub enum PatternLength {
     Steps(u16),
 }
 
+/// Per-step properties edited by the Graph Editor [Manual: channelrack, "Graph Editor"].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StepProps {
+    /// 0..=127.
     pub velocity: u8,
+    /// -1000..=1000.
     pub pan: i16,
     pub release: u8,
+    /// Fine pitch in cents, -100..=100 [Manual: "Fine pitch - +/- 100 cents"].
     pub pitch: i16,
     pub mod_x: u8,
     pub mod_y: u8,
+    /// Start delay in ticks, below one step [Manual: "100% shift equals 99% of ... one 16th note"].
     pub shift: i16,
+    /// Note key of the step [Manual: Graph Editor "Note" target].
+    #[serde(default = "default_root_key")]
+    pub note: u8,
 }
 
 impl Default for StepProps {
     fn default() -> Self {
         Self {
-            velocity: 100,
+            velocity: DEFAULT_VELOCITY,
             pan: 0,
             release: 0,
             pitch: 0,
             mod_x: 0,
             mod_y: 0,
             shift: 0,
+            note: DEFAULT_ROOT_KEY,
         }
+    }
+}
+
+impl StepProps {
+    pub fn valid(&self) -> bool {
+        self.velocity <= 127
+            && i32::from(self.pan).abs() <= 1000
+            && i32::from(self.pitch).abs() <= 100
+            && self.shift >= 0
+            && self.note <= MAX_KEY
     }
 }
 
@@ -215,6 +374,63 @@ impl StepSeq {
     }
 }
 
+/// A Piano roll note. Times are project ticks relative to the pattern start.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Note {
+    pub start: Tick,
+    /// Zero length is a step-style note [Manual: channelrack, "you need notes of zero length"].
+    pub length: Tick,
+    pub key: u8,
+    /// 0..=127.
+    pub velocity: u8,
+    /// -1000..=1000.
+    pub pan: i16,
+    pub release: u8,
+    /// Fine pitch in cents, -1200..=1200.
+    pub fine_pitch: i16,
+    pub mod_x: u8,
+    pub mod_y: u8,
+    pub muted: bool,
+    pub slide: bool,
+    pub porta: bool,
+    /// Note color group 0..=15 [Manual: pianoroll, "one of the 16 colors"].
+    pub color: u8,
+}
+
+impl Note {
+    pub fn new(start: Tick, length: Tick, key: u8) -> Self {
+        Self {
+            start,
+            length,
+            key,
+            velocity: DEFAULT_VELOCITY,
+            pan: 0,
+            release: 0,
+            fine_pitch: 0,
+            mod_x: 0,
+            mod_y: 0,
+            muted: false,
+            slide: false,
+            porta: false,
+            color: 0,
+        }
+    }
+
+    pub fn end(&self) -> Tick {
+        Tick(self.start.0.saturating_add(self.length.0))
+    }
+
+    pub fn valid(&self) -> bool {
+        self.start.0 >= 0
+            && self.length.0 >= 0
+            && self.key <= MAX_KEY
+            && self.velocity <= 127
+            && i32::from(self.pan).abs() <= 1000
+            && i32::from(self.fine_pitch).abs() <= 1200
+            && self.color <= 15
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pattern {
     pub id: PatternId,
@@ -222,6 +438,9 @@ pub struct Pattern {
     pub color: Option<u32>,
     pub length: PatternLength,
     pub steps: BTreeMap<ChannelId, StepSeq>,
+    /// Piano roll scores, kept sorted by (start, key).
+    #[serde(default)]
+    pub notes: BTreeMap<ChannelId, Vec<Note>>,
 }
 
 impl Pattern {
@@ -232,7 +451,23 @@ impl Pattern {
             color: None,
             length: PatternLength::Auto,
             steps: BTreeMap::new(),
+            notes: BTreeMap::new(),
         }
+    }
+
+    /// True when the pattern holds an active step or a note.
+    pub fn has_data(&self) -> bool {
+        self.steps
+            .values()
+            .any(|seq| seq.cells.iter().any(|cell| cell.on))
+            || self.notes.values().any(|notes| !notes.is_empty())
+    }
+
+    /// True when `channel` is driven by its Piano roll in this pattern.
+    pub fn uses_piano_roll(&self, channel: ChannelId) -> bool {
+        self.notes
+            .get(&channel)
+            .is_some_and(|notes| !notes.is_empty())
     }
 }
 
@@ -291,6 +526,10 @@ impl ClipInstance {
             muted: false,
         }
     }
+
+    pub fn end(&self) -> Tick {
+        Tick(self.start.0.saturating_add(self.length.0))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -320,11 +559,309 @@ impl Arrangement {
     }
 }
 
+/// FX slots per mixer track [Manual: mixer, "Each Track has 10 effects slots"].
+pub const MAX_FX_SLOTS: usize = 10;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EqShape {
+    Peak,
+    LowShelf,
+    HighShelf,
+    LowPass,
+    HighPass,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EqBand {
+    pub shape: EqShape,
+    pub freq_hz: u16,
+    /// Q × 1000.
+    pub q_milli: u16,
+    /// Gain in tenths of a dB.
+    pub gain_db_tenths: i16,
+}
+
+/// Built-in effects (our own designs). Integer fields keep the model `Eq` and diffable.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FxKind {
+    Eq(Vec<EqBand>),
+    Delay {
+        /// Delay time in thousandths of a beat.
+        time_beats_milli: u32,
+        feedback: u16,
+        mix: u16,
+        ping_pong: bool,
+    },
+    Reverb {
+        room: u16,
+        damping: u16,
+        width: u16,
+        mix: u16,
+    },
+    Compressor {
+        threshold_db_tenths: i16,
+        ratio_tenths: u16,
+        attack_ms: u16,
+        release_ms: u16,
+        makeup_db_tenths: i16,
+    },
+    Limiter {
+        ceiling_db_tenths: i16,
+        release_ms: u16,
+    },
+    Distortion {
+        drive: u16,
+        mix: u16,
+    },
+    Chorus {
+        rate_milli_hz: u32,
+        depth: u16,
+        mix: u16,
+    },
+    Gate {
+        threshold_db_tenths: i16,
+        release_ms: u16,
+    },
+}
+
+impl FxKind {
+    /// Stable identifiers used by commands and the UI.
+    pub const NAMES: [&'static str; 8] = [
+        "eq",
+        "delay",
+        "reverb",
+        "compressor",
+        "limiter",
+        "distortion",
+        "chorus",
+        "gate",
+    ];
+
+    pub fn default_for(name: &str) -> Option<Self> {
+        Some(match name {
+            "eq" => Self::Eq(vec![
+                EqBand {
+                    shape: EqShape::LowShelf,
+                    freq_hz: 120,
+                    q_milli: 707,
+                    gain_db_tenths: 0,
+                },
+                EqBand {
+                    shape: EqShape::Peak,
+                    freq_hz: 1000,
+                    q_milli: 1000,
+                    gain_db_tenths: 0,
+                },
+                EqBand {
+                    shape: EqShape::HighShelf,
+                    freq_hz: 8000,
+                    q_milli: 707,
+                    gain_db_tenths: 0,
+                },
+            ]),
+            "delay" => Self::Delay {
+                time_beats_milli: 750,
+                feedback: 400,
+                mix: 300,
+                ping_pong: true,
+            },
+            "reverb" => Self::Reverb {
+                room: 600,
+                damping: 500,
+                width: 1000,
+                mix: 250,
+            },
+            "compressor" => Self::Compressor {
+                threshold_db_tenths: -180,
+                ratio_tenths: 40,
+                attack_ms: 10,
+                release_ms: 120,
+                makeup_db_tenths: 0,
+            },
+            "limiter" => Self::Limiter {
+                ceiling_db_tenths: -3,
+                release_ms: 80,
+            },
+            "distortion" => Self::Distortion {
+                drive: 400,
+                mix: 1000,
+            },
+            "chorus" => Self::Chorus {
+                rate_milli_hz: 800,
+                depth: 500,
+                mix: 500,
+            },
+            "gate" => Self::Gate {
+                threshold_db_tenths: -500,
+                release_ms: 80,
+            },
+            _ => return None,
+        })
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Eq(_) => "eq",
+            Self::Delay { .. } => "delay",
+            Self::Reverb { .. } => "reverb",
+            Self::Compressor { .. } => "compressor",
+            Self::Limiter { .. } => "limiter",
+            Self::Distortion { .. } => "distortion",
+            Self::Chorus { .. } => "chorus",
+            Self::Gate { .. } => "gate",
+        }
+    }
+
+    fn valid(&self) -> bool {
+        match self {
+            Self::Eq(bands) => {
+                bands.len() <= 16
+                    && bands.iter().all(|band| {
+                        (10..=22_000).contains(&band.freq_hz)
+                            && (50..=40_000).contains(&band.q_milli)
+                            && i32::from(band.gain_db_tenths).abs() <= 240
+                    })
+            }
+            Self::Delay {
+                time_beats_milli,
+                feedback,
+                mix,
+                ..
+            } => (1..=16_000).contains(time_beats_milli) && *feedback <= 950 && *mix <= 1000,
+            Self::Reverb {
+                room,
+                damping,
+                width,
+                mix,
+            } => *room <= 1000 && *damping <= 1000 && *width <= 1000 && *mix <= 1000,
+            Self::Compressor {
+                threshold_db_tenths,
+                ratio_tenths,
+                attack_ms,
+                release_ms,
+                makeup_db_tenths,
+            } => {
+                (-600..=0).contains(threshold_db_tenths)
+                    && (10..=1000).contains(ratio_tenths)
+                    && *attack_ms <= 1000
+                    && *release_ms <= 5000
+                    && (0..=360).contains(makeup_db_tenths)
+            }
+            Self::Limiter {
+                ceiling_db_tenths,
+                release_ms,
+            } => (-300..=0).contains(ceiling_db_tenths) && *release_ms <= 5000,
+            Self::Distortion { drive, mix } => *drive <= 1000 && *mix <= 1000,
+            Self::Chorus {
+                rate_milli_hz,
+                depth,
+                mix,
+            } => (10..=10_000).contains(rate_milli_hz) && *depth <= 1000 && *mix <= 1000,
+            Self::Gate {
+                threshold_db_tenths,
+                release_ms,
+            } => (-900..=0).contains(threshold_db_tenths) && *release_ms <= 5000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FxSlot {
+    pub kind: FxKind,
+    pub enabled: bool,
+    /// Wet/dry mix 0..=1000 [Manual: mixer, "FX Level"].
+    pub mix: u16,
+}
+
+/// A post-fader send to another insert [Manual: mixer, "Post-fader Sends (default)"].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MixerSend {
+    /// Destination insert, 1..=500.
+    pub to: u16,
+    /// 0..=1000; zero keeps a sidechain-only link [Manual: mixer, "Sidechain Sends"].
+    pub level: u16,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MixerInsert {
     pub name: String,
+    /// Fader position 0..=1000; [`MIXER_UNITY`] is 0 dB.
+    #[serde(default = "default_mixer_volume")]
+    pub volume: u16,
+    /// -1000..=1000.
+    #[serde(default)]
+    pub pan: i16,
+    #[serde(default)]
+    pub mute: bool,
+    /// -1000 (wider) ..= 1000 (mono) [Manual: mixer, "Stereo Separation"].
+    #[serde(default)]
+    pub stereo_sep: i16,
+    #[serde(default)]
+    pub invert_phase: bool,
+    #[serde(default)]
+    pub swap_lr: bool,
+    /// Inserts reach the Master unless this is off [Manual: mixer, "Finally the audio is sent to the Master"].
+    #[serde(default = "default_true")]
+    pub to_master: bool,
+    #[serde(default)]
+    pub sends: Vec<MixerSend>,
+    /// Effects in processing order; at most [`MAX_FX_SLOTS`].
+    #[serde(default)]
+    pub fx: Vec<FxSlot>,
+    /// Master switch for all effects on the track [Manual: mixer, "Mixer Track FX master switch"].
+    #[serde(default = "default_true")]
+    pub fx_enabled: bool,
 }
 
+fn default_mixer_volume() -> u16 {
+    MIXER_UNITY
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl MixerInsert {
+    pub fn named(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            volume: MIXER_UNITY,
+            pan: 0,
+            mute: false,
+            stereo_sep: 0,
+            invert_phase: false,
+            swap_lr: false,
+            to_master: true,
+            sends: Vec::new(),
+            fx: Vec::new(),
+            fx_enabled: true,
+        }
+    }
+
+    /// The default insert at 1-based mixer index `index`.
+    pub fn default_for(index: u16) -> Self {
+        Self::named(format!("Insert {index}"))
+    }
+
+    fn valid(&self) -> bool {
+        self.name.len() <= 4096
+            && self.volume <= 1000
+            && i32::from(self.pan).abs() <= 1000
+            && i32::from(self.stereo_sep).abs() <= 1000
+            && self.sends.len() <= MAX_INSERTS
+            && self
+                .sends
+                .iter()
+                .all(|send| send.level <= 1000 && (1..=MAX_INSERTS as u16).contains(&send.to))
+            && self.fx.len() <= MAX_FX_SLOTS
+            && self
+                .fx
+                .iter()
+                .all(|slot| slot.mix <= 1000 && slot.kind.valid())
+    }
+}
+
+/// `inserts[i]` is insert `i + 1`; indices past the end behave as [`MixerInsert::default_for`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mixer {
     pub master: MixerInsert,
@@ -335,14 +872,58 @@ pub struct Mixer {
 impl Default for Mixer {
     fn default() -> Self {
         Self {
-            master: MixerInsert {
-                name: "Master".to_owned(),
-            },
-            current: MixerInsert {
-                name: "Current".to_owned(),
-            },
+            master: MixerInsert::named("Master"),
+            current: MixerInsert::named("Current"),
             inserts: Vec::new(),
         }
+    }
+}
+
+impl Mixer {
+    /// Track by mixer index: 0 is Master, 1..=500 are inserts.
+    pub fn track(&self, index: u16) -> Option<Cow<'_, MixerInsert>> {
+        match index {
+            0 => Some(Cow::Borrowed(&self.master)),
+            i if usize::from(i) <= MAX_INSERTS => Some(
+                self.inserts
+                    .get(usize::from(i) - 1)
+                    .map_or_else(|| Cow::Owned(MixerInsert::default_for(i)), Cow::Borrowed),
+            ),
+            _ => None,
+        }
+    }
+
+    /// Mutable track by mixer index, materializing default inserts up to `index`.
+    pub fn track_mut(&mut self, index: u16) -> Option<&mut MixerInsert> {
+        match index {
+            0 => Some(&mut self.master),
+            i if usize::from(i) <= MAX_INSERTS => {
+                while self.inserts.len() < usize::from(i) {
+                    let next = self.inserts.len() as u16 + 1;
+                    self.inserts.push(MixerInsert::default_for(next));
+                }
+                self.inserts.get_mut(usize::from(i) - 1)
+            }
+            _ => None,
+        }
+    }
+
+    /// True when a send path leads from insert `from` back to itself through `to`.
+    pub fn would_cycle(&self, from: u16, to: u16) -> bool {
+        let mut stack = vec![to];
+        let mut seen = BTreeSet::new();
+        while let Some(index) = stack.pop() {
+            if index == from {
+                return true;
+            }
+            if !seen.insert(index) {
+                continue;
+            }
+            if let Some(track) = self.inserts.get(usize::from(index).wrapping_sub(1)) {
+                stack.extend(track.sends.iter().map(|send| send.to));
+            }
+        }
+        false
     }
 }
 
@@ -390,6 +971,20 @@ impl Project {
         }
     }
 
+    pub fn channel(&self, id: ChannelId) -> Option<&Channel> {
+        self.channels.iter().find(|channel| channel.id == id)
+    }
+
+    pub fn pattern(&self, id: PatternId) -> Option<&Pattern> {
+        self.patterns.iter().find(|pattern| pattern.id == id)
+    }
+
+    pub fn active(&self) -> Option<&Arrangement> {
+        self.arrangements
+            .iter()
+            .find(|arrangement| arrangement.id == self.active_arrangement)
+    }
+
     pub fn validate(&self) -> Result<(), ModelError> {
         self.settings.ppq.validate()?;
         self.settings.tempo.validate()?;
@@ -415,6 +1010,22 @@ impl Project {
         if self.mixer.inserts.len() > MAX_INSERTS {
             return Err(ModelError::Limit("mixer inserts"));
         }
+        if !self.mixer.master.valid()
+            || !self.mixer.current.valid()
+            || !self.mixer.inserts.iter().all(MixerInsert::valid)
+        {
+            return Err(ModelError::InvalidValue("mixer track"));
+        }
+        for (index, insert) in self.mixer.inserts.iter().enumerate() {
+            let from = index as u16 + 1;
+            if insert
+                .sends
+                .iter()
+                .any(|send| send.to == from || self.mixer.would_cycle(from, send.to))
+            {
+                return Err(ModelError::InvalidValue("mixer routing cycle"));
+            }
+        }
         if self.resources.len() > MAX_RESOURCES {
             return Err(ModelError::Limit("resources"));
         }
@@ -432,12 +1043,23 @@ impl Project {
                 || channel.volume > 1000
                 || i32::from(channel.pan).abs() > 1000
                 || usize::from(channel.mixer_target) > MAX_INSERTS
+                || i32::from(channel.pitch).abs() > 4800
+                || channel.root_key > MAX_KEY
+                || channel.swing_mix > 1000
             {
                 return Err(ModelError::InvalidValue("channel"));
             }
-            let ChannelKind::Sampler { sample } = &channel.kind;
-            if sample.is_some_and(|id| !resources.contains(&id)) {
-                return Err(ModelError::Orphan("channel sample"));
+            match &channel.kind {
+                ChannelKind::Sampler { sample } => {
+                    if sample.is_some_and(|id| !resources.contains(&id)) {
+                        return Err(ModelError::Orphan("channel sample"));
+                    }
+                }
+                ChannelKind::Synth(params) => {
+                    if !params.valid() {
+                        return Err(ModelError::InvalidValue("synth parameters"));
+                    }
+                }
             }
         }
         for pattern in &self.patterns {
@@ -455,6 +1077,20 @@ impl Project {
                 }
                 if sequence.cells.len() > MAX_STEPS {
                     return Err(ModelError::Limit("steps"));
+                }
+                if sequence.cells.iter().any(|cell| !cell.props.valid()) {
+                    return Err(ModelError::InvalidValue("step properties"));
+                }
+            }
+            for (channel, notes) in &pattern.notes {
+                if !channels.contains(channel) {
+                    return Err(ModelError::Orphan("pattern channel"));
+                }
+                if notes.len() > MAX_NOTES_PER_SEQUENCE {
+                    return Err(ModelError::Limit("notes"));
+                }
+                if notes.iter().any(|note| !note.valid()) {
+                    return Err(ModelError::InvalidValue("note"));
                 }
             }
         }
@@ -529,6 +1165,14 @@ impl Project {
             }
             for marker in &mut arrangement.markers {
                 marker.at = rescale_tick(marker.at, old, next);
+            }
+        }
+        for pattern in &mut candidate.patterns {
+            for notes in pattern.notes.values_mut() {
+                for note in notes.iter_mut() {
+                    note.start = rescale_tick(note.start, old, next);
+                    note.length = rescale_tick(note.length, old, next);
+                }
             }
         }
         candidate.settings.ppq = next;
@@ -645,6 +1289,14 @@ mod tests {
             Err(ModelError::Orphan("pattern channel"))
         );
         project.patterns[0].steps.clear();
+        project.patterns[0]
+            .notes
+            .insert(ChannelId(999), vec![Note::new(Tick(0), Tick(24), 60)]);
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::Orphan("pattern channel"))
+        );
+        project.patterns[0].notes.clear();
         let track = project.ids.track();
         let clip = project.ids.clip();
         project.arrangements[0]
@@ -678,5 +1330,57 @@ mod tests {
         assert_eq!(project.set_ppq(Ppq(48)), Ok(()));
         assert_eq!(project.arrangements[0].clips[0].start, Tick(48));
         assert_eq!(project.arrangements[0].clips[0].length, Tick(49));
+    }
+
+    #[test]
+    fn ppq_change_rescales_piano_roll_notes() {
+        let mut project = Project::new();
+        let id = project.ids.channel();
+        project.channels.push(Channel::synth(id, "Synth"));
+        project.patterns[0]
+            .notes
+            .insert(id, vec![Note::new(Tick(96), Tick(48), 60)]);
+        assert_eq!(project.set_ppq(Ppq(192)), Ok(()));
+        let note = &project.patterns[0].notes[&id][0];
+        assert_eq!((note.start, note.length), (Tick(192), Tick(96)));
+    }
+
+    #[test]
+    fn mixer_tracks_default_lazily_and_reject_cycles() {
+        let mut project = Project::new();
+        assert_eq!(
+            project.mixer.track(7).map(|t| t.name.clone()),
+            Some("Insert 7".to_owned())
+        );
+        assert!(project.mixer.track(501).is_none());
+        let Some(one) = project.mixer.track_mut(1) else {
+            panic!("insert 1 exists");
+        };
+        one.sends.push(MixerSend { to: 2, level: 800 });
+        assert_eq!(project.validate(), Ok(()));
+        let Some(two) = project.mixer.track_mut(2) else {
+            panic!("insert 2 exists");
+        };
+        two.sends.push(MixerSend { to: 1, level: 800 });
+        assert_eq!(
+            project.validate(),
+            Err(ModelError::InvalidValue("mixer routing cycle"))
+        );
+    }
+
+    #[test]
+    fn version_one_documents_without_new_fields_still_parse() {
+        let json = r#"{"id":1,"name":"Kick","color":null,"kind":{"Sampler":{"sample":null}},
+            "mute":false,"volume":1000,"pan":0,"mixer_target":0,"group":null}"#;
+        let channel: Channel = serde_json::from_str(json).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(channel.root_key, DEFAULT_ROOT_KEY);
+        assert_eq!(channel.swing_mix, 1000);
+    }
+
+    #[test]
+    fn step_ticks_follow_ppq_and_steps_per_beat() {
+        let settings = ProjectSettings::default();
+        assert_eq!(settings.step_ticks(), Some(24));
+        assert_eq!(settings.bar_ticks(), Some(384));
     }
 }

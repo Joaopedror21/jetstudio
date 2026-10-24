@@ -97,7 +97,7 @@ fn layer_for(name: &str) -> Option<u8> {
     match name {
         "jet-time" => Some(0),
         "jet-model" | "jet-format" => Some(1),
-        "jet-seq" | "jet-dsp" => Some(2),
+        "jet-seq" | "jet-dsp" | "jet-media" => Some(2),
         "jet-audio-graph" => Some(3),
         "jet-engine" | "jet-playback" => Some(4),
         "jet-control" => Some(5),
@@ -113,6 +113,7 @@ fn same_layer_edge_allowed(from: &str, to: &str) -> bool {
         (from, to),
         ("jet-format", "jet-model")
             | ("jet-dsp", "jet-seq")
+            | ("jet-media", "jet-dsp")
             | ("jet-playback", "jet-engine")
             | ("jet-fidelity", "jet-ui")
     )
