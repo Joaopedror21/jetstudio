@@ -714,6 +714,84 @@ fn audio_clips_play_their_sample_at_the_recorded_level() {
 }
 
 #[test]
+fn audio_clip_gain_fades_and_reverse_shape_the_render() {
+    let mut session = session_120();
+    let wav = temp("ramp_clip.wav");
+    // One second rising from 0 to 1, so reverse is visible.
+    let ramp: Vec<f32> = (0..48_000).map(|i| i as f32 / 48_000.0).collect();
+    write_wav(&wav, 48_000, 1, &ramp, WavFormat::Float32).unwrap();
+    session
+        .execute("playlist.audio.add", json!({"path": wav, "start": 0}))
+        .unwrap();
+    let id = session.project().arrangements[0].clips[0].id.0;
+    let pan_law = 10f32.powf(-3.0103 / 20.0);
+    let (plain, _) = export(&mut session, "song");
+    assert!((plain[24_000] - 0.5 * pan_law).abs() < 1e-3);
+
+    // -6.02 dB clip gain halves the level.
+    session
+        .execute(
+            "playlist.clip.audio.set",
+            json!({"id": id, "gain_cdb": -602}),
+        )
+        .unwrap();
+    let (left, _) = export(&mut session, "song");
+    assert!((left[24_000] / plain[24_000] - 0.5).abs() < 1e-3);
+
+    // 100 ms fade-in and 200 ms fade-out: half way through each the level is half.
+    session
+        .execute(
+            "playlist.clip.audio.set",
+            json!({"id": id, "gain_cdb": 0, "fade_in_ms": 100, "fade_out_ms": 200}),
+        )
+        .unwrap();
+    let (left, _) = export(&mut session, "song");
+    assert!((left[2_400] / plain[2_400] - 0.5).abs() < 1e-3, "fade-in");
+    assert!(
+        (left[24_000] / plain[24_000] - 1.0).abs() < 1e-4,
+        "untouched"
+    );
+    assert!(
+        (left[43_200] / plain[43_200] - 0.5).abs() < 1e-3,
+        "fade-out"
+    );
+    assert!(left[47_990].abs() < 1e-3, "silent at the clip end");
+
+    // Reverse plays the ramp backwards.
+    session
+        .execute(
+            "playlist.clip.audio.set",
+            json!({"id": id, "fade_in_ms": 0, "fade_out_ms": 0, "reverse": true}),
+        )
+        .unwrap();
+    let (left, _) = export(&mut session, "song");
+    assert!(left[100] > 0.99 * pan_law, "starts at the end of the ramp");
+    assert!(left[47_000] < 0.05);
+
+    // Below -96 dB the gain snaps to -inf; out-of-range gain is refused.
+    session
+        .execute(
+            "playlist.clip.audio.set",
+            json!({"id": id, "gain_cdb": -12_000}),
+        )
+        .unwrap();
+    assert_eq!(
+        session.project().arrangements[0].clips[0].audio.gain_cdb,
+        jet_model::AudioClipProps::GAIN_SILENT
+    );
+    let (left, _) = export(&mut session, "song");
+    assert!(left.iter().all(|v| *v == 0.0));
+    assert!(
+        session
+            .execute(
+                "playlist.clip.audio.set",
+                json!({"id": id, "gain_cdb": 4_000}),
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn midi_export_import_and_note_clipboard() {
     let mut session = session_120();
     session

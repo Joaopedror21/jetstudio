@@ -748,6 +748,46 @@ pub struct ClipInstance {
     pub offset: Tick,
     pub source: ClipSource,
     pub muted: bool,
+    /// Audio Clip instance settings (ignored by other clips).
+    #[serde(default)]
+    pub audio: AudioClipProps,
+}
+
+/// "Clip Properties allow you to work on instancies of a parent Audio Clip and create 'variants'
+/// with different Gain, Pitch and Reverse settings"; "Audio Clips include integrated Volume
+/// envelopes. Controls work per-instance" [Manual: playlist_audioclip].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioClipProps {
+    /// Clip gain in hundredths of a dB: "+36 dB to -inf ... Below -96 dB the level snaps to -inf"
+    /// (`GAIN_SILENT`).
+    pub gain_cdb: i16,
+    /// "Type in a fade value in milliseconds (ms)".
+    pub fade_in_ms: u32,
+    pub fade_out_ms: u32,
+    pub reverse: bool,
+}
+
+impl AudioClipProps {
+    pub const GAIN_SILENT: i16 = i16::MIN;
+    pub const GAIN_MAX_CDB: i16 = 3600;
+    pub const GAIN_MIN_CDB: i16 = -9600;
+    pub const MAX_FADE_MS: u32 = 600_000;
+
+    pub fn valid(&self) -> bool {
+        (self.gain_cdb == Self::GAIN_SILENT
+            || (Self::GAIN_MIN_CDB..=Self::GAIN_MAX_CDB).contains(&self.gain_cdb))
+            && self.fade_in_ms <= Self::MAX_FADE_MS
+            && self.fade_out_ms <= Self::MAX_FADE_MS
+    }
+
+    /// Linear gain factor.
+    pub fn gain(&self) -> f64 {
+        if self.gain_cdb == Self::GAIN_SILENT {
+            0.0
+        } else {
+            10f64.powf(f64::from(self.gain_cdb) / 2000.0)
+        }
+    }
 }
 
 impl ClipInstance {
@@ -766,6 +806,7 @@ impl ClipInstance {
             offset: Tick(0),
             source: ClipSource::Pattern(pattern),
             muted: false,
+            audio: AudioClipProps::default(),
         }
     }
 

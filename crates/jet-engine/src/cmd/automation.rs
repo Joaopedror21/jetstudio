@@ -120,6 +120,7 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                     offset: Tick(0),
                     source: ClipSource::Automation(automation),
                     muted: false,
+                    audio: jet_model::AudioClipProps::default(),
                 });
                 Ok(())
             })

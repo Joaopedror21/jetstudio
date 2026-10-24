@@ -8,6 +8,8 @@ use crate::theme;
 use crate::widgets::{PaintCtx, hatch, vgradient};
 
 pub struct PlaylistView {
+    /// Milliseconds per tick at the project tempo (Audio Clip fades are in ms).
+    pub ms_per_tick: f64,
     pub pattern_id: u64,
     pub arrangement_name: String,
     pub ticks_per_bar: i64,
@@ -44,6 +46,8 @@ pub struct ClipView {
     /// For Audio Clips: waveform columns spanning the whole sample, its length in ticks and the
     /// clip offset.
     pub waveform: Option<ClipWaveform>,
+    /// Audio Clip instance gain, fades and reverse.
+    pub audio: Option<jet_model::AudioClipProps>,
 }
 
 /// (peak columns over the whole sample, sample length in ticks, clip offset in ticks).
@@ -102,6 +106,10 @@ pub struct PlaylistState {
     point_drag: Option<(u64, usize, i64, u16)>,
     /// Control point menu: (automation id, point index, where it opened).
     point_menu: Option<(u64, usize, egui::Pos2)>,
+    /// Audio Clip handle drag: (clip id, handle, value being set).
+    audio_drag: Option<(u64, AudioHandle, i32)>,
+    /// Audio Clip menu: (clip id, where it opened).
+    audio_menu: Option<(u64, egui::Pos2)>,
     /// Arrangements menu opened from the title bar.
     arrangement_menu: Option<egui::Pos2>,
     /// Horizontal zoom as a multiple of the measured default bar width.
@@ -118,6 +126,8 @@ impl Default for PlaylistState {
             drag: None,
             point_drag: None,
             point_menu: None,
+            audio_drag: None,
+            audio_menu: None,
             arrangement_menu: None,
             zoom: 1.0,
             scroll_bars: 0.0,
@@ -170,6 +180,14 @@ pub enum PlaylistAction {
     DeleteArrangement(u64),
     AddMarker,
     DeleteMarker(usize),
+    /// Audio Clip instance settings: `None` fields stay as they are.
+    ClipAudio {
+        id: u64,
+        gain_cdb: Option<i16>,
+        fade_in_ms: Option<u32>,
+        fade_out_ms: Option<u32>,
+        reverse: Option<bool>,
+    },
     AutoAddPoint {
         id: u64,
         at: i64,
@@ -808,16 +826,35 @@ pub fn paint_playlist(
                 let cy = body.center().y;
                 let half = body.height() * 0.45;
                 let x_start = body.left().max(clip_rect.left());
+                // "Show fade previews / gain previews - Shows the effect of the Fades and Gain
+                // controls on the waveform" [Manual: playlist_audioclip].
+                let props = clip.audio.unwrap_or_default();
+                let ms_to_px =
+                    |ms: u32| (f64::from(ms) / view.ms_per_tick.max(1e-9)) as f32 * px_per_tick;
+                let (fade_in, fade_out) = (ms_to_px(props.fade_in_ms), ms_to_px(props.fade_out_ms));
+                let preview = |x: f32| {
+                    let mut k = props.gain() as f32;
+                    let from_start = x - clip_rect.left();
+                    let to_end = clip_rect.right() - x;
+                    if fade_in > 0.0 && from_start < fade_in {
+                        k *= (from_start / fade_in).max(0.0);
+                    }
+                    if fade_out > 0.0 && to_end < fade_out {
+                        k *= (to_end / fade_out).max(0.0);
+                    }
+                    k
+                };
                 let mut x = x_start;
                 while x < body.right() {
                     let tick = (x - (x0 + 1.0)) / px_per_tick + *offset as f32;
                     let index = (f64::from(tick) / sample_ticks * columns.len() as f64) as isize;
                     if let Some((lo, hi)) = usize::try_from(index).ok().and_then(|i| columns.get(i))
                     {
+                        let k = preview(x);
                         wave_painter.line_segment(
                             [
-                                pos2(x, cy - hi.clamp(-1.0, 1.0) * half),
-                                pos2(x, cy - lo.clamp(-1.0, 1.0) * half),
+                                pos2(x, cy - (hi * k).clamp(-1.0, 1.0) * half),
+                                pos2(x, cy - (lo * k).clamp(-1.0, 1.0) * half),
                             ],
                             Stroke::new(1.0, t.picker_text),
                         );
@@ -942,6 +979,21 @@ pub fn paint_playlist(
                 _ => {}
             }
         }
+        if let Some(audio) = clip.audio {
+            audio_controls(
+                paint,
+                state,
+                &grid_painter,
+                clip,
+                audio,
+                clip_rect,
+                label_band.bottom(),
+                grid,
+                px_per_tick,
+                view.ms_per_tick,
+                &mut actions,
+            );
+        }
     }
 
     // Time markers on the ruler: click seeks, right-click deletes; Alt+T adds one at the
@@ -1057,6 +1109,7 @@ pub fn paint_playlist(
         .insert("playlist.grid", grid, "timeline", true, None);
     // Last, so the popups' items sit above every other control of the window.
     paint_point_menu(paint, state, &mut actions);
+    paint_audio_menu(paint, state, view, &mut actions);
     paint_arrangement_menu(paint, state, view, &mut actions);
     actions
 }
@@ -1281,6 +1334,247 @@ fn paint_arrangement_menu(
             } else {
                 actions.push(PlaylistAction::DeleteArrangement(view.arrangement_id));
             }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AudioHandle {
+    FadeIn,
+    FadeOut,
+    Gain,
+}
+
+/// Audio Clip volume envelope controls [Manual: playlist_audioclip, "Volume Envelopes &
+/// Controls"]: "Fade handles are the triangles on the upper edge of the Clip. Drag horizontally";
+/// "Gain controls are the semi-circles on the lower edge of Clips ... Click and drag vertically
+/// for +36 dB to -inf"; "Reset - (Alt/Opt+Click)". Right-click on a handle also resets it (the
+/// manual's right-click menus offer "Reset"). Sizes and the 0.25 dB per pixel drag rate are ours
+/// (UNMEASURED).
+#[allow(clippy::too_many_arguments)]
+fn audio_controls(
+    paint: &mut PaintCtx<'_>,
+    state: &mut PlaylistState,
+    painter: &egui::Painter,
+    clip: &ClipView,
+    audio: jet_model::AudioClipProps,
+    clip_rect: Rect,
+    body_top: f32,
+    grid: Rect,
+    px_per_tick: f32,
+    ms_per_tick: f64,
+    actions: &mut Vec<PlaylistAction>,
+) {
+    let t = *paint.tokens;
+    let ms_to_px = |ms: u32| (f64::from(ms) / ms_per_tick.max(1e-9)) as f32 * px_per_tick;
+    let px_to_ms = |px: f32| (f64::from(px.max(0.0) / px_per_tick) * ms_per_tick).round() as i32;
+    let live = |handle: AudioHandle, value: i32| match state.audio_drag {
+        Some((id, h, v)) if id == clip.id && h == handle => v,
+        _ => value,
+    };
+    let fade_in = live(AudioHandle::FadeIn, audio.fade_in_ms as i32).max(0) as u32;
+    let fade_out = live(AudioHandle::FadeOut, audio.fade_out_ms as i32).max(0) as u32;
+    let gain = live(AudioHandle::Gain, i32::from(audio.gain_cdb));
+    let width = clip_rect.width();
+    let x_in = clip_rect.left() + ms_to_px(fade_in).min(width);
+    let x_out = clip_rect.right() - ms_to_px(fade_out).min(width);
+
+    // Envelope line over the waveform.
+    let gp = painter.with_clip_rect(clip_rect.intersect(grid));
+    let (top, bottom) = (body_top + 2.0, clip_rect.bottom() - 2.0);
+    let line = Stroke::new(1.0, theme::shade(t.picker_text, 1.2));
+    if fade_in > 0 {
+        gp.line_segment([pos2(clip_rect.left(), bottom), pos2(x_in, top)], line);
+    }
+    if fade_out > 0 {
+        gp.line_segment([pos2(x_out, top), pos2(clip_rect.right(), bottom)], line);
+    }
+
+    let mut handle = |paint: &mut PaintCtx<'_>, which: AudioHandle, rect: Rect, hint: &str| {
+        let id = match which {
+            AudioHandle::FadeIn => format!("playlist.clip.{}.fade-in", clip.id),
+            AudioHandle::FadeOut => format!("playlist.clip.{}.fade-out", clip.id),
+            AudioHandle::Gain => format!("playlist.clip.{}.gain", clip.id),
+        };
+        let response = paint.hit(&id, rect.intersect(grid), "handle", true, hint);
+        let alt = paint.ui.input(|i| i.modifiers.alt);
+        let reset = |actions: &mut Vec<PlaylistAction>| {
+            actions.push(PlaylistAction::ClipAudio {
+                id: clip.id,
+                gain_cdb: (which == AudioHandle::Gain).then_some(0),
+                fade_in_ms: (which == AudioHandle::FadeIn).then_some(0),
+                fade_out_ms: (which == AudioHandle::FadeOut).then_some(0),
+                reverse: None,
+            });
+        };
+        if (response.clicked() && alt) || response.secondary_clicked() {
+            reset(actions);
+            return;
+        }
+        if response.dragged()
+            && let Some(p) = paint.ui.input(|i| i.pointer.interact_pos())
+        {
+            let value = match which {
+                AudioHandle::FadeIn => px_to_ms(p.x - clip_rect.left()),
+                AudioHandle::FadeOut => px_to_ms(clip_rect.right() - p.x),
+                AudioHandle::Gain => {
+                    let origin = paint.ui.input(|i| i.pointer.press_origin()).unwrap_or(p);
+                    let base = if audio.gain_cdb == jet_model::AudioClipProps::GAIN_SILENT {
+                        i32::from(jet_model::AudioClipProps::GAIN_MIN_CDB)
+                    } else {
+                        i32::from(audio.gain_cdb)
+                    };
+                    // 0.25 dB per pixel, up is louder; below -96 dB snaps to -inf.
+                    (base + ((origin.y - p.y) * 25.0) as i32).min(3600)
+                }
+            };
+            state.audio_drag = Some((clip.id, which, value));
+        }
+        if response.drag_stopped()
+            && let Some((id, h, value)) = state.audio_drag.take()
+            && id == clip.id
+            && h == which
+        {
+            let ms = value.clamp(0, 600_000) as u32;
+            actions.push(PlaylistAction::ClipAudio {
+                id,
+                gain_cdb: (which == AudioHandle::Gain)
+                    .then(|| value.clamp(i32::from(i16::MIN), 3600) as i16),
+                fade_in_ms: (which == AudioHandle::FadeIn).then_some(ms),
+                fade_out_ms: (which == AudioHandle::FadeOut).then_some(ms),
+                reverse: None,
+            });
+        }
+    };
+
+    // Fade handles: triangles on the upper edge.
+    let tri = |x: f32, left: bool| {
+        let (a, b) = if left { (x, x + 8.0) } else { (x - 8.0, x) };
+        vec![
+            pos2(a, body_top),
+            pos2(b, body_top),
+            pos2(if left { a } else { b }, body_top + 7.0),
+        ]
+    };
+    let mark = t.picker_text;
+    gp.add(egui::Shape::convex_polygon(
+        tri(x_in, true),
+        mark,
+        Stroke::NONE,
+    ));
+    gp.add(egui::Shape::convex_polygon(
+        tri(x_out, false),
+        mark,
+        Stroke::NONE,
+    ));
+    let fmt_ms = |ms: u32| format!("{ms} ms");
+    handle(
+        paint,
+        AudioHandle::FadeIn,
+        Rect::from_min_size(pos2(x_in - 2.0, body_top), vec2(11.0, 9.0)),
+        &format!(
+            "Fade in: {} - drag, Alt+click or right-click resets",
+            fmt_ms(fade_in)
+        ),
+    );
+    handle(
+        paint,
+        AudioHandle::FadeOut,
+        Rect::from_min_size(pos2(x_out - 9.0, body_top), vec2(11.0, 9.0)),
+        &format!(
+            "Fade out: {} - drag, Alt+click or right-click resets",
+            fmt_ms(fade_out)
+        ),
+    );
+    // Gain: a semi-circle on the lower edge.
+    let center = pos2(clip_rect.center().x, clip_rect.bottom());
+    gp.circle_filled(center, 5.0, mark);
+    let db = if gain <= i32::from(jet_model::AudioClipProps::GAIN_MIN_CDB) {
+        "-inf dB".to_owned()
+    } else {
+        format!("{:+.1} dB", f64::from(gain) / 100.0)
+    };
+    handle(
+        paint,
+        AudioHandle::Gain,
+        Rect::from_center_size(center - vec2(0.0, 3.0), vec2(12.0, 8.0)),
+        &format!("Clip gain: {db} - drag up/down, Alt+click or right-click resets"),
+    );
+
+    // Clip menu: the small triangle at the right of the title.
+    let menu = Rect::from_min_size(
+        pos2(clip_rect.right() - 13.0, clip_rect.top() + 2.0),
+        vec2(11.0, 12.0),
+    );
+    gp.add(egui::Shape::convex_polygon(
+        vec![
+            pos2(menu.left() + 1.0, menu.top() + 4.0),
+            pos2(menu.right() - 1.0, menu.top() + 4.0),
+            pos2(menu.center().x, menu.bottom() - 3.0),
+        ],
+        t.picker_text,
+        Stroke::NONE,
+    ));
+    if paint
+        .hit(
+            &format!("playlist.clip.{}.menu", clip.id),
+            menu.intersect(grid),
+            "menu",
+            true,
+            "Audio Clip menu: reverse, reset fades, reset gain",
+        )
+        .clicked()
+    {
+        state.audio_menu = Some((clip.id, menu.left_bottom()));
+    }
+}
+
+fn paint_audio_menu(
+    paint: &mut PaintCtx<'_>,
+    state: &mut PlaylistState,
+    view: &PlaylistView,
+    actions: &mut Vec<PlaylistAction>,
+) {
+    let Some((id, origin)) = state.audio_menu else {
+        return;
+    };
+    let Some(audio) = view.clips.iter().find(|c| c.id == id).and_then(|c| c.audio) else {
+        state.audio_menu = None;
+        return;
+    };
+    let items = [
+        crate::widgets::MenuItem {
+            label: if audio.reverse {
+                "Reverse: on"
+            } else {
+                "Reverse: off"
+            },
+            shortcut: "",
+            enabled: true,
+        },
+        crate::widgets::MenuItem {
+            label: "Reset fades",
+            shortcut: "",
+            enabled: audio.fade_in_ms > 0 || audio.fade_out_ms > 0,
+        },
+        crate::widgets::MenuItem {
+            label: "Reset gain",
+            shortcut: "",
+            enabled: audio.gain_cdb != 0,
+        },
+    ];
+    match paint.popup_menu("playlist.audio-menu", origin, &items) {
+        crate::widgets::MenuResult::Open => {}
+        crate::widgets::MenuResult::Dismissed => state.audio_menu = None,
+        crate::widgets::MenuResult::Chosen(choice) => {
+            state.audio_menu = None;
+            actions.push(PlaylistAction::ClipAudio {
+                id,
+                gain_cdb: (choice == 2).then_some(0),
+                fade_in_ms: (choice == 1).then_some(0),
+                fade_out_ms: (choice == 1).then_some(0),
+                reverse: (choice == 0).then_some(!audio.reverse),
+            });
         }
     }
 }

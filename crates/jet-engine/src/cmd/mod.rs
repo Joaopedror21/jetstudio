@@ -848,6 +848,14 @@ static SPECS: &[CommandSpec] = &[
         Step
     ),
     spec!(
+        "playlist.clip.audio.set",
+        "Audio Clip gain, fades and reverse",
+        "",
+        None,
+        "{id:uint,gain_cdb?:int,fade_in_ms?:uint,fade_out_ms?:uint,reverse?:bool}",
+        Coalesce
+    ),
+    spec!(
         "playlist.track.solo",
         "Solo track",
         "",

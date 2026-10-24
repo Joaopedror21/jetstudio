@@ -187,6 +187,7 @@ fn sampler_options(settings: &jet_model::SamplerSettings) -> jet_dsp::sampler::S
             )
         }),
         start_seconds: 0.0,
+        clip: None,
     }
 }
 

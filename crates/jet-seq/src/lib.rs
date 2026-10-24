@@ -41,6 +41,10 @@ pub struct NoteEvent {
     /// declick) at the end of `length` instead of being released.
     pub audio: bool,
     pub audio_offset: i64,
+    /// Audio Clip instance gain, fades and reverse.
+    pub clip: jet_model::AudioClipProps,
+    /// Ticks of the clip already elapsed when the voice starts (playback started inside it).
+    pub audio_elapsed: i64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,6 +166,8 @@ pub fn pattern_events(project: &Project, pattern: &Pattern, out: &mut Vec<NoteEv
                     color: note.color,
                     audio: false,
                     audio_offset: 0,
+                    clip: jet_model::AudioClipProps::default(),
+                    audio_elapsed: 0,
                 });
             }
             continue;
@@ -192,6 +198,8 @@ pub fn pattern_events(project: &Project, pattern: &Pattern, out: &mut Vec<NoteEv
                 color: 0,
                 audio: false,
                 audio_offset: 0,
+                clip: jet_model::AudioClipProps::default(),
+                audio_elapsed: 0,
             });
         }
     }
@@ -260,6 +268,8 @@ pub fn compile(project: &Project, source: Source) -> Sequence {
                                     color: 0,
                                     audio: true,
                                     audio_offset: clip.offset.0,
+                                    clip: clip.audio,
+                                    audio_elapsed: 0,
                                 });
                             }
                             continue;

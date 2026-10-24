@@ -38,6 +38,37 @@ pub struct SamplerOptions {
     pub envelope: Option<(f32, f32, f32, f32)>,
     /// Extra start position in seconds of the sample (Audio Clip offsets).
     pub start_seconds: f64,
+    /// Audio Clip instance gain and fades.
+    pub clip: Option<ClipEnvelope>,
+}
+
+/// Audio Clip volume envelope [Manual: playlist_audioclip, "Volume Envelopes & Controls"]: gain,
+/// linear fade-in from the clip start and fade-out ending at the clip end (hypothesis H-PL-2:
+/// the default fade curve is not described; ours is linear in amplitude).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipEnvelope {
+    pub gain: f32,
+    pub fade_in: u64,
+    pub fade_out: u64,
+    /// Clip length in output frames.
+    pub length: u64,
+    /// Frames of the clip already elapsed at the voice start.
+    pub position: u64,
+}
+
+impl ClipEnvelope {
+    #[inline]
+    fn amp(&self) -> f32 {
+        let mut amp = self.gain;
+        if self.fade_in > 0 && self.position < self.fade_in {
+            amp *= self.position as f32 / self.fade_in as f32;
+        }
+        let left = self.length.saturating_sub(self.position);
+        if self.fade_out > 0 && left < self.fade_out {
+            amp *= left as f32 / self.fade_out as f32;
+        }
+        amp
+    }
 }
 
 impl Default for SamplerOptions {
@@ -50,6 +81,7 @@ impl Default for SamplerOptions {
             reverse: false,
             envelope: None,
             start_seconds: 0.0,
+            clip: None,
         }
     }
 }
@@ -172,6 +204,10 @@ impl SamplerVoice {
                 let t = self.fade_left as f32 / self.fade_total as f32;
                 amp = 0.5 - 0.5 * (std::f32::consts::PI * t).cos();
                 self.fade_left -= 1;
+            }
+            if let Some(clip) = &mut self.options.clip {
+                amp *= clip.amp();
+                clip.position += 1;
             }
             if self.options.envelope.is_some() {
                 amp *= self.env.tick();

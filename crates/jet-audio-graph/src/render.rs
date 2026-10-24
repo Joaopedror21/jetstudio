@@ -349,6 +349,7 @@ impl Renderer {
             }
             let mut late = event;
             late.audio_offset += local - event.tick;
+            late.audio_elapsed = local - event.tick;
             late.length -= local - event.tick;
             let start_frame = self.frame;
             let release_frame = start_frame + self.ticks_to_frames(late.length).max(1);
@@ -375,6 +376,8 @@ impl Renderer {
             color: 0,
             audio: false,
             audio_offset: 0,
+            clip: jet_model::AudioClipProps::default(),
+            audio_elapsed: 0,
         };
         let frame = self.frame;
         self.start_voice(&event, frame, u64::MAX, true);
@@ -416,9 +419,19 @@ impl Renderer {
                 let mut voice = SamplerVoice::default();
                 let mut options = channel.sampler;
                 if event.audio {
-                    // Audio Clips ignore the Sampler page and start at their clip offset.
+                    // Audio Clips ignore the Sampler page and start at their clip offset; the
+                    // instance's gain, fades and reverse apply [Manual: playlist_audioclip].
                     options = jet_dsp::sampler::SamplerOptions::default();
                     options.start_seconds = self.ticks_to_seconds(event.audio_offset);
+                    options.reverse = event.clip.reverse;
+                    let ms = |ms: u32| u64::from(ms) * u64::from(rate) / 1000;
+                    options.clip = Some(jet_dsp::sampler::ClipEnvelope {
+                        gain: event.clip.gain() as f32,
+                        fade_in: ms(event.clip.fade_in_ms),
+                        fade_out: ms(event.clip.fade_out_ms),
+                        length: self.ticks_to_frames(event.audio_elapsed + event.length),
+                        position: self.ticks_to_frames(event.audio_elapsed),
+                    });
                 }
                 voice.start_with(
                     Arc::clone(sample),

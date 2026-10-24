@@ -1469,6 +1469,28 @@ impl JetApp {
                 PlaylistAction::SoloTrack(id) => {
                     self.execute("playlist.track.solo", json!({"id": id}))
                 }
+                PlaylistAction::ClipAudio {
+                    id,
+                    gain_cdb,
+                    fade_in_ms,
+                    fade_out_ms,
+                    reverse,
+                } => {
+                    let mut params = json!({"id": id});
+                    if let Some(v) = gain_cdb {
+                        params["gain_cdb"] = json!(v);
+                    }
+                    if let Some(v) = fade_in_ms {
+                        params["fade_in_ms"] = json!(v);
+                    }
+                    if let Some(v) = fade_out_ms {
+                        params["fade_out_ms"] = json!(v);
+                    }
+                    if let Some(v) = reverse {
+                        params["reverse"] = json!(v);
+                    }
+                    self.execute("playlist.clip.audio.set", params);
+                }
                 PlaylistAction::SelectArrangement(id) => {
                     self.execute("arrangement.select", json!({"id": id}));
                 }
@@ -2138,6 +2160,7 @@ impl JetApp {
                         automation,
                         waveform,
                         muted: clip.muted,
+                        audio: matches!(clip.source, ClipSource::Audio(_)).then_some(clip.audio),
                     }
                 })
                 .collect()
@@ -2148,6 +2171,9 @@ impl JetApp {
         // In Song mode the position marker is always shown [Manual: playlist, "Play Position Marker"].
         let song_running = snapshot.mode == PlayMode::Song;
         PlaylistView {
+            ms_per_tick: 60_000_000.0
+                / (f64::from(project.settings.tempo.0) * f64::from(project.settings.ppq.0))
+                    .max(1.0),
             pattern_id: self.session.selected_pattern().0,
             arrangement_name: arrangement
                 .map_or_else(|| "Arrangement".to_owned(), |a| a.name.clone()),
@@ -3744,6 +3770,64 @@ mod tests {
         );
         app.execute("edit.undo_step", json!({}));
         assert!(app.session.project().active().unwrap().clips.is_empty());
+    }
+
+    #[test]
+    fn audio_clip_handles_set_fades_gain_and_reverse() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        let wav =
+            std::env::temp_dir().join(format!("jetstudio-ui-clip-{}.wav", std::process::id()));
+        jet_media::write_wav(
+            &wav,
+            48_000,
+            1,
+            &vec![0.5; 4 * 48_000],
+            jet_media::WavFormat::Float32,
+        )
+        .unwrap();
+        app.execute("playlist.audio.add", json!({"path": wav, "start": 0}));
+        run_frame(&mut app, &ctx, Vec::new());
+        let audio = |app: &JetApp| app.session.project().arrangements[0].clips[0].audio;
+        let id = app.session.project().arrangements[0].clips[0].id.0;
+        let entry = |app: &JetApp, name: &str| {
+            app.probe().entries()[&format!("playlist.clip.{id}.{name}")].rect
+        };
+
+        // Drag the fade-in handle 40 px to the right.
+        let fade_in = entry(&app, "fade-in");
+        drag(
+            &mut app,
+            &ctx,
+            fade_in.center(),
+            fade_in.center() + vec2(40.0, 0.0),
+        );
+        assert!(audio(&app).fade_in_ms > 0, "{:?}", audio(&app));
+        // Right-click resets it.
+        run_frame(&mut app, &ctx, Vec::new());
+        let fade_in = entry(&app, "fade-in");
+        click_button(&mut app, &ctx, fade_in, PointerButton::Secondary);
+        assert_eq!(audio(&app).fade_in_ms, 0);
+
+        // Drag the gain handle 40 px up: +10 dB at 0.25 dB per pixel.
+        let gain = entry(&app, "gain");
+        drag(
+            &mut app,
+            &ctx,
+            gain.center(),
+            gain.center() - vec2(0.0, 40.0),
+        );
+        assert_eq!(audio(&app).gain_cdb, 1000);
+
+        // The clip menu toggles Reverse.
+        let menu = entry(&app, "menu");
+        click(&mut app, &ctx, menu);
+        run_frame(&mut app, &ctx, Vec::new());
+        let reverse = app.probe().entries()["playlist.audio-menu.item.0"].rect;
+        click(&mut app, &ctx, reverse);
+        assert!(audio(&app).reverse);
+        let _ = std::fs::remove_file(&wav);
     }
 
     #[test]

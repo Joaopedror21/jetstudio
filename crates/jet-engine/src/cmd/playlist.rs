@@ -66,6 +66,19 @@ struct MuteClip {
     id: u64,
     muted: bool,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClipAudio {
+    id: u64,
+    #[serde(default)]
+    gain_cdb: Option<i16>,
+    #[serde(default)]
+    fade_in_ms: Option<u32>,
+    #[serde(default)]
+    fade_out_ms: Option<u32>,
+    #[serde(default)]
+    reverse: Option<bool>,
+}
 
 /// The given track, or else the first track with no clip over `from..to` ("the first track with
 /// enough room"), or else a new track appended at the bottom. A track id is only allocated when
@@ -209,6 +222,7 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                     offset: Tick(0),
                     source: ClipSource::Audio(channel),
                     muted: false,
+                    audio: jet_model::AudioClipProps::default(),
                 });
                 Ok(())
             })?;
@@ -243,6 +257,7 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                     offset: Tick(0),
                     source: ClipSource::Pattern(PatternId(p.pattern)),
                     muted: false,
+                    audio: jet_model::AudioClipProps::default(),
                 });
                 Ok(())
             })
@@ -302,6 +317,44 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                     .find(|clip| clip.id == ClipId(p.id))
                     .ok_or_else(|| CmdError::Failed("clip does not exist".into()))?;
                 clip.muted = p.muted;
+                Ok(())
+            })
+        }
+        // Audio Clip instance gain, fades and reverse [Manual: playlist_audioclip]. Absent
+        // fields keep their value; a gain below -96 dB snaps to -inf.
+        "playlist.clip.audio.set" => {
+            let p: ClipAudio = parse(id, params)?;
+            session.edit_project(|project| {
+                let clip = active_arrangement_mut(project)?
+                    .clips
+                    .iter_mut()
+                    .find(|clip| clip.id == ClipId(p.id))
+                    .ok_or_else(|| CmdError::Failed("clip does not exist".into()))?;
+                if !matches!(clip.source, ClipSource::Audio(_)) {
+                    return Err(CmdError::Failed("not an Audio Clip".into()));
+                }
+                let audio = &mut clip.audio;
+                if let Some(gain) = p.gain_cdb {
+                    audio.gain_cdb = if gain < jet_model::AudioClipProps::GAIN_MIN_CDB {
+                        jet_model::AudioClipProps::GAIN_SILENT
+                    } else {
+                        gain
+                    };
+                }
+                if let Some(ms) = p.fade_in_ms {
+                    audio.fade_in_ms = ms;
+                }
+                if let Some(ms) = p.fade_out_ms {
+                    audio.fade_out_ms = ms;
+                }
+                if let Some(reverse) = p.reverse {
+                    audio.reverse = reverse;
+                }
+                if !audio.valid() {
+                    return Err(CmdError::Failed(
+                        "gain must be -96..=+36 dB and fades at most 600 s".into(),
+                    ));
+                }
                 Ok(())
             })
         }
