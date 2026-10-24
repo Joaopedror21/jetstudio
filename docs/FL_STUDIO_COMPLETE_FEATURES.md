@@ -294,14 +294,14 @@
 | BR-002 | Preview de áudio ao clicar | [Manual: browser] | — | S | P1 | Implementado | — |
 | BR-003 | Arrastar sample para o Channel Rack | — | — | S | P0 | Implementado | — |
 | BR-004 | Busca | [Manual: browser] "Search (Ctrl+F) - Search all folders for files. Use (F3) to skip to the next matching item"; "non-case sensitive"; "Searches include sub-folders"; "To cancel a search, press Esc" | — | S | P1 | Parcialmente compatível: campo na base do Browser, Ctrl+F foca (e mostra o Browser), busca sem diferenciar maiúsculas em arquivos e pastas das subpastas, com as pastas-pai dos resultados; F3 seleciona e rola até o próximo resultado; Esc cancela; enquanto digita, os atalhos ficam desligados; faltam filtro por tipo, tags, Find (Alt+F), indexação e salvar a busca como aba | `search_finds_names_in_sub_folders_case_insensitively_with_their_parents`, `browser_search_filters_steps_through_matches_and_cancels` 
-| BR-005 | Abas PROJECT/PLUGINS/PRESETS/SOUNDS/STARRED | [W] | SOUNDS é FL Cloud | M | P2 | Pesquisado (abas desabilitadas, com motivo); SOUNDS: Bloqueado (on-line) |
-| BR-006 | Favoritos e histórico | — | — | S | P2 | Pesquisado |
+| BR-005 | Abas PROJECT/PLUGINS/PRESETS/SOUNDS/STARRED | [W] | SOUNDS é FL Cloud | M | P2 | Pesquisado (abas desabilitadas, com motivo); SOUNDS: Bloqueado (on-line) | — |
+| BR-006 | Favoritos e histórico | — | — | S | P2 | Pesquisado | — |
 | FILE-001 | Formato próprio .jetproj (JSON versionado, save atômico) | ARQ §6 | — | S | P0 | Testado | `save_load_and_replace_existing_file`, `save_and_load_keep_samples_and_render_identically` |
 | FILE-002 | Caminhos relativos de samples | [Manual: songsettings_settings "Project Data Folder"] | Relativo ao projeto, mais hint absoluto | S | P0 | Testado | `save_and_load_keep_samples...` |
 | FILE-003 | Autosave e backups | [Manual: envsettings_files]: "Regularly (every 5 minutes)", adiado enquanto toca; backup a cada save manual; "Revert to last autosave" | — | M | P1 | Parcialmente compatível: os seis modos do manual (Never só lembra a cada 10 min; Rarely 15, Occasionally 10 e Regularly 5 min esperam o Stop; Frequently 5 min e Very frequently 1 min salvam mesmo tocando), em `Documentos\JetStudio Projects\Backup`, revert no menu File, backup a cada save manual; padrão Regularly (nossa escolha); faltam "antes de operações arriscadas" (não há plugins) e o versionamento sequencial (Ctrl+N) | `autosave_backs_up_changes_and_revert_restores_them`, `settings_tabs_and_autosave_modes` |
-| FILE-004 | Templates | [Manual: menu_file] | — | S | P2 | Pesquisado |
-| FILE-005 | Zip com samples | [Manual: fformats_project] | — | M | P2 | Pesquisado |
-| FILE-006 | Ler .flp | [Manual: fformats_project] esquema não publicado | — | — | — | Bloqueado (sem especificação pública; fora de escopo pela ADR) |
+| FILE-004 | Templates | [Manual: menu_file] | — | S | P2 | Pesquisado | — |
+| FILE-005 | Zip com samples | [Manual: fformats_project] | — | M | P2 | Pesquisado | — |
+| FILE-006 | Ler .flp | [Manual: fformats_project] esquema não publicado | — | — | — | Bloqueado (sem especificação pública; fora de escopo pela ADR) | — |
 
 ## 13. Automação, MIDI e gravação (AUT, MIDI, REC)
 
