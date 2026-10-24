@@ -269,6 +269,48 @@ fn offline_render_leaves_the_remainder_and_matches_live_playback() {
 }
 
 #[test]
+fn metronome_clicks_on_each_beat_with_an_accent_on_the_bar() {
+    let project = Project::new(); // no channels: only the metronome sounds
+    let mut plan = build_plan(
+        &project,
+        Source::Pattern(project.patterns[0].id),
+        RATE,
+        true,
+        &|_: ResourceId| None,
+    );
+    plan.metronome = true;
+    let mut renderer = playing(plan);
+    // 130 BPM default tempo of a new project: one beat = 60/130 s.
+    let out = run(&mut renderer, 96_000, 512);
+    let beat = 48_000.0 * 60.0 / 130.0;
+    // The click is a sine burst, so group zero-crossing onsets closer than 2000 frames.
+    let mut found: Vec<usize> = Vec::new();
+    for onset in onsets(&out) {
+        if found.last().is_none_or(|last| onset - last > 2_000) {
+            found.push(onset);
+        }
+    }
+    assert_eq!(found.len(), 5, "{found:?}");
+    for (i, onset) in found.iter().enumerate() {
+        let expected = (i as f64 * beat).ceil() as usize;
+        assert!(
+            onset.abs_diff(expected) <= 2,
+            "beat {i} at {onset}, expected {expected}"
+        );
+    }
+    // The first beat of the bar is accented with a higher pitch: more zero crossings.
+    let crossings = |at: usize| {
+        out[2 * at..2 * (at + 1000)]
+            .chunks(2)
+            .collect::<Vec<_>>()
+            .windows(2)
+            .filter(|w| w[0][0] <= 0.0 && w[1][0] > 0.0)
+            .count()
+    };
+    assert!(crossings(found[0]) > crossings(found[1]));
+}
+
+#[test]
 fn meters_report_master_peaks() {
     let project = project(&[0]);
     let meters = Arc::new(Meters::default());

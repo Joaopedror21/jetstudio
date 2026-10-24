@@ -136,6 +136,14 @@ static SPECS: &[CommandSpec] = &[
         "{}",
         None
     ),
+    spec!(
+        "transport.metronome.toggle",
+        "Metronome",
+        "OPTIONS",
+        Some("Ctrl+M"),
+        "{}",
+        None
+    ),
     spec!("transport.panic", "Stop all notes", "", None, "{}", None),
     spec!(
         "transport.mode.toggle",

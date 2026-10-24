@@ -11,6 +11,7 @@ jet-seq = { path = "../jet-seq" }
 jet-dsp = { path = "../jet-dsp" }
 cpal = "=0.18.2"
 rtrb = "=0.4.0"
+midir = "=0.11.1"
 thiserror = { workspace = true }
 
 [lints]

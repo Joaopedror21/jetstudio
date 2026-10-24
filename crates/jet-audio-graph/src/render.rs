@@ -68,7 +68,19 @@ pub struct Renderer {
     seed: u32,
     stop_events_after: Option<i64>,
     preview: SamplerVoice,
+    clicks: [Click; 4],
 }
+
+/// One metronome click in flight: our own synthesized sound (a decaying sine burst; FL plays
+/// its Metronome.wav files, which we do not ship).
+#[derive(Clone, Copy, Debug, Default)]
+struct Click {
+    start_frame: u64,
+    accent: bool,
+    active: bool,
+}
+
+const CLICK_FRAMES: u64 = 1200;
 
 impl Renderer {
     pub fn new(plan: Box<RenderPlan>, frame_counter: Arc<AtomicU64>, meters: Arc<Meters>) -> Self {
@@ -88,6 +100,7 @@ impl Renderer {
             seed: 0x9E37_79B9,
             stop_events_after: None,
             preview: SamplerVoice::default(),
+            clicks: [Click::default(); 4],
         }
     }
 
@@ -458,6 +471,58 @@ impl Renderer {
         }
     }
 
+    fn schedule_clicks(&mut self, from: i64, to: i64) {
+        let beat = self.plan.beat_ticks.max(1);
+        let mut tick = from.div_euclid(beat) * beat;
+        if tick < from {
+            tick += beat;
+        }
+        while tick < to {
+            let local = if self.plan.looping {
+                tick.rem_euclid(self.plan.sequence.length.max(1))
+            } else {
+                tick
+            };
+            let accent = (local / beat).rem_euclid(self.plan.beats_per_bar.max(1)) == 0;
+            let start_frame = self.frame_of_tick(tick).max(self.frame);
+            if let Some(slot) = self.clicks.iter_mut().find(|c| !c.active) {
+                *slot = Click {
+                    start_frame,
+                    accent,
+                    active: true,
+                };
+            }
+            tick += beat;
+        }
+    }
+
+    fn render_clicks(&mut self, block_start: u64, frames: usize) {
+        let rate = f64::from(self.plan.rate.max(1));
+        let master = &mut self.plan.tracks[self.plan.master_slot];
+        for click in &mut self.clicks {
+            if !click.active {
+                continue;
+            }
+            let freq = if click.accent { 1_760.0 } else { 1_320.0 };
+            for i in 0..frames {
+                let frame = block_start + i as u64;
+                if frame < click.start_frame {
+                    continue;
+                }
+                let n = frame - click.start_frame;
+                if n >= CLICK_FRAMES {
+                    click.active = false;
+                    break;
+                }
+                let t = n as f64 / rate;
+                let v =
+                    (0.35 * (std::f64::consts::TAU * freq * t).sin() * (-t * 120.0).exp()) as f32;
+                master.left[i] += v;
+                master.right[i] += v;
+            }
+        }
+    }
+
     /// Render `out` (interleaved stereo) and advance the clock.
     pub fn process(&mut self, out: &mut [f32]) {
         for chunk in out.chunks_mut(MAX_BLOCK * 2) {
@@ -480,9 +545,13 @@ impl Renderer {
             let to = self.tick_at(block_end - 1).saturating_add(1);
             let from = self.next_tick;
             self.schedule(from, to);
+            if self.plan.metronome {
+                self.schedule_clicks(from, to);
+            }
             self.next_tick = to.max(from);
         }
         self.render_voices(block_start, frames);
+        self.render_clicks(block_start, frames);
         if self.preview.is_active() {
             let master = &mut self.plan.tracks[self.plan.master_slot];
             self.preview.render(

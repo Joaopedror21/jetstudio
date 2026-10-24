@@ -1,8 +1,11 @@
 #![forbid(unsafe_code)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 //! Audio device output. The device callback owns a [`Renderer`]; the UI thread talks to
 //! it through pre-allocated single-producer/single-consumer queues (ADR-006), and retired
 //! plans travel back so they are dropped off the audio thread.
+
+pub mod midi;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, StreamConfig};
@@ -104,11 +107,14 @@ pub struct AudioOutput {
     stats: Arc<Stats>,
     info: DeviceInfo,
     last_sync: Option<TransportSync>,
+    /// Producer side of the MIDI queue until a MIDI input takes it.
+    midi_sink: Option<rtrb::Producer<midi::LiveNote>>,
 }
 
 struct Callback {
     renderer: Renderer,
     inbox: rtrb::Consumer<Message>,
+    midi: rtrb::Consumer<midi::LiveNote>,
     outbox: rtrb::Producer<Box<RenderPlan>>,
     waiting: Option<Box<RenderPlan>>,
     scratch: Vec<f32>,
@@ -124,6 +130,20 @@ impl Callback {
             && let Err(rtrb::PushError::Full(plan)) = self.outbox.push(plan)
         {
             self.waiting = Some(plan);
+        }
+        while let Ok(note) = self.midi.pop() {
+            match note {
+                midi::LiveNote::On {
+                    channel,
+                    key,
+                    velocity,
+                } => self
+                    .renderer
+                    .live_note_on(jet_model::ChannelId(channel), key, velocity),
+                midi::LiveNote::Off { channel, key } => self
+                    .renderer
+                    .live_note_off(jet_model::ChannelId(channel), key),
+            }
         }
         while self.waiting.is_none() {
             let Ok(message) = self.inbox.pop() else {
@@ -237,6 +257,7 @@ impl AudioOutput {
         let stats = Arc::new(Stats::default());
         let (to_audio, inbox) = rtrb::RingBuffer::new(QUEUE);
         let (outbox, retired) = rtrb::RingBuffer::new(QUEUE);
+        let (midi_sink, midi_source) = rtrb::RingBuffer::new(256);
         let callback = Callback {
             renderer: Renderer::new(
                 Box::new(initial(rate)),
@@ -244,6 +265,7 @@ impl AudioOutput {
                 Arc::clone(&meters),
             ),
             inbox,
+            midi: midi_source,
             outbox,
             waiting: None,
             scratch: vec![0.0; SCRATCH_FRAMES * 2],
@@ -277,7 +299,17 @@ impl AudioOutput {
                 },
             },
             last_sync: None,
+            midi_sink: Some(midi_sink),
         })
+    }
+
+    /// Open every MIDI input port, playing notes straight into this output.
+    pub fn open_midi_inputs(&mut self) -> Result<midi::MidiInputs, String> {
+        let sink = self
+            .midi_sink
+            .take()
+            .ok_or_else(|| "MIDI inputs are already open".to_owned())?;
+        midi::MidiInputs::connect_all(sink)
     }
 
     pub fn clock(&self) -> DeviceClock {

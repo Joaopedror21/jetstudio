@@ -103,6 +103,12 @@ pub struct RenderPlan {
     pub master_slot: usize,
     /// Song-mode automation; empty in Pattern mode.
     pub automation: Vec<PlanLane>,
+    /// Metronome: a click on every beat with an accent on the bar [Manual: toolbar_panels,
+    /// "Metronome (Ctrl+M) - Plays a click at each beat"; menu_options "an accent at the
+    /// beginning of each bar"]. Never part of an export.
+    pub metronome: bool,
+    pub beat_ticks: i64,
+    pub beats_per_bar: i64,
 }
 
 impl RenderPlan {
@@ -327,6 +333,9 @@ pub fn build_plan(
     };
     RenderPlan {
         automation,
+        metronome: false,
+        beat_ticks: project.settings.beat_ticks().unwrap_or(96).max(1),
+        beats_per_bar: i64::from(project.settings.time_sig.num.max(1)),
         rate,
         ppq: project.settings.ppq.0,
         tempo_milli: project.settings.tempo.0,

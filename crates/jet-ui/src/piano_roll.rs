@@ -146,6 +146,8 @@ pub struct PianoRollView {
     pub beat_ticks: i64,
     pub bar_ticks: i64,
     pub playhead: Option<i64>,
+    /// Typing keyboard to piano is on: plain letter keys play notes instead of tools.
+    pub typing: bool,
 }
 
 pub enum PianoAction {
@@ -1045,7 +1047,7 @@ fn keyboard(
             Key::D if only(m(false, true, false)) => {
                 actions.push(PianoAction::DiscardLengths { indices: sel, grid })
             }
-            _ if plain => {
+            _ if plain && !view.typing => {
                 if let Some((tool, ..)) = Tool::ALL.iter().find(|(_, _, _, k)| *k == key) {
                     state.tool = *tool;
                 }

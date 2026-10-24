@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui;
-use egui::{Id, Key, Rect, Sense, pos2, vec2};
+use egui::{Event, Id, Key, Rect, Sense, pos2, vec2};
 use jet_dsp::SampleData;
 use jet_engine::{PlanKey, PlayMode, Session, TransportState};
 use jet_model::{ChannelId, ChannelKind, ClipSource};
@@ -37,7 +37,43 @@ struct AudioHost {
     preview_hold: Option<Arc<SampleData>>,
     scope: Vec<f32>,
     cpu: f32,
+    midi: Option<jet_playback::midi::MidiInputs>,
 }
+
+/// Typing keyboard to piano [Manual: menu_options, "Typing to piano keyboard (Ctrl+T)"].
+/// Hypothesis H-KB-1: the manual shows no key map; we use the common two-row layout (Z row is
+/// the lower octave, Q row the upper; the rows above hold the black keys).
+const TYPING_KEYS: [(Key, u8); 29] = [
+    (Key::Z, 0),
+    (Key::S, 1),
+    (Key::X, 2),
+    (Key::D, 3),
+    (Key::C, 4),
+    (Key::V, 5),
+    (Key::G, 6),
+    (Key::B, 7),
+    (Key::H, 8),
+    (Key::N, 9),
+    (Key::J, 10),
+    (Key::M, 11),
+    (Key::Comma, 12),
+    (Key::Q, 12),
+    (Key::Num2, 13),
+    (Key::W, 14),
+    (Key::Num3, 15),
+    (Key::E, 16),
+    (Key::R, 17),
+    (Key::Num5, 18),
+    (Key::T, 19),
+    (Key::Num6, 20),
+    (Key::Y, 21),
+    (Key::Num7, 22),
+    (Key::U, 23),
+    (Key::I, 24),
+    (Key::Num9, 25),
+    (Key::O, 26),
+    (Key::P, 28),
+];
 
 pub struct JetApp {
     session: Session,
@@ -61,6 +97,10 @@ pub struct JetApp {
     fonts_installed: bool,
     pending_show: Vec<WindowKind>,
     pending_focus: Option<WindowKind>,
+    typing: bool,
+    /// Octave of the Z row in FL naming (C5 = key 60); Alt+NumPad 2-6 changes it.
+    typing_octave: u8,
+    typing_held: Vec<(Key, u8)>,
 }
 
 impl Default for JetApp {
@@ -86,6 +126,9 @@ impl Default for JetApp {
             fonts_installed: false,
             pending_show: Vec::new(),
             pending_focus: None,
+            typing: false,
+            typing_octave: 4,
+            typing_held: Vec::new(),
         }
     }
 }
@@ -98,6 +141,7 @@ enum UiAction {
     Piano(PianoAction),
     Mixer(MixerAction),
     Settings(SettingsAction),
+    ToggleTyping,
     OpenProject,
     SaveProject,
     SaveProjectAs,
@@ -126,11 +170,15 @@ impl JetApp {
             Ok(output) => {
                 app.session.set_clock(Box::new(output.clock()));
                 app.audio_status = Some(format!(
-                    "Audio: {} - {} Hz, {} channels",
-                    output.info().name,
+                    "{} Hz - {}",
                     output.info().rate,
-                    output.info().channels
+                    output.info().name
                 ));
+                let mut output = output;
+                let midi = output.open_midi_inputs().ok();
+                if let (Some(midi), Some(status)) = (&midi, &mut app.audio_status) {
+                    *status = format!("MIDI in: {} - {status}", midi.names.len());
+                }
                 app.audio = Some(AudioHost {
                     output,
                     last_key: None,
@@ -138,6 +186,7 @@ impl JetApp {
                     preview_hold: None,
                     scope: vec![0.0; 256],
                     cpu: 0.0,
+                    midi,
                 });
             }
             Err(error) => app.audio_status = Some(format!("Audio output unavailable: {error}")),
@@ -166,6 +215,15 @@ impl JetApp {
         }
         if self.session.take_panic() {
             host.output.panic();
+        }
+        // MIDI controllers play the selected channel [Manual: channelrack, "The selected
+        // Channel also receives MIDI/Controller input"].
+        if let Some(midi) = &host.midi {
+            let target = self
+                .rack
+                .selected_channel
+                .or(self.session.selected_channel().map(|c| c.0));
+            midi.set_target(target);
         }
         let (load, _) = host.output.stats().take_load();
         host.cpu = host.cpu * 0.8 + load * 0.2;
@@ -552,6 +610,74 @@ impl JetApp {
         }
     }
 
+    /// Typing keyboard: key presses become live notes on the selected channel.
+    fn typing_keys(&mut self, ctx: &egui::Context) {
+        let Some(channel) = self.selected_channel_id() else {
+            return;
+        };
+        let events = ctx.input(|i| i.events.clone());
+        for event in events {
+            let Event::Key {
+                key,
+                pressed,
+                repeat: false,
+                modifiers,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            // Alt+NumPad 2-6 changes the octave [Manual: basics_shortcuts].
+            if modifiers.alt && pressed {
+                let octave = match key {
+                    Key::Num2 => Some(2),
+                    Key::Num3 => Some(3),
+                    Key::Num4 => Some(4),
+                    Key::Num5 => Some(5),
+                    Key::Num6 => Some(6),
+                    _ => None,
+                };
+                if let Some(octave) = octave {
+                    self.typing_octave = octave;
+                    continue;
+                }
+            }
+            if modifiers.any() {
+                continue;
+            }
+            let Some(&(_, offset)) = TYPING_KEYS.iter().find(|(k, _)| *k == key) else {
+                continue;
+            };
+            let note = (u32::from(self.typing_octave) * 12 + u32::from(offset)).min(131) as u8;
+            if pressed {
+                if !self.typing_held.iter().any(|(k, _)| *k == key) {
+                    self.typing_held.push((key, note));
+                    if let Some(host) = &mut self.audio {
+                        host.output
+                            .note_on(ChannelId(channel), note, jet_model::DEFAULT_VELOCITY);
+                    }
+                }
+            } else if let Some(index) = self.typing_held.iter().position(|(k, _)| *k == key) {
+                let (_, held) = self.typing_held.remove(index);
+                if let Some(host) = &mut self.audio {
+                    host.output.note_off(ChannelId(channel), held);
+                }
+            }
+        }
+    }
+
+    fn release_typing_keys(&mut self) {
+        let Some(channel) = self.selected_channel_id() else {
+            self.typing_held.clear();
+            return;
+        };
+        for (_, note) in std::mem::take(&mut self.typing_held) {
+            if let Some(host) = &mut self.audio {
+                host.output.note_off(ChannelId(channel), note);
+            }
+        }
+    }
+
     fn export_wav(&mut self) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Wave file", &["wav"])
@@ -630,6 +756,12 @@ impl JetApp {
                 SettingsAction::LoadSample(id) => self.rack_menu(id, RackMenu::LoadSample),
             },
             UiAction::ExportWav => self.export_wav(),
+            UiAction::ToggleTyping => {
+                self.typing = !self.typing;
+                if !self.typing {
+                    self.release_typing_keys();
+                }
+            }
             UiAction::AddChannel(kind) => {
                 let name = if kind == "synth" { "Synth" } else { "Sampler" };
                 self.execute("channel.add", json!({"name": name, "kind": kind}));
@@ -834,6 +966,18 @@ impl JetApp {
         if self.toolbar.tempo_edit.is_some() || self.rack.rename.is_some() {
             return actions;
         }
+        if pressed(Key::T) && modifiers.ctrl {
+            actions.push(UiAction::ToggleTyping);
+        }
+        if pressed(Key::M) && modifiers.ctrl {
+            actions.push(UiAction::Engine("transport.metronome.toggle", json!({})));
+        }
+        // "Single key shortcuts will only work when 'Typing keyboard to piano' is OFF"
+        // [Manual: basics_shortcuts]; letter and number shortcuts yield to notes.
+        let letters = !self.typing;
+        if self.typing {
+            self.typing_keys(ctx);
+        }
         if pressed(Key::R) && modifiers.ctrl {
             actions.push(UiAction::ExportWav);
         }
@@ -868,7 +1012,7 @@ impl JetApp {
                 WsAction::Maximize(WindowKind::Playlist)
             }));
         }
-        if pressed(Key::L) && !modifiers.any() {
+        if letters && pressed(Key::L) && !modifiers.any() {
             actions.push(UiAction::Engine("transport.mode.toggle", json!({})));
         }
         if pressed(Key::Space) {
@@ -894,10 +1038,10 @@ impl JetApp {
         if pressed(Key::F4) {
             actions.push(UiAction::Engine("pattern.next_empty", json!({})));
         }
-        if pressed(Key::Plus) && !modifiers.any() {
+        if letters && pressed(Key::Plus) && !modifiers.any() {
             actions.push(UiAction::Engine("pattern.next", json!({})));
         }
-        if pressed(Key::Minus) && !modifiers.any() {
+        if letters && pressed(Key::Minus) && !modifiers.any() {
             actions.push(UiAction::Engine("pattern.prev", json!({})));
         }
         if pressed(Key::Escape)
@@ -956,6 +1100,8 @@ impl JetApp {
                 .audio
                 .as_ref()
                 .map_or_else(Vec::new, |host| host.scope.clone()),
+            typing_keyboard: self.typing,
+            metronome: self.session.metronome(),
         }
     }
 
@@ -1051,6 +1197,7 @@ impl JetApp {
             step_ticks: project.settings.step_ticks().unwrap_or(24),
             beat_ticks: project.settings.beat_ticks().unwrap_or(96),
             bar_ticks: project.settings.bar_ticks().unwrap_or(384),
+            typing: self.typing,
             playhead: (snapshot.mode == PlayMode::Pattern
                 && snapshot.state != TransportState::Stopped)
                 .then_some(snapshot.position.0),
@@ -1425,6 +1572,7 @@ impl From<ToolbarAction> for UiAction {
             ToolbarAction::SaveProjectAs => Self::SaveProjectAs,
             ToolbarAction::ExportWav => Self::ExportWav,
             ToolbarAction::AddChannel(kind) => Self::AddChannel(kind),
+            ToolbarAction::ToggleTyping => Self::ToggleTyping,
             ToolbarAction::Minimize => Self::Minimize,
             ToolbarAction::Maximize => Self::Maximize,
             ToolbarAction::Quit => Self::Quit,
@@ -2195,5 +2343,53 @@ mod tests {
                 .entries()
                 .contains_key("channel-settings.window")
         );
+    }
+
+    #[test]
+    fn typing_keyboard_plays_notes_and_blocks_letter_shortcuts() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("channel.add", json!({"name": "Lead", "kind": "synth"}));
+        let ctrl = Modifiers {
+            ctrl: true,
+            command: true,
+            ..Modifiers::default()
+        };
+        // egui tracks held modifiers through ModifiersChanged events, not the key event alone.
+        let with_ctrl = |app: &mut JetApp, mut events: Vec<Event>| {
+            events.insert(0, Event::ModifiersChanged(ctrl));
+            run_frame(app, &ctx, events);
+            run_frame(app, &ctx, vec![Event::ModifiersChanged(Modifiers::default())]);
+        };
+        with_ctrl(&mut app, vec![key(Key::T, true, ctrl)]);
+        with_ctrl(&mut app, vec![key(Key::T, false, ctrl)]);
+        run_frame(&mut app, &ctx, Vec::new());
+        assert!(app.typing);
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::Z, true, Modifiers::default())],
+        );
+        assert_eq!(app.typing_held, vec![(Key::Z, 48)], "Z is C4 (FL naming)");
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::Z, false, Modifiers::default())],
+        );
+        assert!(app.typing_held.is_empty(), "release ends the note");
+        let mode = app.session.transport_snapshot().mode;
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::L, true, Modifiers::default())],
+        );
+        assert_eq!(
+            app.session.transport_snapshot().mode,
+            mode,
+            "L plays a note, not PAT/SONG"
+        );
+        with_ctrl(&mut app, vec![key(Key::M, true, ctrl)]);
+        assert!(app.session.metronome(), "Ctrl+M toggles the metronome");
     }
 }

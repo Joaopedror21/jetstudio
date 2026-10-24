@@ -33,6 +33,8 @@ pub struct ToolbarView {
     pub voices: Option<u32>,
     /// Recent Master output samples for the oscilloscope (empty without a device).
     pub scope: Vec<f32>,
+    pub typing_keyboard: bool,
+    pub metronome: bool,
 }
 
 pub enum ToolbarAction {
@@ -43,6 +45,7 @@ pub enum ToolbarAction {
     SaveProjectAs,
     ExportWav,
     AddChannel(&'static str),
+    ToggleTyping,
     Minimize,
     Maximize,
     Quit,
@@ -358,13 +361,14 @@ pub fn paint_toolbar(
         Some(view.position.clone()),
     );
 
-    // Recording/metronome buttons [W 636, 669, 702, 735; 30x33]. Not implemented in M1.
+    // Recording/metronome buttons [W 636, 669, 702, 735; 30x33]: typing keyboard and
+    // metronome work; countdown and loop recording arrive with recording.
     let small_font = theme::medium(13.0);
     for (i, hint) in [
-        "Typing keyboard to piano keyboard - not implemented yet",
-        "Countdown before recording - not implemented yet",
-        "Blend/loop recording - not implemented yet",
-        "Metronome - not implemented yet",
+        "Typing keyboard to piano keyboard (Ctrl+T)",
+        "Countdown before recording - arrives with recording",
+        "Blend/loop recording - arrives with recording",
+        "Metronome (Ctrl+M)",
     ]
     .iter()
     .enumerate()
@@ -372,19 +376,35 @@ pub fn paint_toolbar(
         let x = 636.0 + 33.0 * i as f32;
         let cell = r(o, x, 4.0, x + 30.0, 37.0);
         let f = small_font.clone();
-        let _ = paint.tool_button(
-            &format!("toolbar.rec-option.{i}"),
-            cell,
-            false,
-            false,
-            hint,
-            |p, rr, c| match i {
-                0 => icons::keys(p, rr, c),
-                1 => icons::countdown(p, rr, c, f),
-                2 => icons::loop_record(p, rr, c),
-                _ => icons::metronome(p, rr, c),
-            },
-        );
+        let (enabled, lit) = match i {
+            0 => (true, view.typing_keyboard),
+            3 => (true, view.metronome),
+            _ => (false, false),
+        };
+        let clicked = paint
+            .tool_button(
+                &format!("toolbar.rec-option.{i}"),
+                cell,
+                lit,
+                enabled,
+                hint,
+                |p, rr, c| match i {
+                    0 => icons::keys(p, rr, c),
+                    1 => icons::countdown(p, rr, c, f),
+                    2 => icons::loop_record(p, rr, c),
+                    _ => icons::metronome(p, rr, c),
+                },
+            )
+            .clicked();
+        if clicked && i == 0 {
+            actions.push(ToolbarAction::ToggleTyping);
+        }
+        if clicked && i == 3 {
+            actions.push(ToolbarAction::Engine(
+                "transport.metronome.toggle",
+                json!({}),
+            ));
+        }
     }
 
     // Empty panels: song-info [W 768-858], oscilloscope [W 862-1030], CPU/memory [W 1035-1206].
@@ -889,6 +909,21 @@ fn paint_menu(
                 ))),
             ),
         ],
+        5 => &[
+            (
+                "Typing keyboard to piano",
+                "Ctrl+T",
+                Some(ToolbarAction::ToggleTyping),
+            ),
+            (
+                "Metronome",
+                "Ctrl+M",
+                Some(ToolbarAction::Engine(
+                    "transport.metronome.toggle",
+                    json!({}),
+                )),
+            ),
+        ],
         _ => &[("Not implemented yet", "", None)],
     };
     let t: Tokens = *paint.tokens;
@@ -954,6 +989,7 @@ fn paint_menu(
                 ToolbarAction::SaveProjectAs => ToolbarAction::SaveProjectAs,
                 ToolbarAction::ExportWav => ToolbarAction::ExportWav,
                 ToolbarAction::AddChannel(kind) => ToolbarAction::AddChannel(kind),
+                ToolbarAction::ToggleTyping => ToolbarAction::ToggleTyping,
                 ToolbarAction::Minimize => ToolbarAction::Minimize,
                 ToolbarAction::Maximize => ToolbarAction::Maximize,
                 ToolbarAction::Quit => ToolbarAction::Quit,

@@ -61,6 +61,7 @@ pub struct PlanKey {
     pub revision: u64,
     pub source: Source,
     pub samples: u64,
+    pub metronome: bool,
 }
 
 pub struct Session {
@@ -76,6 +77,8 @@ pub struct Session {
     panic_requested: bool,
     /// Gesture key of the command being executed, if it is part of a continuous gesture.
     gesture: Option<String>,
+    /// Metronome switch: a global option, not saved in the project [Manual: menu_options].
+    metronome: bool,
 }
 
 impl Session {
@@ -102,6 +105,7 @@ impl Session {
             samples: SamplePool::default(),
             panic_requested: false,
             gesture: None,
+            metronome: false,
         }
     }
 
@@ -198,14 +202,22 @@ impl Session {
             revision: self.revision,
             source: self.play_source(),
             samples: self.samples.generation(),
+            metronome: self.metronome,
         }
     }
 
     /// Compile the current project for live playback at `rate`.
     pub fn build_plan(&self, rate: u32) -> RenderPlan {
-        jet_audio_graph::build_plan(&self.project, self.play_source(), rate, true, &|id| {
-            self.samples.get(id)
-        })
+        let mut plan =
+            jet_audio_graph::build_plan(&self.project, self.play_source(), rate, true, &|id| {
+                self.samples.get(id)
+            });
+        plan.metronome = self.metronome;
+        plan
+    }
+
+    pub fn metronome(&self) -> bool {
+        self.metronome
     }
 
     pub fn set_publisher(&mut self, publisher: Box<dyn SnapshotPublisher>) {
