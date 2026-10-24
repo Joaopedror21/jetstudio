@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 
 use egui::{Align2, Event, Key, Modifiers, Pos2, Rect, Stroke, StrokeKind, pos2, vec2};
 
+use crate::snap::{GridTicks, SnapValue};
 use crate::theme;
 use crate::widgets::{PaintCtx, framed};
 
@@ -34,55 +35,6 @@ impl Tool {
         (Tool::Mute, "Mute", "Mute (T)", Key::T),
         (Tool::Select, "Select", "Select (E)", Key::E),
     ];
-}
-
-/// Snap choices (a subset of FL's snap menu [Manual: pianoroll_menu, "Snap"]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Snap {
-    None,
-    QuarterStep,
-    HalfStep,
-    Step,
-    Beat,
-    Bar,
-}
-
-impl Snap {
-    const ORDER: [Snap; 6] = [
-        Snap::None,
-        Snap::QuarterStep,
-        Snap::HalfStep,
-        Snap::Step,
-        Snap::Beat,
-        Snap::Bar,
-    ];
-
-    fn label(self) -> &'static str {
-        match self {
-            Snap::None => "(none)",
-            Snap::QuarterStep => "1/4 step",
-            Snap::HalfStep => "1/2 step",
-            Snap::Step => "Step",
-            Snap::Beat => "Beat",
-            Snap::Bar => "Bar",
-        }
-    }
-
-    pub fn ticks(self, view: &PianoRollView) -> i64 {
-        match self {
-            Snap::None => 1,
-            Snap::QuarterStep => (view.step_ticks / 4).max(1),
-            Snap::HalfStep => (view.step_ticks / 2).max(1),
-            Snap::Step => view.step_ticks.max(1),
-            Snap::Beat => view.beat_ticks.max(1),
-            Snap::Bar => view.bar_ticks.max(1),
-        }
-    }
-
-    fn next(self) -> Snap {
-        let i = Self::ORDER.iter().position(|s| *s == self).unwrap_or(0);
-        Self::ORDER[(i + 1) % Self::ORDER.len()]
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -118,7 +70,7 @@ pub struct PianoRollState {
     pub px_per_tick: f32,
     pub key_h: f32,
     pub tool: Tool,
-    pub snap: Snap,
+    pub snap: SnapValue,
     pub selection: BTreeSet<usize>,
     pub last_length: i64,
     drag: Option<Drag>,
@@ -138,6 +90,7 @@ pub struct PianoRollState {
     pub slide_mode: bool,
     pub porta_mode: bool,
     pub lane_target: LaneTarget,
+    snap_menu: Option<egui::Pos2>,
     tools_menu: Option<egui::Pos2>,
 }
 
@@ -167,7 +120,7 @@ impl Default for PianoRollState {
             px_per_tick: 0.5,
             key_h: 12.0,
             tool: Tool::Draw,
-            snap: Snap::Step,
+            snap: SnapValue::Main,
             selection: BTreeSet::new(),
             last_length: 0,
             drag: None,
@@ -180,6 +133,7 @@ impl Default for PianoRollState {
             slide_mode: false,
             porta_mode: false,
             lane_target: LaneTarget::Velocity,
+            snap_menu: None,
             tools_menu: None,
         }
     }
@@ -207,6 +161,8 @@ pub struct PianoRollView {
     pub step_ticks: i64,
     pub beat_ticks: i64,
     pub bar_ticks: i64,
+    /// The toolbar's Global snap, used when the local snap is Main.
+    pub global_snap: SnapValue,
     pub playhead: Option<i64>,
     /// Typing keyboard to piano is on: plain letter keys play notes instead of tools.
     pub typing: bool,
@@ -439,7 +395,7 @@ pub fn paint_piano_roll(
     paint_ruler(&painter, &t, state, view, &geo);
 
     // Notes.
-    let grid_ticks = state.snap.ticks(view);
+    let grid_ticks = snap_ticks(state, view);
     let (pointer, modifiers) = paint.ui.input(|i| (i.pointer.hover_pos(), i.modifiers));
     let grid_response = paint.ui.interact(
         grid,
@@ -779,6 +735,7 @@ pub fn paint_piano_roll(
         None => {}
     }
     paint_tools_menu(paint, state, &mut actions);
+    paint_snap_menu(paint, state);
     actions
 }
 
@@ -887,11 +844,15 @@ fn paint_toolbar(
             snap,
             "lcd",
             true,
-            "Snap (click to change; Alt bypasses snap)",
+            &format!(
+                "Snap: {} (Main follows the Global snap, now {}); Alt bypasses snap",
+                state.snap.label(),
+                view.global_snap.label()
+            ),
         )
         .clicked()
     {
-        state.snap = state.snap.next();
+        state.snap_menu = Some(snap.left_bottom());
     }
     // Second row: MIDI file import/export [Manual: pianoroll_menu, "File"].
     let row2 = toolbar.top() + ROW_H;
@@ -1449,7 +1410,7 @@ fn keyboard(
     actions: &mut Vec<PianoAction>,
 ) {
     let events = paint.ui.input(|i| i.events.clone());
-    let grid = state.snap.ticks(view);
+    let grid = snap_ticks(state, view);
     for event in events {
         let Event::Key {
             key,
@@ -1546,6 +1507,49 @@ fn keyboard(
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// Grid size of the effective snap. The Piano roll draws step lines when a step is at least
+/// 4 px wide, else beat lines: that is the "Line"/"Cell" resolution at this zoom.
+fn snap_ticks(state: &PianoRollState, view: &PianoRollView) -> i64 {
+    let line = if state.px_per_tick * view.step_ticks as f32 >= 4.0 {
+        view.step_ticks
+    } else {
+        view.beat_ticks
+    };
+    state.snap.resolve(view.global_snap).ticks(GridTicks {
+        step: view.step_ticks,
+        beat: view.beat_ticks,
+        bar: view.bar_ticks,
+        line,
+    })
+}
+
+fn paint_snap_menu(paint: &mut PaintCtx<'_>, state: &mut PianoRollState) {
+    let Some(origin) = state.snap_menu else {
+        return;
+    };
+    let options = SnapValue::local_options();
+    let labels: Vec<String> = options.iter().map(|o| o.label()).collect();
+    let items: Vec<crate::widgets::MenuItem<'_>> = labels
+        .iter()
+        .zip(&options)
+        .map(|(label, option)| crate::widgets::MenuItem {
+            label,
+            shortcut: "",
+            enabled: *option != state.snap,
+        })
+        .collect();
+    match paint.popup_menu("piano-roll.snap-menu", origin, &items) {
+        crate::widgets::MenuResult::Open => {}
+        crate::widgets::MenuResult::Dismissed => state.snap_menu = None,
+        crate::widgets::MenuResult::Chosen(i) => {
+            state.snap_menu = None;
+            if let Some(option) = options.get(i) {
+                state.snap = *option;
+            }
         }
     }
 }

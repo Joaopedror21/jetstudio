@@ -14,6 +14,9 @@ pub struct PlaylistView {
     pub arrangement_name: String,
     pub ticks_per_bar: i64,
     pub beats_per_bar: u32,
+    /// The toolbar's Global snap.
+    pub global_snap: crate::snap::SnapValue,
+    pub step_ticks: i64,
     pub position: Option<i64>,
     pub tracks: Vec<TrackView>,
     pub clips: Vec<ClipView>,
@@ -227,9 +230,9 @@ pub enum PlaylistAction {
     },
 }
 
-// Clip edits snap to one beat; Alt bypasses snap [Manual: playlist, "Holding the Alt key
-// temporarily sets snap to 'none'"]. Hypothesis H-PL-1: FL's default "Line" snap follows the
-// zoom; we use a fixed beat.
+// Clip edits follow the Global snap (the Playlist's local snap is Main); the Playlist always
+// draws beat lines, so Line and Cell are one beat. Alt bypasses snap [Manual: playlist, "Holding
+// the Alt key temporarily sets snap to 'none'"].
 
 /// Title-bar tool icons [W x 510-740 relative to 500].
 pub fn paint_title_tools(
@@ -777,7 +780,16 @@ pub fn paint_playlist(
     let tpb = view.ticks_per_bar.max(1);
     let beat = (tpb / i64::from(view.beats_per_bar.max(1))).max(1);
     let (alt, ctrl_down) = paint.ui.input(|i| (i.modifiers.alt, i.modifiers.ctrl));
-    let snap = if alt { 1 } else { beat };
+    let snap = if alt {
+        1
+    } else {
+        view.global_snap.ticks(crate::snap::GridTicks {
+            step: view.step_ticks.max(1),
+            beat,
+            bar: tpb,
+            line: beat,
+        })
+    };
     let px_per_tick = bar_w / tpb as f32;
     for clip in &view.clips {
         let Some(row) = view.tracks.iter().position(|track| track.id == clip.track) else {

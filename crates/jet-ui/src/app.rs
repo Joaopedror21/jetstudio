@@ -146,6 +146,9 @@ pub struct JetApp {
     /// (hypothesis H-REC-2: the manual does not give the default).
     record_audio: bool,
     record_notes: bool,
+    /// Toolbar Global snap [Manual: toolbar_panels, "Global Snap Panel"]; Line by default, as
+    /// the reference capture W shows.
+    global_snap: crate::snap::SnapValue,
     note_take: Option<NoteTake>,
     takes_started: u64,
     /// Typing-keyboard notes for the recorder, stamped with the transport clock frame.
@@ -192,6 +195,7 @@ impl Default for JetApp {
             take: None,
             record_audio: true,
             record_notes: true,
+            global_snap: crate::snap::SnapValue::Line,
             note_take: None,
             takes_started: 0,
             typed_notes: Vec::new(),
@@ -216,6 +220,7 @@ enum UiAction {
     ToggleTyping,
     ToggleRecordAudio,
     ToggleRecordNotes,
+    SetGlobalSnap(crate::snap::SnapValue),
     OpenProject,
     SaveProject,
     SaveProjectAs,
@@ -1069,16 +1074,20 @@ impl JetApp {
         };
         let (channel, key, start, velocity) = take.held.remove(index);
         let length = (tick - start).max(1);
-        // Input quantizing follows the snap: "To enable input quantizing set to - 'Step', 'Beat'
-        // or 'Bar'"; hypothesis H-REC-3: the start moves to the nearest grid line and the
-        // played duration is kept (one of the manual's options; the default is not given).
+        // "The settings on the Global snap determine MIDI input quantizing ... The snap options
+        // (none), Line & Cell are not input quantized" [Manual: toolbar_panels]; hypothesis
+        // H-REC-3: the start moves to the nearest grid line and the played duration is kept (one
+        // of the manual's options; the default is not given).
         let project = self.session.project();
-        let grid = match self.piano.snap {
-            crate::piano_roll::Snap::Step => project.settings.step_ticks(),
-            crate::piano_roll::Snap::Beat => project.settings.beat_ticks(),
-            crate::piano_roll::Snap::Bar => project.settings.bar_ticks(),
-            _ => None,
-        };
+        let settings = &project.settings;
+        let grid = self.global_snap.quantizes_input().then(|| {
+            self.global_snap.ticks(crate::snap::GridTicks {
+                step: settings.step_ticks().unwrap_or(24),
+                beat: settings.beat_ticks().unwrap_or(96),
+                bar: settings.bar_ticks().unwrap_or(384),
+                line: settings.step_ticks().unwrap_or(24),
+            })
+        });
         let mut at = if take.song {
             start - take.origin
         } else {
@@ -1411,6 +1420,7 @@ impl JetApp {
                 self.record_audio = !self.record_audio;
                 self.audio_status = Some(self.record_filter_status());
             }
+            UiAction::SetGlobalSnap(snap) => self.global_snap = snap,
             UiAction::ToggleRecordNotes => {
                 self.record_notes = !self.record_notes;
                 self.audio_status = Some(self.record_filter_status());
@@ -1867,6 +1877,7 @@ impl JetApp {
             armed: self.armed,
             recording: self.take.is_some(),
             remember_seek: self.session.remember_seek(),
+            global_snap: self.global_snap,
         }
     }
 
@@ -2005,6 +2016,7 @@ impl JetApp {
             step_ticks: project.settings.step_ticks().unwrap_or(24),
             beat_ticks: project.settings.beat_ticks().unwrap_or(96),
             bar_ticks: project.settings.bar_ticks().unwrap_or(384),
+            global_snap: self.global_snap,
             typing: self.typing,
             playhead: (snapshot.mode == PlayMode::Pattern
                 && snapshot.state != TransportState::Stopped)
@@ -2212,6 +2224,8 @@ impl JetApp {
                 .map_or_else(|| "Arrangement".to_owned(), |a| a.name.clone()),
             ticks_per_bar,
             beats_per_bar: u32::from(project.settings.time_sig.num),
+            global_snap: self.global_snap,
+            step_ticks: project.settings.step_ticks().unwrap_or(24),
             position: song_running.then_some(snapshot.position.0),
             tracks,
             clips,
@@ -2452,6 +2466,7 @@ impl From<ToolbarAction> for UiAction {
             ToolbarAction::ToggleTyping => Self::ToggleTyping,
             ToolbarAction::ToggleRecordAudio => Self::ToggleRecordAudio,
             ToolbarAction::ToggleRecordNotes => Self::ToggleRecordNotes,
+            ToolbarAction::SetGlobalSnap(snap) => Self::SetGlobalSnap(snap),
             ToolbarAction::ToggleRecord => Self::ToggleRecord,
             ToolbarAction::Minimize => Self::Minimize,
             ToolbarAction::Maximize => Self::Maximize,
@@ -3734,6 +3749,8 @@ mod tests {
         let mut app = JetApp::default();
         run_frame(&mut app, &ctx, Vec::new());
         app.execute("channel.add", json!({"name": "Keys", "kind": "synth"}));
+        // A Global snap that quantizes input (Line, the default, does not).
+        app.global_snap = crate::snap::SnapValue::Step(1);
         let ctrl = Modifiers {
             ctrl: true,
             command: true,
@@ -3789,7 +3806,11 @@ mod tests {
         assert_eq!(notes.len(), 1, "{notes:?}");
         assert_eq!(notes[0].key, 48);
         assert!(notes[0].length.0 >= 1);
-        assert_eq!(notes[0].start.0 % 24, 0, "Step snap quantizes the start");
+        assert_eq!(
+            notes[0].start.0 % 24,
+            0,
+            "the Step global snap quantizes the start"
+        );
         app.execute("edit.undo_step", json!({}));
         assert!(
             app.session.project().patterns[0]
@@ -4012,6 +4033,38 @@ mod tests {
         toggle(&mut app, &ctx, Key::Escape);
         assert!(app.browser.search.is_empty() && !app.browser.search_focus);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn global_snap_menu_drives_the_piano_roll_main_snap() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("channel.add", json!({"name": "Keys", "kind": "synth"}));
+        // Toolbar Global snap -> Bar (the last option).
+        let selector = app.probe().entries()["toolbar.snap"].rect;
+        click(&mut app, &ctx, selector);
+        run_frame(&mut app, &ctx, Vec::new());
+        let bar = app.probe().entries()["toolbar.snap-menu.item.13"].rect;
+        click(&mut app, &ctx, bar);
+        assert_eq!(app.global_snap, crate::snap::SnapValue::Bar);
+        // The Piano roll's Main snap follows it: a click lands on the bar line before it.
+        toggle(&mut app, &ctx, Key::F7);
+        let grid = app.probe().entries()["piano-roll.grid"].rect;
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(grid.left_top() + vec2(300.0, 40.0), vec2(2.0, 2.0)),
+        );
+        let note = &app.session.project().patterns[0].notes[&ChannelId(1)][0];
+        assert_eq!(note.start.0 % 384, 0, "{}", note.start.0);
+        // Its local snap menu offers Main plus the global options.
+        let snap = app.probe().entries()["piano-roll.snap"].rect;
+        click(&mut app, &ctx, snap);
+        run_frame(&mut app, &ctx, Vec::new());
+        let half_beat = app.probe().entries()["piano-roll.snap-menu.item.12"].rect;
+        click(&mut app, &ctx, half_beat);
+        assert_eq!(app.piano.snap, crate::snap::SnapValue::Beat(2));
     }
 
     #[test]

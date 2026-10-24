@@ -12,6 +12,7 @@ mod mixer;
 mod piano_roll;
 mod playlist;
 mod probe;
+pub mod snap;
 mod theme;
 mod toolbar;
 mod widgets;

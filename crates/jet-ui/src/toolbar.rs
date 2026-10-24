@@ -15,6 +15,8 @@ pub struct ToolbarState {
     pub open_menu: Option<usize>,
     /// Stop button right-click menu, where it opened.
     pub stop_menu: Option<egui::Pos2>,
+    /// Global snap menu, where it opened.
+    pub snap_menu: Option<egui::Pos2>,
     pub tempo_edit: Option<String>,
     pub hidden: bool,
 }
@@ -41,6 +43,7 @@ pub struct ToolbarView {
     pub armed: bool,
     pub recording: bool,
     pub remember_seek: bool,
+    pub global_snap: crate::snap::SnapValue,
 }
 
 pub enum ToolbarAction {
@@ -56,6 +59,7 @@ pub enum ToolbarAction {
     /// Record filter [Manual: recording_scores, "recording filter (Right-Click) ... Audio, Note"].
     ToggleRecordAudio,
     ToggleRecordNotes,
+    SetGlobalSnap(crate::snap::SnapValue),
     ToggleRecord,
     Minimize,
     Maximize,
@@ -705,21 +709,54 @@ pub fn paint_toolbar(
         theme::shade(t.btn_icon, 0.55),
     );
     let snap = r(o, 555.0, 48.0, 618.0, 75.0);
-    let _ = paint.hit(
-        "toolbar.snap",
-        snap,
-        "selector",
-        false,
-        "Global snap - Line (other values arrive with the editors)",
-    );
+    // "Global Snap Selector - Selects the Snap value applied to the Piano roll, Playlist and Event
+    // Editor when the local Snap ... is set to 'Main'" [Manual: toolbar_panels].
+    if paint
+        .hit(
+            "toolbar.snap",
+            snap,
+            "selector",
+            true,
+            &format!(
+                "Global snap - {} (also the MIDI input quantize unless Line, Cell or (none))",
+                view.global_snap.label()
+            ),
+        )
+        .clicked()
+    {
+        state.snap_menu = Some(snap.left_bottom());
+    }
     framed(&painter, snap, 2.0, t.field_dark, t.field_dark_edge);
-    painter.text(
+    painter.with_clip_rect(snap).text(
         o + vec2(560.0, 61.0),
         Align2::LEFT_CENTER,
-        "Line",
+        view.global_snap.label(),
         theme::regular(14.0),
         t.field_text,
     );
+    if let Some(origin) = state.snap_menu {
+        let options = crate::snap::SnapValue::global_options();
+        let labels: Vec<String> = options.iter().map(|o| o.label()).collect();
+        let items: Vec<crate::widgets::MenuItem<'_>> = labels
+            .iter()
+            .zip(&options)
+            .map(|(label, option)| crate::widgets::MenuItem {
+                label,
+                shortcut: "",
+                enabled: *option != view.global_snap,
+            })
+            .collect();
+        match paint.popup_menu("toolbar.snap-menu", origin, &items) {
+            crate::widgets::MenuResult::Open => {}
+            crate::widgets::MenuResult::Dismissed => state.snap_menu = None,
+            crate::widgets::MenuResult::Chosen(i) => {
+                state.snap_menu = None;
+                if let Some(option) = options.get(i) {
+                    actions.push(ToolbarAction::SetGlobalSnap(*option));
+                }
+            }
+        }
+    }
     icons::chevron_right(
         &painter,
         r(o, 605.0, 55.0, 615.0, 67.0),
@@ -1084,6 +1121,7 @@ fn paint_menu(
                 ToolbarAction::ToggleTyping => ToolbarAction::ToggleTyping,
                 ToolbarAction::ToggleRecordAudio => ToolbarAction::ToggleRecordAudio,
                 ToolbarAction::ToggleRecordNotes => ToolbarAction::ToggleRecordNotes,
+                ToolbarAction::SetGlobalSnap(snap) => ToolbarAction::SetGlobalSnap(*snap),
                 ToolbarAction::ToggleRecord => ToolbarAction::ToggleRecord,
                 ToolbarAction::Minimize => ToolbarAction::Minimize,
                 ToolbarAction::Maximize => ToolbarAction::Maximize,
