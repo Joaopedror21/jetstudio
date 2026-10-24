@@ -636,3 +636,48 @@ fn sampler_settings_and_polyphony_shape_the_output() {
     assert!(left[3_000].abs() > 0.0);
     assert_eq!(left[6_000 + 960 + 100], 0.0, "released by the envelope");
 }
+
+#[test]
+fn audio_clips_play_their_sample_at_the_recorded_level() {
+    let mut session = session_120();
+    let wav = temp("loop.wav");
+    // One second of full scale: 192 ticks at 120 BPM / 96 PPQ.
+    write_wav(&wav, 48_000, 1, &vec![1.0; 48_000], WavFormat::Float32).unwrap();
+    session
+        .execute("playlist.track.add", json!({"name": "Track 1"}))
+        .unwrap();
+    session
+        .execute(
+            "playlist.audio.add",
+            json!({"path": wav, "track": 1, "start": 384}),
+        )
+        .unwrap();
+    let project = session.project();
+    assert_eq!(project.channels[0].name, "loop");
+    assert_eq!(project.channels[0].volume, 1000, "Audio Clips play at 100%");
+    assert_eq!(project.arrangements[0].clips[0].length.0, 192);
+    let (left, right) = export(&mut session, "song");
+    assert_eq!(onsets(&left), vec![96_000], "starts at bar 2");
+    // 0 dB channel and unity velocity; only the circular pan law's -3 dB applies [Manual:
+    // mixer_levelsandmixing, "Audio Clips ... default to 100% volume, 0 dB"].
+    let db = 20.0 * f64::from(left[100_000]).log10();
+    assert!((db + 3.01).abs() < 0.02, "{db}");
+    assert_eq!(left[100_000], right[100_000]);
+    assert!(
+        left[96_000 + 48_000 + 600].abs() < 1e-6,
+        "ends with the sample"
+    );
+    // Shorter clip: cut at its end (10 ms declick).
+    session
+        .execute("playlist.clip.resize", json!({"id": 1, "length": 96}))
+        .unwrap();
+    let (left, _) = export(&mut session, "song");
+    assert!(
+        left[96_000 + 24_000 + 600].abs() < 1e-6,
+        "cut at the clip end"
+    );
+    assert!(left[96_000 + 23_000].abs() > 0.5);
+    // Deleting the channel removes its clips.
+    session.execute("channel.remove", json!({"id": 1})).unwrap();
+    assert!(session.project().arrangements[0].clips.is_empty());
+}

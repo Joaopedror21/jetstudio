@@ -50,6 +50,13 @@ struct IdParams {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct AddAudio {
+    path: std::path::PathBuf,
+    track: u64,
+    start: i64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MuteClip {
     id: u64,
     muted: bool,
@@ -113,6 +120,64 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                 track_mut(project, TrackId(p.id))?.mute = p.mute;
                 Ok(())
             })
+        }
+        // Dropping an audio file on the Playlist creates an Audio Clip [Manual:
+        // chansettings_sampler, "If you drop the sample on the Playlist you will create an
+        // Audio Clip"]. Its length is the sample's duration at the current tempo.
+        "playlist.audio.add" => {
+            let p: AddAudio = parse(id, params)?;
+            if p.start < 0 || !jet_media::is_supported(&p.path) {
+                return Err(super::invalid(
+                    id,
+                    "start must be >= 0 and the file a supported audio format",
+                ));
+            }
+            let data =
+                jet_media::decode_file(&p.path).map_err(|e| CmdError::Failed(e.to_string()))?;
+            let seconds = data.frames() as f64 / f64::from(data.rate.max(1));
+            let base = session
+                .path
+                .as_deref()
+                .and_then(std::path::Path::parent)
+                .map(std::path::Path::to_path_buf);
+            let mut resource = jet_model::ResourceId(0);
+            let changed = session.edit_project(|project| {
+                let ticks_per_second = f64::from(project.settings.tempo.0) / 60_000.0
+                    * f64::from(project.settings.ppq.0);
+                let length = (seconds * ticks_per_second).ceil().max(1.0) as i64;
+                resource = project.ids.resource();
+                project.resources.push(crate::samples::new_resource(
+                    resource,
+                    &p.path,
+                    base.as_deref(),
+                ));
+                let channel = project.ids.channel();
+                let name = p.path.file_stem().map_or_else(
+                    || "Audio clip".to_owned(),
+                    |s| s.to_string_lossy().into_owned(),
+                );
+                project
+                    .channels
+                    .push(jet_model::Channel::audio_clip(channel, name, resource));
+                let active = project.active_arrangement;
+                let clip = project.ids.clip();
+                let arrangement = arrangement_mut(project, active)?;
+                if !arrangement.tracks.iter().any(|t| t.id == TrackId(p.track)) {
+                    return Err(CmdError::Failed("track does not exist".into()));
+                }
+                arrangement.clips.push(ClipInstance {
+                    id: clip,
+                    track: TrackId(p.track),
+                    start: Tick(p.start),
+                    length: Tick(length),
+                    offset: Tick(0),
+                    source: ClipSource::Audio(channel),
+                    muted: false,
+                });
+                Ok(())
+            })?;
+            session.samples.insert(resource, std::sync::Arc::new(data));
+            Ok(changed)
         }
         "playlist.clip.add" => {
             let p: AddClip = parse(id, params)?;

@@ -312,8 +312,15 @@ pub struct Polyphony {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChannelKind {
-    Sampler { sample: Option<ResourceId> },
+    Sampler {
+        sample: Option<ResourceId>,
+    },
     Synth(SynthParams),
+    /// The channel behind Audio Clips in the Playlist [Manual: playlist_audioclip;
+    /// channelrack "Sort by ... Type: ... Audio Clips & Automation Clips"].
+    AudioClip {
+        sample: Option<ResourceId>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -392,9 +399,22 @@ impl Channel {
 
     pub fn sample(&self) -> Option<ResourceId> {
         match &self.kind {
-            ChannelKind::Sampler { sample } => *sample,
+            ChannelKind::Sampler { sample } | ChannelKind::AudioClip { sample } => *sample,
             ChannelKind::Synth(_) => None,
         }
+    }
+
+    /// Audio Clips "play at 100% their original level" [Manual: channelrack, §7-8].
+    pub fn audio_clip(id: ChannelId, name: impl Into<String>, sample: ResourceId) -> Self {
+        let mut channel = Self::with_kind(
+            id,
+            name,
+            ChannelKind::AudioClip {
+                sample: Some(sample),
+            },
+        );
+        channel.volume = 1000;
+        channel
     }
 }
 
@@ -592,6 +612,8 @@ impl PlaylistTrack {
 pub enum ClipSource {
     Pattern(PatternId),
     Automation(AutomationId),
+    /// An Audio Clip playing the sample of an `AudioClip` channel.
+    Audio(ChannelId),
 }
 
 /// Segment curve types [Manual: playlist_automationclip, "Change curve type"]. The shape is
@@ -1270,7 +1292,7 @@ impl Project {
                 return Err(ModelError::InvalidValue("channel"));
             }
             match &channel.kind {
-                ChannelKind::Sampler { sample } => {
+                ChannelKind::Sampler { sample } | ChannelKind::AudioClip { sample } => {
                     if sample.is_some_and(|id| !resources.contains(&id)) {
                         return Err(ModelError::Orphan("channel sample"));
                     }
@@ -1349,7 +1371,14 @@ impl Project {
                     ClipSource::Automation(id) if !automations.contains(&id) => {
                         return Err(ModelError::Orphan("clip automation"));
                     }
-                    ClipSource::Pattern(_) | ClipSource::Automation(_) => {}
+                    ClipSource::Audio(id)
+                        if !self
+                            .channel(id)
+                            .is_some_and(|c| matches!(c.kind, ChannelKind::AudioClip { .. })) =>
+                    {
+                        return Err(ModelError::Orphan("clip audio channel"));
+                    }
+                    ClipSource::Pattern(_) | ClipSource::Automation(_) | ClipSource::Audio(_) => {}
                 }
             }
             for marker in &arrangement.markers {

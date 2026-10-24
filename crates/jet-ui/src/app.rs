@@ -810,6 +810,21 @@ impl JetApp {
                 PlaylistAction::SoloTrack(id) => {
                     self.execute("playlist.track.solo", json!({"id": id}))
                 }
+                PlaylistAction::DropAudio { row, start, path } => {
+                    while self.track_count() <= row {
+                        let before = self.track_count();
+                        self.add_track();
+                        if self.track_count() == before {
+                            return;
+                        }
+                    }
+                    if let Some(track) = self.track_id_at(row) {
+                        self.execute(
+                            "playlist.audio.add",
+                            json!({"path": path, "track": track, "start": start}),
+                        );
+                    }
+                }
                 PlaylistAction::AutoAddPoint { id, at, value } => self.execute(
                     "automation.point.add",
                     json!({"id": id, "at": at, "value": value}),
@@ -1160,7 +1175,7 @@ impl JetApp {
             sampler: channel.sampler,
             synth: match &channel.kind {
                 ChannelKind::Synth(params) => Some(params.clone()),
-                ChannelKind::Sampler { .. } => None,
+                ChannelKind::Sampler { .. } | ChannelKind::AudioClip { .. } => None,
             },
         })
     }
@@ -1347,6 +1362,30 @@ impl JetApp {
                                 }),
                             )
                         }
+                        ClipSource::Audio(channel) => {
+                            let channel = project.channel(channel);
+                            (
+                                channel.map_or_else(|| "Audio".to_owned(), |c| c.name.clone()),
+                                // Audio Clips get their own colour (ours; UNMEASURED).
+                                channel.and_then(|c| c.color).or(Some(0x3F_7A5A)),
+                                None,
+                            )
+                        }
+                    };
+                    let waveform = match clip.source {
+                        ClipSource::Audio(channel) => project
+                            .channel(channel)
+                            .and_then(|c| c.sample())
+                            .and_then(|id| {
+                                let columns = self.waveforms.get(&id)?.clone();
+                                let data = self.session.samples().get(id)?;
+                                let seconds = data.frames() as f64 / f64::from(data.rate.max(1));
+                                let ticks = seconds * f64::from(project.settings.tempo.0)
+                                    / 60_000.0
+                                    * f64::from(project.settings.ppq.0);
+                                Some((columns, ticks, clip.offset.0))
+                            }),
+                        _ => None,
                     };
                     ClipView {
                         id: clip.id.0,
@@ -1356,6 +1395,7 @@ impl JetApp {
                         label,
                         color,
                         automation,
+                        waveform,
                         muted: clip.muted,
                     }
                 })
@@ -1384,6 +1424,7 @@ impl JetApp {
                     length: jet_seq::pattern_length(project, p),
                 })
                 .collect(),
+            dragging_file: self.browser.dragging.clone(),
         }
     }
 }
@@ -2395,5 +2436,41 @@ mod tests {
         );
         with_ctrl(&mut app, vec![key(Key::M, true, ctrl)]);
         assert!(app.session.metronome(), "Ctrl+M toggles the metronome");
+    }
+
+    #[test]
+    fn dropping_a_browser_file_on_the_playlist_creates_an_audio_clip() {
+        let path = std::env::temp_dir().join(format!("jet-ui-drop-{}.wav", std::process::id()));
+        jet_media::write_wav(&path, 48_000, 1, &[0.5; 4_800], jet_media::WavFormat::Int16).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        let grid = app.probe().entries()["playlist.grid"].rect;
+        let spot = grid.left_top() + vec2(grid.width() * 0.25, 70.0);
+        run_frame(&mut app, &ctx, vec![Event::PointerMoved(spot)]);
+        // The Browser drag is live while the button is held; the release frame drops it.
+        app.browser.dragging = Some(path.clone());
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::PointerButton {
+                pos: spot,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::default(),
+            }],
+        );
+        let project = app.session.project();
+        let clips = &project.arrangements[0].clips;
+        assert_eq!(clips.len(), 1, "{:?}", app.last_error);
+        assert!(matches!(clips[0].source, ClipSource::Audio(_)));
+        assert_eq!(
+            project.arrangements[0].tracks.len(),
+            2,
+            "dropped on the second row"
+        );
+        assert_eq!(clips[0].start.0 % 96, 0, "snapped to a beat");
+        assert!(app.browser.dragging.is_none());
+        let _ = std::fs::remove_file(path);
     }
 }

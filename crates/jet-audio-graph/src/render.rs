@@ -45,6 +45,8 @@ struct Voice {
     released: bool,
     /// Cut by Max poly; it is fading out and no longer counts toward the limit.
     stolen: bool,
+    /// Audio Clip voice: the clip end cuts it instead of releasing it.
+    hard_end: bool,
     cut_by: u8,
     age: u64,
 }
@@ -139,6 +141,9 @@ impl Renderer {
         self.transport = sync;
         // A sync anchored in the past still fires the events since its anchor.
         self.next_tick = sync.anchor_tick;
+        if sync.playing && !was_playing {
+            self.start_audio_in_progress(sync.anchor_tick);
+        }
         if !sync.playing && was_playing {
             self.release_all();
         }
@@ -206,6 +211,11 @@ impl Renderer {
         t.anchor_frame.saturating_add(frames as u64)
     }
 
+    fn ticks_to_seconds(&self, ticks: i64) -> f64 {
+        ticks.max(0) as f64 * 60_000.0
+            / (f64::from(self.plan.tempo_milli) * f64::from(self.plan.ppq.max(1)))
+    }
+
     fn ticks_to_frames(&self, ticks: i64) -> u64 {
         let numerator = i128::from(ticks.max(0)) * i128::from(self.plan.rate) * 60_000;
         let denominator = i128::from(self.plan.tempo_milli) * i128::from(self.plan.ppq.max(1));
@@ -250,6 +260,33 @@ impl Renderer {
         self.start_voice(event, start_frame, release_frame, false);
     }
 
+    /// When playback starts inside an Audio Clip, the clip sounds from that point (pattern
+    /// notes that started earlier are not restarted).
+    fn start_audio_in_progress(&mut self, tick: i64) {
+        let length = self.plan.sequence.length.max(1);
+        let local = if self.plan.looping {
+            tick.rem_euclid(length)
+        } else {
+            tick
+        };
+        let mut index = 0;
+        while let Some(event) = self.plan.sequence.events.get(index).copied() {
+            index += 1;
+            if event.tick >= local {
+                break;
+            }
+            if !event.audio || event.tick + event.length <= local {
+                continue;
+            }
+            let mut late = event;
+            late.audio_offset += local - event.tick;
+            late.length -= local - event.tick;
+            let start_frame = self.frame;
+            let release_frame = start_frame + self.ticks_to_frames(late.length).max(1);
+            self.start_voice(&late, start_frame, release_frame, false);
+        }
+    }
+
     /// Play a note outside the sequence (preview keyboard, typing keyboard, MIDI input).
     /// It sounds until [`Renderer::live_note_off`].
     pub fn live_note_on(&mut self, channel: ChannelId, key: u8, velocity: u8) {
@@ -266,6 +303,8 @@ impl Renderer {
             mod_y: 0,
             slide: false,
             porta: false,
+            audio: false,
+            audio_offset: 0,
         };
         let frame = self.frame;
         self.start_voice(&event, frame, u64::MAX, true);
@@ -292,11 +331,17 @@ impl Renderer {
                 let pitch = channel.auto_pitch.unwrap_or(channel.pitch_cents);
                 let cents = f64::from(pitch) + f64::from(event.fine_pitch);
                 let mut voice = SamplerVoice::default();
+                let mut options = channel.sampler;
+                if event.audio {
+                    // Audio Clips ignore the Sampler page and start at their clip offset.
+                    options = jet_dsp::sampler::SamplerOptions::default();
+                    options.start_seconds = self.ticks_to_seconds(event.audio_offset);
+                }
                 voice.start_with(
                     Arc::clone(sample),
                     cents_ratio(semis * 100.0 + cents),
                     rate,
-                    channel.sampler,
+                    options,
                 );
                 VoiceKind::Sampler(voice)
             }
@@ -395,6 +440,7 @@ impl Renderer {
             release_frame,
             released: false,
             stolen: false,
+            hard_end: event.audio,
             cut_by,
             age: self.age,
         };
@@ -638,6 +684,7 @@ impl Renderer {
             // [Manual: chansettings_sampler, "samples will continue to play after note release"].
             match &mut voice.kind {
                 VoiceKind::Synth(v) => v.release(),
+                VoiceKind::Sampler(v) if voice.hard_end => v.cut(),
                 VoiceKind::Sampler(v) => v.release(),
                 VoiceKind::Idle => {}
             }

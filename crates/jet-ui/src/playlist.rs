@@ -16,6 +16,8 @@ pub struct PlaylistView {
     pub tracks: Vec<TrackView>,
     pub clips: Vec<ClipView>,
     pub patterns: Vec<PatternEntry>,
+    /// A Browser file being dragged, if any (dropped on the grid it becomes an Audio Clip).
+    pub dragging_file: Option<std::path::PathBuf>,
 }
 
 pub struct TrackView {
@@ -34,7 +36,13 @@ pub struct ClipView {
     pub muted: bool,
     /// For Automation Clips: the clip definition id, its control points and the clip offset.
     pub automation: Option<AutomationView>,
+    /// For Audio Clips: waveform columns spanning the whole sample, its length in ticks and the
+    /// clip offset.
+    pub waveform: Option<ClipWaveform>,
 }
+
+/// (peak columns over the whole sample, sample length in ticks, clip offset in ticks).
+pub type ClipWaveform = (Vec<(f32, f32)>, f64, i64);
 
 #[derive(Clone)]
 pub struct AutomationView {
@@ -142,6 +150,12 @@ pub enum PlaylistAction {
     },
     SoloTrack(u64),
     Seek(i64),
+    /// An audio file dropped on display row `row` at tick `start`.
+    DropAudio {
+        row: usize,
+        start: i64,
+        path: std::path::PathBuf,
+    },
     AutoAddPoint {
         id: u64,
         at: i64,
@@ -749,6 +763,33 @@ pub fn paint_playlist(
             );
         // Automation Clips are moved by their title bar because "the lower clip area is used to
         // edit Control Points" [Manual: playlist, "Resizing & Slip-editing Clips"].
+        if let Some((columns, sample_ticks, offset)) = &clip.waveform {
+            let body =
+                Rect::from_min_max(pos2(clip_rect.left(), label_band.bottom()), clip_rect.max)
+                    .intersect(grid);
+            if body.width() > 0.0 && *sample_ticks > 0.0 && !columns.is_empty() {
+                let wave_painter = grid_painter.with_clip_rect(body);
+                let cy = body.center().y;
+                let half = body.height() * 0.45;
+                let x_start = body.left().max(clip_rect.left());
+                let mut x = x_start;
+                while x < body.right() {
+                    let tick = (x - (x0 + 1.0)) / px_per_tick + *offset as f32;
+                    let index = (f64::from(tick) / sample_ticks * columns.len() as f64) as isize;
+                    if let Some((lo, hi)) = usize::try_from(index).ok().and_then(|i| columns.get(i))
+                    {
+                        wave_painter.line_segment(
+                            [
+                                pos2(x, cy - hi.clamp(-1.0, 1.0) * half),
+                                pos2(x, cy - lo.clamp(-1.0, 1.0) * half),
+                            ],
+                            Stroke::new(1.0, t.picker_text),
+                        );
+                    }
+                    x += 1.0;
+                }
+            }
+        }
         if let Some(auto) = &clip.automation {
             let body =
                 Rect::from_min_max(pos2(clip_rect.left(), label_band.bottom()), clip_rect.max);
@@ -868,6 +909,38 @@ pub fn paint_playlist(
     }
 
     paint_point_menu(paint, state, &mut actions);
+
+    // Audio files dropped on the grid become Audio Clips at the beat under the pointer.
+    let (pointer, released) = paint
+        .ui
+        .input(|i| (i.pointer.hover_pos(), i.pointer.any_released()));
+    if let Some(p) = pointer.filter(|p| grid.contains(*p)) {
+        let mut dropped: Vec<std::path::PathBuf> = paint.ui.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        if released && let Some(path) = &view.dragging_file {
+            dropped.push(path.clone());
+        }
+        let row = ((p.y - grid.top()) / l.track_h + state.scroll_tracks)
+            .floor()
+            .max(0.0) as usize;
+        let tick =
+            (((p.x - grid.left() - 1.0) / bar_w + state.scroll_bars) * tpb as f32).max(0.0) as i64;
+        for path in dropped {
+            actions.push(PlaylistAction::DropAudio {
+                row,
+                start: tick / beat * beat,
+                path,
+            });
+        }
+        if view.dragging_file.is_some() {
+            *paint.hint = "Drop to create an Audio Clip".to_owned();
+        }
+    }
 
     // Clicking the bar ruler relocates the playback position [Manual: playlist,
     // "Relocate the playback position - Click on the upper timeline"].

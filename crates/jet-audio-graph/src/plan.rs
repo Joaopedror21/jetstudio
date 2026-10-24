@@ -176,6 +176,7 @@ fn sampler_options(settings: &jet_model::SamplerSettings) -> jet_dsp::sampler::S
                 f32::from(e.release_ms),
             )
         }),
+        start_seconds: 0.0,
     }
 }
 
@@ -273,6 +274,7 @@ pub fn build_plan(
             instrument: match &channel.kind {
                 ChannelKind::Sampler { sample: id } => Instrument::Sampler(id.and_then(sample)),
                 ChannelKind::Synth(params) => Instrument::Synth(params.clone()),
+                ChannelKind::AudioClip { sample: id } => Instrument::Sampler(id.and_then(sample)),
             },
             gain: channel_volume_gain(channel.volume) as f32,
             pan: channel.pan,

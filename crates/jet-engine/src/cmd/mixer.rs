@@ -92,6 +92,33 @@ fn slot_mut(project: &mut Project, track: u16, slot: usize) -> Result<&mut FxSlo
         .ok_or_else(|| CmdError::Failed("FX slot is empty".into()))
 }
 
+/// Keep FX-mix automation pointing at the same effect after slots change.
+fn remap_fx_automation(project: &mut Project, track: u16, map: impl Fn(usize) -> Option<usize>) {
+    use jet_model::{AutoTarget, ClipSource};
+    let mut removed = Vec::new();
+    for clip in &mut project.automations {
+        if let AutoTarget::FxMix { track: t, slot } = clip.target
+            && t == track
+        {
+            match map(usize::from(slot)) {
+                Some(next) => {
+                    clip.target = AutoTarget::FxMix {
+                        track,
+                        slot: next as u8,
+                    }
+                }
+                None => removed.push(clip.id),
+            }
+        }
+    }
+    project.automations.retain(|a| !removed.contains(&a.id));
+    for arrangement in &mut project.arrangements {
+        arrangement
+            .clips
+            .retain(|c| !matches!(c.source, ClipSource::Automation(a) if removed.contains(&a)));
+    }
+}
+
 fn ranged(id: &str, value: i32, low: i32, high: i32) -> Result<i32, CmdError> {
     if (low..=high).contains(&value) {
         Ok(value)
@@ -272,6 +299,12 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                     return Err(CmdError::Failed("FX slot is empty".into()));
                 }
                 track.fx.remove(p.slot);
+                // Automation follows its slot: clips on the removed slot go, later slots shift.
+                remap_fx_automation(project, p.track, |slot| match slot {
+                    s if s == p.slot => None,
+                    s if s > p.slot => Some(s - 1),
+                    s => Some(s),
+                });
                 Ok(())
             })
         }
@@ -286,6 +319,18 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                     (p.slot as i64 + i64::from(p.delta)).clamp(0, track.fx.len() as i64 - 1);
                 let slot = track.fx.remove(p.slot);
                 track.fx.insert(target as usize, slot);
+                let (from, to) = (p.slot, target as usize);
+                remap_fx_automation(project, p.track, |slot| {
+                    Some(if slot == from {
+                        to
+                    } else if from < to && slot > from && slot <= to {
+                        slot - 1
+                    } else if to < from && slot >= to && slot < from {
+                        slot + 1
+                    } else {
+                        slot
+                    })
+                });
                 Ok(())
             })
         }

@@ -2,7 +2,7 @@ use super::*;
 use jet_dsp::{SampleData, gain_to_db};
 use jet_model::{Channel, ChannelKind, FxKind, FxSlot, MixerSend, Project, ResourceId, StepSeq};
 use jet_seq::Source;
-use jet_time::Tempo;
+use jet_time::{Tempo, Tick};
 
 const RATE: u32 = 48_000;
 
@@ -360,4 +360,58 @@ fn live_notes_sound_until_note_off() {
         "released"
     );
     assert_eq!(renderer.active_voices(), 0);
+}
+
+#[test]
+fn starting_inside_an_audio_clip_plays_from_that_point() {
+    let mut project = Project::new();
+    project.settings.tempo = Tempo(120_000);
+    let resource = project.ids.resource();
+    project.resources.push(jet_model::Resource {
+        id: resource,
+        path_rel: "ramp.wav".into(),
+        path_abs_hint: None,
+        hash: None,
+        status: jet_model::ResourceStatus::Available,
+    });
+    let channel = project.ids.channel();
+    project
+        .channels
+        .push(Channel::audio_clip(channel, "Ramp", resource));
+    let track = project.ids.track();
+    project.arrangements[0]
+        .tracks
+        .push(jet_model::PlaylistTrack::new(track, "T"));
+    let clip = project.ids.clip();
+    let mut instance =
+        jet_model::ClipInstance::pattern(clip, track, project.patterns[0].id, Tick(0), Tick(384));
+    instance.source = jet_model::ClipSource::Audio(channel);
+    project.arrangements[0].clips.push(instance);
+    assert_eq!(project.validate(), Ok(()));
+    // A ramp makes the position audible: sample i has value i / frames.
+    let ramp = Arc::new(SampleData::mono(
+        RATE,
+        (0..96_000).map(|i| i as f32 / 96_000.0).collect(),
+    ));
+    let plan = build_plan(&project, Source::Song, RATE, true, &move |_| {
+        Some(Arc::clone(&ramp))
+    });
+    let mut renderer = Renderer::new(
+        Box::new(plan),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(Meters::default()),
+    );
+    // Start at beat 3 (tick 192 = 1 s = 48 000 sample frames into the clip).
+    renderer.sync(TransportSync {
+        playing: true,
+        anchor_tick: 192,
+        anchor_frame: 0,
+    });
+    let out = run(&mut renderer, 1_000, 256);
+    let expected = 0.5 * std::f32::consts::FRAC_1_SQRT_2; // ramp at 48 000 of 96 000, -3 dB pan law
+    assert!(
+        (out[2 * 10] - expected).abs() < 0.01,
+        "{} vs {expected}",
+        out[2 * 10]
+    );
 }

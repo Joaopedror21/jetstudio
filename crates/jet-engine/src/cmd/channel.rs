@@ -140,6 +140,31 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                     pattern.steps.remove(&target);
                     pattern.notes.remove(&target);
                 }
+                // Its Audio Clips and automation go with it.
+                for arrangement in &mut project.arrangements {
+                    arrangement
+                        .clips
+                        .retain(|clip| clip.source != jet_model::ClipSource::Audio(target));
+                }
+                let removed: Vec<jet_model::AutomationId> = project
+                    .automations
+                    .iter()
+                    .filter(|a| {
+                        matches!(
+                            a.target,
+                            jet_model::AutoTarget::ChannelVolume(c)
+                                | jet_model::AutoTarget::ChannelPan(c)
+                                | jet_model::AutoTarget::ChannelPitch(c) if c == target
+                        )
+                    })
+                    .map(|a| a.id)
+                    .collect();
+                project.automations.retain(|a| !removed.contains(&a.id));
+                for arrangement in &mut project.arrangements {
+                    arrangement.clips.retain(|clip| {
+                        !matches!(clip.source, jet_model::ClipSource::Automation(a) if removed.contains(&a))
+                    });
+                }
                 Ok(())
             })?;
             if session.selected_channel == Some(target) {

@@ -53,6 +53,7 @@
 | H-AUT-1 | Valor depois de uma Automation Clip | O último valor se mantém até a próxima clip; antes da primeira vale o knob; com o transporte parado vale o knob | O manual descreve só o valor inicial ("Initialized controls") | `jet-seq/src/automation.rs` |
 | H-AUT-2 | Formas das 10 curvas | Fórmulas próprias (potência 8^tensão, S, degraus, pulso, seno) | O manual dá só os nomes | `jet-seq/src/automation.rs` |
 | H-AUT-3 | Taxa de controle | Uma avaliação por bloco (até 1024 frames) | Não documentado | `jet-audio-graph/src/render.rs` |
+| H-KB-1 | Mapa do teclado de digitação | Duas fileiras: Z…M + teclas pretas em S, D, G, H, J (oitava inferior); Q…P + 2, 3, 5, 6, 7, 9 (superior); Z = C4 | O manual menciona "Standard keyboard layouts" sem mostrar o mapa | `jet-ui/src/app.rs` |
 | H-UI-1 | Sensibilidade dos knobs e faders | 200 px por curso de knob; 150 px por curso de fader; 6 px por insert | Não medido | `jet-ui` |
 
 ## 3. Interface e controles globais (GLB)
@@ -66,7 +67,7 @@
 | GLB-005 | Tempo | [Manual: toolbar_panels] 10–522 BPM, precisão de 1/1000 BPM | LCD editável | — | S | P0 | Testado (edição por digitação; falta arrastar o LCD) | `keyboard_toggles_playlist_and_tempo_editor_commits_value` |
 | GLB-006 | Tap tempo | [Manual: toolbar_panels] "Tap" | O tempo se ajusta a partir do 2º toque | GLB-005 | S | P2 | Pesquisado | — |
 | GLB-007 | Fórmula de compasso | [Manual: songsettings_settings] | Numerador e denominador; BPM conta semínimas | jet-time | S | P1 | Testado no engine (`project.time_sig.set`); sem controle na UI | `step_ticks_follow_ppq_and_steps_per_beat` |
-| GLB-008 | Metrônomo | [Manual: toolbar_panels] | Clique por tempo, acento no 1º | AE | S | P1 | Pesquisado | — |
+| GLB-008 | Metrônomo | [Manual: toolbar_panels] "Plays a click at each beat"; [menu_options] "an accent at the beginning of each bar" (Ctrl+M) | Clique por tempo, acento no 1º | AE | S | P1 | Parcialmente compatível: som próprio (FL usa Metronome.wav), exato por amostra, nunca exportado; falta escolher som e mixer track | `metronome_clicks_on_each_beat_with_an_accent_on_the_bar`, `typing_keyboard_plays_notes...` |
 | GLB-009 | Count-in | [Manual: toolbar_panels] | Contagem antes de gravar | REC | S | P2 | Pesquisado | — |
 | GLB-010 | Loop recording | [Manual: toolbar_panels] | Gravação em loop do pattern ou seleção | REC | M | P2 | Pesquisado | — |
 | GLB-011 | Snap global | [Manual: pianoroll_menu "Snap"] | Grade de edição; Alt ignora o snap | — | S | P1 | Parcialmente compatível: snap próprio no Piano roll ((none), 1/4 step, 1/2 step, Step, Beat, Bar); o seletor global "Line" é só visual | `piano_roll_click_adds_a_note_and_mixer_fader_moves_the_master` |
@@ -184,7 +185,7 @@
 |---|---|---|---|---|---|---|---|---|
 | PL-001 | Faixas multipropósito | [Manual: playlist] "multi-purpose 'Clip Tracks'"; não são ligadas ao mixer | — | — | S | P0 | Testado | `playlist_clips_share_pattern_source` |
 | PL-002 | Pattern clips | Clip = "window over the original data" | Janela sobre os dados do pattern | jet-seq | S | P0 | Testado | `song_mode_places_clip_windows_and_skips_muted_tracks`, `playlist_song_mode_plays_clips...` |
-| PL-003 | Audio clips | [Manual: playlist_audioclip] | Ganho, fades, crossfades, stretch | SMP | L | P1 | Pesquisado | — |
+| PL-003 | Audio clips | [Manual: playlist_audioclip] | Canal "Audio Clip" no rack; 100% de volume; ganho, fades, crossfades e stretch | SMP | L | P1 | Parcialmente compatível: toca a partir do offset, o fim da clip corta com declick, começa no meio da clip quando o play parte de dentro dela, waveform real; faltam ganho/fades/crossfade/stretch e o slip edit | `audio_clips_play_their_sample_at_the_recorded_level`, `starting_inside_an_audio_clip_plays_from_that_point` |
 | PL-004 | Automation clips | [Manual: playlist_automationclip] | Pontos de controle, 10 tipos de curva, LFO; o clip se move pela barra de título | AUT | L | P1 | Parcialmente compatível: criar, desenhar envelope, adicionar (botão direito), mover (arrastar), apagar (Alt+clique ou menu) e tipo de curva por ponto; faltam tensão arrastável, LFO, step/slide | `knob_menu_creates_an_automation_clip_whose_envelope_takes_points` |
 | PL-005 | Draw/Paint/Delete/Mute/Slip/Slice/Select/Zoom/Play | Ferramentas P, B, D, T, S, C, E, Shift+Z, Y | Draw: clique adiciona, arrastar move, botão direito apaga | — | L | P1 | Parcialmente compatível: comportamento de Draw (adicionar, mover com snap de 1 batida e Alt sem snap, redimensionar pela borda, apagar com botão direito, Ctrl+clique muta, H-PL-1); faltam as demais ferramentas e a seleção múltipla | `playlist_clips_move_and_delete_with_the_mouse`, `clicking_an_empty_placeholder_row...` |
 | PL-006 | Mute/solo de faixa | "Track Mute/Solo" | Mute de faixa vale para seus clips; Ctrl+clique ou botão direito faz solo | jet-seq | S | P0 | Testado (LED da faixa na UI) | `playlist_song_mode_plays_clips...`, `clip_mute_and_track_solo_change_the_song` |
@@ -197,7 +198,7 @@
 | PL-013 | Grupos de faixas, track mode | "Group with above track", "Track mode" | — | — | M | P3 | Pesquisado | — |
 | PL-014 | Performance mode | [Manual: playlist_performance] | Disparo ao vivo | — | L | P3 | Pesquisado | — |
 | PL-015 | Duplicar (Ctrl+B), merge de pattern clips, make unique | [Manual: playlist] | — | — | M | P2 | Pesquisado | — |
-| PL-016 | Arrastar arquivos para a Playlist (cria audio clip) | [Manual: chansettings_sampler] | — | PL-003 | M | P1 | Pesquisado | — |
+| PL-016 | Arrastar arquivos para a Playlist (cria audio clip) | [Manual: chansettings_sampler] "If you drop the sample on the Playlist you will create an Audio Clip" | Do Browser ou do sistema; linha e batida sob o mouse | PL-003 | M | P1 | Testado | `dropping_a_browser_file_on_the_playlist_creates_an_audio_clip` |
 | PL-017 | Playhead | "Play Position Marker"; clique no ruler reposiciona | Arrastável | — | S | P0 | Parcialmente compatível: clique ou arraste no ruler reposiciona (com snap de batida); sempre visível no modo Song | — |
 
 ## 8. Mixer (MX)
@@ -296,7 +297,7 @@
 | AUT-003 | Event editor e eventos em patterns | [Manual: automation_eventeditor] | L | P2 | Pesquisado |
 | AUT-004 | Link to controller / MIDI learn | [Manual: automation_linking] | M | P2 | Pesquisado |
 | AUT-005 | Internal controllers | [Manual: automation_internal] | M | P3 | Pesquisado |
-| MIDI-001 | Entrada MIDI (midir), omni, typing keyboard | [Manual: envsettings_midi] | M | P1 | Especificado (notas ao vivo prontas no renderizador) |
+| MIDI-001 | Entrada MIDI (midir), omni, typing keyboard | [Manual: envsettings_midi]; [menu_options] "Typing to piano keyboard (Ctrl+T)" | M | P1 | Parcialmente compatível: todas as portas abertas, notas no canal selecionado por fila direta ao áudio; teclado de digitação (H-KB-1, Alt+NumPad 2–6); faltam escolha de dispositivo, CC/controles, gravação. Testes: `parses_note_on_off_and_running_zero_velocity`, `typing_keyboard_plays_notes_and_blocks_letter_shortcuts` |
 | MIDI-002 | MIDI clock sync | idem | M | P3 | Pesquisado |
 | REC-001 | Gravação de áudio (arm, pickup, takes, monitoramento) | [Manual: recording_audio] | L | P2 | Pesquisado |
 | REC-002 | Gravação de notas no Piano roll | [Manual: recording_scores] | M | P2 | Pesquisado |

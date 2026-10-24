@@ -34,6 +34,10 @@ pub struct NoteEvent {
     pub mod_y: u8,
     pub slide: bool,
     pub porta: bool,
+    /// Audio Clip: the voice starts `audio_offset` ticks into the sample and is cut (with the
+    /// declick) at the end of `length` instead of being released.
+    pub audio: bool,
+    pub audio_offset: i64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,6 +156,8 @@ pub fn pattern_events(project: &Project, pattern: &Pattern, out: &mut Vec<NoteEv
                     mod_y: note.mod_y,
                     slide: note.slide,
                     porta: note.porta,
+                    audio: false,
+                    audio_offset: 0,
                 });
             }
             continue;
@@ -179,6 +185,8 @@ pub fn pattern_events(project: &Project, pattern: &Pattern, out: &mut Vec<NoteEv
                 mod_y: cell.props.mod_y,
                 slide: false,
                 porta: false,
+                audio: false,
+                audio_offset: 0,
             });
         }
     }
@@ -227,8 +235,30 @@ pub fn compile(project: &Project, source: Source) -> Sequence {
                     if clip.muted || track_muted {
                         continue;
                     }
-                    let ClipSource::Pattern(pattern_id) = clip.source else {
-                        continue;
+                    let pattern_id = match clip.source {
+                        ClipSource::Pattern(id) => id,
+                        ClipSource::Audio(channel_id) => {
+                            if let Some(channel) = project.channel(channel_id).filter(|c| !c.mute) {
+                                events.push(NoteEvent {
+                                    tick: clip.start.0,
+                                    length: clip.length.0,
+                                    channel: channel_id,
+                                    key: channel.root_key,
+                                    velocity: jet_model::DEFAULT_VELOCITY,
+                                    pan: 0,
+                                    fine_pitch: 0,
+                                    release: 0,
+                                    mod_x: 0,
+                                    mod_y: 0,
+                                    slide: false,
+                                    porta: false,
+                                    audio: true,
+                                    audio_offset: clip.offset.0,
+                                });
+                            }
+                            continue;
+                        }
+                        ClipSource::Automation(_) => continue,
                     };
                     let Some(pattern) = project.pattern(pattern_id) else {
                         continue;

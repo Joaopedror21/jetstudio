@@ -772,6 +772,14 @@ static SPECS: &[CommandSpec] = &[
         Step
     ),
     spec!(
+        "playlist.audio.add",
+        "Add Audio Clip",
+        "",
+        None,
+        "{path:string,track:uint,start:int}",
+        Step
+    ),
+    spec!(
         "playlist.clip.mute.set",
         "Mute clip",
         "",

@@ -35,6 +35,8 @@ pub struct SamplerOptions {
     pub reverse: bool,
     /// Volume envelope (attack ms, decay ms, sustain 0..1, release ms) when enabled.
     pub envelope: Option<(f32, f32, f32, f32)>,
+    /// Extra start position in seconds of the sample (Audio Clip offsets).
+    pub start_seconds: f64,
 }
 
 impl Default for SamplerOptions {
@@ -46,6 +48,7 @@ impl Default for SamplerOptions {
             loop_end: 1.0,
             reverse: false,
             envelope: None,
+            start_seconds: 0.0,
         }
     }
 }
@@ -80,7 +83,8 @@ impl SamplerVoice {
     ) {
         let frames = sample.frames() as f64;
         self.increment = ratio * f64::from(sample.rate) / f64::from(rate.max(1));
-        self.position = (options.start.clamp(0.0, 1.0) * frames).floor();
+        self.position = (options.start.clamp(0.0, 1.0) * frames).floor()
+            + (options.start_seconds.max(0.0) * f64::from(sample.rate)).floor();
         self.direction = 1.0;
         self.fade_total = ((DECLICK_OUT_MS * 0.001 * f64::from(rate)) as u32).max(1);
         self.fade_left = 0;
