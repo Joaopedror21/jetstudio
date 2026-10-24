@@ -209,8 +209,8 @@
 | MX-001 | 500 inserts + Master + Current | [Manual: mixer] | Canais novos vão ao Master | — | S | P0 | Testado (inserts materializados sob demanda; Current sem uso) | `mixer_tracks_default_lazily_and_reject_cycles` |
 | MX-002 | Fader pós-FX | "The level fader is applied after the effects" | — | jet-dsp | S | P0 | Parcialmente compatível (H-MIX-1) | `mixer_fader_unity_and_top`, `mixer_routing_faders...` |
 | MX-003 | Pan do mixer | "mixing one side into the other, so a 100% pan is the mono-sum" | — | — | S | P0 | Implementado (soma cruzada; sem escalas medidas) | — |
-| MX-004 | Stereo separation | "Turn the knob right to decrease ... left to increase" | Mid/side | — | S | P2 | Implementado (comando; sem knob na UI) | — |
-| MX-005 | Invert phase, Swap L/R | Ícones da faixa | — | — | S | P2 | Implementado (comandos) | — |
+| MX-004 | Stereo separation | "Turn the knob right to decrease ... left to increase" | Mid/side | — | S | P2 | Testado (controle no inspector) | `mixer_phase_swap_and_stereo_separation_change_the_output` |
+| MX-005 | Invert phase, Swap L/R | Ícones da faixa | — | — | S | P2 | Testado (botões no inspector) | `mixer_phase_swap_and_stereo_separation_change_the_output` |
 | MX-006 | Mute/solo de faixa | "Left-click to mute ... Right-Click to solo" | Solo muta os outros inserts | — | S | P0 | Testado | `mixer_routing_faders...` |
 | MX-007 | Sends pós-fader | "Send Tracks", "Post-fader Sends (default)" | Nível de send; send em 0 = só sidechain | — | M | P1 | Testado (sem ciclos) | `sends_route_post_fader...`, `mixer_routing_faders...` |
 | MX-008 | Route to Master desligável | "deselect its send to master switch" | — | — | S | P1 | Testado | `sends_route_post_fader_and_master_routing_can_be_disabled` |

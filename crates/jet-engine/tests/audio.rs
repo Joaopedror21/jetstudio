@@ -825,3 +825,38 @@ fn audio_clips_without_a_track_go_to_the_first_track_with_room() {
         "later take fits on the first track"
     );
 }
+
+#[test]
+fn mixer_phase_swap_and_stereo_separation_change_the_output() {
+    let mut session = session_120();
+    let id = add_sampler_with_click(&mut session);
+    session
+        .execute("step.set", json!({"pattern":1,"channel":id,"index":0,"on":true}))
+        .unwrap();
+    session
+        .execute("channel.pan.set", json!({"id": id, "value": -1000}))
+        .unwrap();
+    let (left, right) = export(&mut session, "pattern");
+    assert!(left[50] > 0.3 && right[50] == 0.0, "panned hard left");
+    session
+        .execute("mixer.track.swap.set", json!({"track": 0, "value": true}))
+        .unwrap();
+    let (left, right) = export(&mut session, "pattern");
+    assert!(left[50] == 0.0 && right[50] > 0.3, "swap moves it right");
+    session
+        .execute("mixer.track.invert.set", json!({"track": 0, "value": true}))
+        .unwrap();
+    let (_, right) = export(&mut session, "pattern");
+    assert!(right[50] < -0.3, "invert flips the sign");
+    session
+        .execute("mixer.track.swap.set", json!({"track": 0, "value": false}))
+        .unwrap();
+    session
+        .execute("mixer.track.invert.set", json!({"track": 0, "value": false}))
+        .unwrap();
+    session
+        .execute("mixer.track.stereo_sep.set", json!({"track": 0, "value": 1000}))
+        .unwrap();
+    let (left, right) = export(&mut session, "pattern");
+    assert!((left[50] - right[50]).abs() < 1e-6 && left[50] > 0.1, "fully narrowed = mono");
+}

@@ -40,6 +40,9 @@ pub struct MixerTrackView {
     pub sends: Vec<(u16, u16)>,
     pub fx: Vec<(FxKind, bool, u16)>,
     pub fx_enabled: bool,
+    pub stereo_sep: i16,
+    pub invert: bool,
+    pub swap: bool,
     /// Peak since the last frame (from the audio thread), linear.
     pub peak: (f32, f32),
 }
@@ -104,6 +107,18 @@ pub enum MixerAction {
         value: bool,
     },
     EndGesture,
+    Invert {
+        track: u16,
+        value: bool,
+    },
+    Swap {
+        track: u16,
+        value: bool,
+    },
+    StereoSep {
+        track: u16,
+        value: i16,
+    },
     /// "Create automation clip" for a fader (`true`) or pan (`false`).
     CreateAutomation {
         track: u16,
@@ -746,6 +761,61 @@ fn paint_inspector(
         }
     }
     y += 30.0;
+    // Track icons and stereo separation [Manual: mixer, "Invert phase", "Swap channels",
+    // "Stereo Separation"].
+    let invert = Rect::from_min_size(pos2(rect.left() + 10.0, y), vec2(110.0, 20.0));
+    if paint.toggle(
+        "mixer.invert",
+        invert,
+        "Invert phase",
+        track.invert,
+        "Flip the sign of the waveform",
+    ) {
+        actions.push(MixerAction::Invert {
+            track: track.index,
+            value: !track.invert,
+        });
+    }
+    let swap = Rect::from_min_size(pos2(invert.right() + 8.0, y), vec2(110.0, 20.0));
+    if paint.toggle(
+        "mixer.swap",
+        swap,
+        "Swap L/R",
+        track.swap,
+        "Swap the left and right channels",
+    ) {
+        actions.push(MixerAction::Swap {
+            track: track.index,
+            value: !track.swap,
+        });
+    }
+    y += 26.0;
+    let sep_row = Rect::from_min_size(pos2(rect.left() + 10.0, y), vec2(rect.width() - 20.0, 20.0));
+    let sep = i32::from(track.stereo_sep);
+    let label = match sep {
+        0 => "Off".to_owned(),
+        s if s > 0 => format!("{}% narrower", s / 10),
+        s => format!("{}% wider", -s / 10),
+    };
+    let edit = paint.param_row(
+        "mixer.stereo-sep",
+        sep_row,
+        "Stereo separation",
+        sep,
+        -1000,
+        1000,
+        &label,
+    );
+    if let Some(value) = edit.value {
+        actions.push(MixerAction::StereoSep {
+            track: track.index,
+            value: value as i16,
+        });
+    }
+    if edit.ended {
+        actions.push(MixerAction::EndGesture);
+    }
+    y += 28.0;
     // Ten FX slots [Manual: mixer, "Each Track has 10 effects slots"].
     for slot in 0..MAX_FX_SLOTS {
         let row = Rect::from_min_size(pos2(rect.left() + 10.0, y), vec2(rect.width() - 20.0, 22.0));

@@ -784,6 +784,23 @@ impl JetApp {
                 json!({"track": track, "value": value}),
             ),
             MixerAction::EndGesture => self.session.end_gesture(),
+            MixerAction::Invert { track, value } => {
+                self.execute(
+                    "mixer.track.invert.set",
+                    json!({"track": track, "value": value}),
+                );
+            }
+            MixerAction::Swap { track, value } => {
+                self.execute(
+                    "mixer.track.swap.set",
+                    json!({"track": track, "value": value}),
+                );
+            }
+            MixerAction::StereoSep { track, value } => self.gesture(
+                &format!("mixer.sep.{track}"),
+                "mixer.track.stereo_sep.set",
+                json!({"track": track, "value": value}),
+            ),
             MixerAction::CreateAutomation { track, fader } => {
                 let target = if fader {
                     json!({ "MixerVolume": track })
@@ -1594,6 +1611,9 @@ impl JetApp {
                         .map(|slot| (slot.kind.clone(), slot.enabled, slot.mix))
                         .collect(),
                     fx_enabled: track.fx_enabled,
+                    stereo_sep: track.stereo_sep,
+                    invert: track.invert_phase,
+                    swap: track.swap_lr,
                     peak: meters
                         .as_ref()
                         .map_or((0.0, 0.0), |m| m.take(usize::from(index))),
