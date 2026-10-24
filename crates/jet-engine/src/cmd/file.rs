@@ -45,7 +45,10 @@ fn reset_after_load(session: &mut Session, project: Project, path: Option<PathBu
         .as_deref()
         .and_then(Path::parent)
         .map(Path::to_path_buf);
-    let missing = session.samples.load_project(&project, base.as_deref());
+    let (missing, moved) =
+        session
+            .samples
+            .load_project(&project, base.as_deref(), &session.search_folders);
     let mut project = project;
     for resource in &mut project.resources {
         resource.status = if missing.contains(&resource.id) {
@@ -53,6 +56,11 @@ fn reset_after_load(session: &mut Session, project: Project, path: Option<PathBu
         } else {
             ResourceStatus::Available
         };
+        // A sample found in a search folder is relinked there.
+        if let Some((_, path)) = moved.iter().find(|(id, _)| *id == resource.id) {
+            resource.path_rel = crate::samples::relative_to(path, base.as_deref());
+            resource.path_abs_hint = Some(path.to_string_lossy().into_owned());
+        }
     }
     session.project = Arc::new(project);
     session.history = History::default();

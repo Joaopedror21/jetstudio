@@ -1384,3 +1384,44 @@ fn channel_gate_shift_and_full_porta() {
         "a shift of a whole step is refused"
     );
 }
+
+#[test]
+fn missing_samples_are_found_in_search_folders_and_relinked() {
+    let root = std::env::temp_dir().join(format!("jet-relink-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (old_dir, new_dir) = (root.join("old"), root.join("library").join("drums"));
+    std::fs::create_dir_all(&old_dir).unwrap();
+    std::fs::create_dir_all(&new_dir).unwrap();
+    let wav = old_dir.join("kick.wav");
+    write_wav(&wav, 48_000, 1, &[1.0; 100], WavFormat::Float32).unwrap();
+    let mut session = session_120();
+    session
+        .execute("channel.add", json!({"name": "Kick"}))
+        .unwrap();
+    session
+        .execute("channel.sample.load", json!({"id": 1, "path": wav}))
+        .unwrap();
+    let project_path = root.join("song.jetproj");
+    session
+        .execute("file.save_as", json!({"path": project_path}))
+        .unwrap();
+    // The sample moves away: on open its channel is missing.
+    std::fs::rename(&wav, new_dir.join("kick.wav")).unwrap();
+    session
+        .execute("file.open", json!({"path": project_path}))
+        .unwrap();
+    assert_eq!(
+        session.project().resources[0].status,
+        jet_model::ResourceStatus::Missing
+    );
+    // With its new folder among the search folders it is found and relinked.
+    session.set_search_folders(vec![root.join("library")]);
+    session
+        .execute("file.open", json!({"path": project_path}))
+        .unwrap();
+    let resource = &session.project().resources[0];
+    assert_eq!(resource.status, jet_model::ResourceStatus::Available);
+    assert_eq!(resource.path_rel, "library/drums/kick.wav");
+    assert!(session.samples().get(resource.id).is_some());
+    let _ = std::fs::remove_dir_all(&root);
+}

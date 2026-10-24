@@ -1850,6 +1850,10 @@ impl JetApp {
     }
 
     fn execute(&mut self, id: &str, params: Value) {
+        if id == "file.open" || id == "file.revert_autosave" {
+            // Samples a project cannot find are looked up in the Browser folders.
+            self.session.set_search_folders(self.browser.roots.clone());
+        }
         if let Err(error) = self.session.execute(id, params) {
             self.last_error = Some(error.to_string());
         } else {
@@ -2331,6 +2335,12 @@ impl JetApp {
                     is_sampler: matches!(channel.kind, ChannelKind::Sampler { .. }),
                     notes,
                     cut_itself: channel.cut != 0 && channel.cut == channel.cut_by,
+                    missing: channel.sample().is_some_and(|id| {
+                        project
+                            .resources
+                            .iter()
+                            .any(|r| r.id == id && r.status == jet_model::ResourceStatus::Missing)
+                    }),
                 }
             })
             .collect();
@@ -4773,6 +4783,34 @@ mod tests {
             .map(|c| c.id.0)
             .collect();
         assert_eq!(order, vec![2, 1, 3]);
+    }
+
+    #[test]
+    fn missing_samples_turn_the_channel_red_until_a_browser_folder_has_them() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        let root = std::env::temp_dir().join(format!("jet-ui-relink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (old, library) = (root.join("old"), root.join("library"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&library).unwrap();
+        let wav = old.join("snare.wav");
+        jet_media::write_wav(&wav, 48_000, 1, &[0.5; 64], jet_media::WavFormat::Float32).unwrap();
+        app.execute("channel.add", json!({"name": "Snare"}));
+        app.execute("channel.sample.load", json!({"id": 1, "path": wav}));
+        let project = root.join("beat.jetproj");
+        app.execute("file.save_as", json!({"path": project}));
+        std::fs::rename(&wav, library.join("snare.wav")).unwrap();
+        app.execute("file.open", json!({"path": project}));
+        assert!(app.rack_view().channels[0].missing, "red: the sample moved");
+        app.browser.add_root(library.clone());
+        app.execute("file.open", json!({"path": project}));
+        assert!(
+            !app.rack_view().channels[0].missing,
+            "found in a Browser folder"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

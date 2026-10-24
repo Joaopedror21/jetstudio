@@ -43,17 +43,37 @@ impl SamplePool {
         std::mem::take(&mut self.retired)
     }
 
-    /// Decode every resource of `project`; returns the ids that could not be loaded.
-    pub fn load_project(&mut self, project: &Project, base: Option<&Path>) -> Vec<ResourceId> {
+    /// Decode every resource of `project`. A file not found where the project says is looked
+    /// up by name in `search` folders ("FL Studio searches ... the extra search folders"
+    /// [Manual: channelrack, "Red Channel buttons"]). Returns the ids that could not be loaded
+    /// and the new location of each resource found in a search folder.
+    pub fn load_project(
+        &mut self,
+        project: &Project,
+        base: Option<&Path>,
+        search: &[PathBuf],
+    ) -> (Vec<ResourceId>, Vec<(ResourceId, PathBuf)>) {
         self.clear();
         let mut missing = Vec::new();
+        let mut moved = Vec::new();
         for resource in &project.resources {
-            match resolve(resource, base).and_then(|path| jet_media::decode_file(&path).ok()) {
+            let found = resolve(resource, base).or_else(|| {
+                let name = Path::new(&resource.path_rel.replace('\\', "/"))
+                    .file_name()?
+                    .to_os_string();
+                let path = find_by_name(search, &name)?;
+                moved.push((resource.id, path.clone()));
+                Some(path)
+            });
+            match found.and_then(|path| jet_media::decode_file(&path).ok()) {
                 Some(data) => self.insert(resource.id, Arc::new(data)),
-                None => missing.push(resource.id),
+                None => {
+                    moved.retain(|(id, _)| *id != resource.id);
+                    missing.push(resource.id);
+                }
             }
         }
-        missing
+        (missing, moved)
     }
 }
 
@@ -76,6 +96,31 @@ pub fn resolve(resource: &Resource, base: Option<&Path>) -> Option<PathBuf> {
         .as_deref()
         .map(PathBuf::from)
         .filter(|path| path.is_file())
+}
+
+/// The first file named `name` under `folders` (sub-folders included), visiting at most 50 000
+/// entries so a huge folder cannot stall loading.
+pub fn find_by_name(folders: &[PathBuf], name: &std::ffi::OsStr) -> Option<PathBuf> {
+    let mut budget = 50_000_usize;
+    let mut stack: Vec<PathBuf> = folders.iter().rev().cloned().collect();
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut subdirs = Vec::new();
+        for entry in entries.flatten() {
+            budget = budget.checked_sub(1)?;
+            let path = entry.path();
+            if path.is_dir() {
+                subdirs.push(path);
+            } else if path.file_name() == Some(name) {
+                return Some(path);
+            }
+        }
+        subdirs.sort();
+        stack.extend(subdirs.into_iter().rev());
+    }
+    None
 }
 
 /// Path stored in `path_rel`: relative to `base` when the file is inside it.

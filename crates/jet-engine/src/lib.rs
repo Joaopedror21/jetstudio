@@ -96,6 +96,8 @@ pub struct Session {
     remember_seek: bool,
     /// Last position set with `transport.position.set`.
     seek_point: i64,
+    /// Folders searched for samples a project cannot find (the Browser folders).
+    search_folders: Vec<PathBuf>,
 }
 
 impl Session {
@@ -129,6 +131,7 @@ impl Session {
             time_selection: None,
             remember_seek: false,
             seek_point: 0,
+            search_folders: Vec::new(),
         }
     }
 
@@ -177,6 +180,11 @@ impl Session {
             PlayMode::Pattern => Source::Pattern(self.selected_pattern),
             PlayMode::Song => Source::Song,
         }
+    }
+
+    /// Folders searched by name for samples a loaded project cannot find.
+    pub fn set_search_folders(&mut self, folders: Vec<PathBuf>) {
+        self.search_folders = folders;
     }
 
     pub fn remember_seek(&self) -> bool {

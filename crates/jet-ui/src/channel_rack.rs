@@ -60,6 +60,8 @@ pub struct ChannelView {
     /// (start tick, length tick, key) of Piano roll notes; non-empty replaces the steps.
     pub notes: Vec<(i64, i64, u8)>,
     pub cut_itself: bool,
+    /// The channel's sample could not be found: its button is red.
+    pub missing: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -494,9 +496,22 @@ pub fn paint_channel_rack(
             name_rect,
             "channel",
             true,
-            &format!("Channel: {} (right-click for options)", channel.name),
+            &if channel.missing {
+                format!(
+                    "Channel: {} - sample not found (add its folder to the Browser and reopen, or load it again)",
+                    channel.name
+                )
+            } else {
+                format!("Channel: {} (right-click for options)", channel.name)
+            },
         );
-        let color = theme::model_color(channel.color, t.channel_default);
+        // "If you open a project and some, or all, Channel buttons are red, this means the
+        // samples ... nominated for those Channels can't be found" [Manual: channelrack].
+        let color = if channel.missing {
+            egui::Color32::from_rgb(0xC8, 0x32, 0x32)
+        } else {
+            theme::model_color(channel.color, t.channel_default)
+        };
         vgradient(
             &painter,
             name_rect,
