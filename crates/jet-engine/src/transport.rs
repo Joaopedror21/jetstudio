@@ -89,6 +89,8 @@ pub struct Transport {
     state: TransportState,
     anchor_tick: Tick,
     anchor_frame: u64,
+    /// Where Stop returns the position (0 unless "Remember seek time" is on).
+    return_to: Tick,
 }
 
 #[derive(Clone, Copy)]
@@ -107,6 +109,7 @@ impl Transport {
             state: TransportState::Stopped,
             anchor_tick: Tick(0),
             anchor_frame: 0,
+            return_to: Tick(0),
         }
     }
 
@@ -158,10 +161,16 @@ impl Transport {
         let _ = (ppq, tempo);
     }
 
+    /// Stop and return to `return_to`: 0, or the last position set by the user when "Remember
+    /// seek time" is on [Manual: toolbar_panels, "Stop"].
     pub fn stop(&mut self) {
         self.state = TransportState::Stopped;
-        self.anchor_tick = Tick(0); // seek-memory behavior remains a reference observation.
+        self.anchor_tick = self.return_to;
         self.anchor_frame = self.clock.now_frames();
+    }
+
+    pub fn set_return_to(&mut self, tick: Tick) {
+        self.return_to = tick;
     }
 
     pub fn pause(&mut self, ppq: Ppq, tempo: Tempo) {

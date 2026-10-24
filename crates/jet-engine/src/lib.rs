@@ -90,6 +90,12 @@ pub struct Session {
     /// Playlist timeline selection (start, end) in ticks: "The Timeline Selections will play in
     /// loop mode or render as a single section" [Manual: playlist]. Not saved, not undoable.
     time_selection: Option<(i64, i64)>,
+    /// "Remember seek time - After pressing stop or (Space), Play will start from the selected
+    /// position (click on the Playlist time-line to select)" [Manual: toolbar_panels]. A global
+    /// option, not saved in the project.
+    remember_seek: bool,
+    /// Last position set with `transport.position.set`.
+    seek_point: i64,
 }
 
 impl Session {
@@ -121,6 +127,8 @@ impl Session {
             backup_dir: None,
             backed_up: None,
             time_selection: None,
+            remember_seek: false,
+            seek_point: 0,
         }
     }
 
@@ -169,6 +177,10 @@ impl Session {
             PlayMode::Pattern => Source::Pattern(self.selected_pattern),
             PlayMode::Song => Source::Song,
         }
+    }
+
+    pub fn remember_seek(&self) -> bool {
+        self.remember_seek
     }
 
     pub fn time_selection(&self) -> Option<(i64, i64)> {

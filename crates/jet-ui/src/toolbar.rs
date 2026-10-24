@@ -13,6 +13,8 @@ use crate::workspace::{WindowKind, WsAction};
 #[derive(Default)]
 pub struct ToolbarState {
     pub open_menu: Option<usize>,
+    /// Stop button right-click menu, where it opened.
+    pub stop_menu: Option<egui::Pos2>,
     pub tempo_edit: Option<String>,
     pub hidden: bool,
 }
@@ -38,6 +40,7 @@ pub struct ToolbarView {
     /// Recording armed; `recording` once audio is being captured.
     pub armed: bool,
     pub recording: bool,
+    pub remember_seek: bool,
 }
 
 pub enum ToolbarAction {
@@ -274,6 +277,38 @@ pub fn paint_toolbar(
         }
         if response.clicked() {
             actions.push(ToolbarAction::Engine(command, json!({})));
+        }
+        if id == "toolbar.stop" {
+            // "Double-click to stop all notes (panic mode)" [Manual: toolbar_panels, "Stop"].
+            if response.double_clicked() {
+                actions.push(ToolbarAction::Engine("transport.panic", json!({})));
+            }
+            if response.secondary_clicked() {
+                state.stop_menu = Some(cell.left_bottom());
+            }
+        }
+    }
+    // "(Right-Click) the Stop button to show the start location option: Remember seek time".
+    if let Some(origin) = state.stop_menu {
+        let items = [crate::widgets::MenuItem {
+            label: if view.remember_seek {
+                "Remember seek time: on"
+            } else {
+                "Remember seek time: off"
+            },
+            shortcut: "",
+            enabled: true,
+        }];
+        match paint.popup_menu("toolbar.stop-menu", origin, &items) {
+            crate::widgets::MenuResult::Open => {}
+            crate::widgets::MenuResult::Dismissed => state.stop_menu = None,
+            crate::widgets::MenuResult::Chosen(_) => {
+                state.stop_menu = None;
+                actions.push(ToolbarAction::Engine(
+                    "transport.remember_seek.toggle",
+                    json!({}),
+                ));
+            }
         }
     }
 

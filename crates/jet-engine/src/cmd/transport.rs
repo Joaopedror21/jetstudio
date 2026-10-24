@@ -72,6 +72,21 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
         "transport.position.set" => {
             let p: PositionParams = parse(id, params)?;
             session.transport.seek(Tick(p.tick.max(0)));
+            session.seek_point = p.tick.max(0);
+            if session.remember_seek {
+                session.transport.set_return_to(Tick(session.seek_point));
+            }
+            Ok(true)
+        }
+        "transport.remember_seek.toggle" => {
+            empty(id, params)?;
+            session.remember_seek = !session.remember_seek;
+            let to = if session.remember_seek {
+                session.seek_point
+            } else {
+                0
+            };
+            session.transport.set_return_to(Tick(to));
             Ok(true)
         }
         _ => Err(CmdError::UnknownCommand(id.to_owned())),

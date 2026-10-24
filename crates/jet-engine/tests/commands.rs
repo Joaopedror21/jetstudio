@@ -161,3 +161,32 @@ fn a_pattern_clip_without_a_track_goes_to_the_first_free_one() {
     assert_eq!(arrangement.tracks.len(), 2);
     assert_ne!(arrangement.clips[0].track, arrangement.clips[1].track);
 }
+
+#[test]
+fn remember_seek_time_returns_stop_to_the_set_position() {
+    let clock = ManualClock::new(48_000);
+    let mut session = Session::with_clock(Box::new(clock.clone()));
+    session
+        .execute("transport.position.set", json!({"tick": 192}))
+        .unwrap();
+    session.execute("transport.play_stop", json!({})).unwrap();
+    session.execute("transport.stop", json!({})).unwrap();
+    assert_eq!(
+        session.transport_snapshot().position,
+        Tick(0),
+        "off: back to 0"
+    );
+
+    session
+        .execute("transport.remember_seek.toggle", json!({}))
+        .unwrap();
+    assert!(session.remember_seek());
+    session.execute("transport.play_stop", json!({})).unwrap();
+    clock.set_frames(48_000);
+    session.execute("transport.play_stop", json!({})).unwrap();
+    assert_eq!(
+        session.transport_snapshot().position,
+        Tick(192),
+        "on: Stop returns to the position set last"
+    );
+}

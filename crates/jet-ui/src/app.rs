@@ -1780,6 +1780,13 @@ impl JetApp {
                 json!({}),
             ));
         }
+        // "You can use the (Home) key to reset to the song beginning" [Manual: playlist].
+        if pressed(Key::Home) && !modifiers.any() {
+            actions.push(UiAction::Engine(
+                "transport.position.set",
+                json!({"tick": 0}),
+            ));
+        }
         if pressed(Key::F4) {
             actions.push(UiAction::Engine("pattern.next_empty", json!({})));
         }
@@ -1849,6 +1856,7 @@ impl JetApp {
             metronome: self.session.metronome(),
             armed: self.armed,
             recording: self.take.is_some(),
+            remember_seek: self.session.remember_seek(),
         }
     }
 
@@ -3896,6 +3904,36 @@ mod tests {
             app.session.project().active().unwrap().markers[0].action,
             jet_model::MarkerAction::Loop
         );
+    }
+
+    #[test]
+    fn stop_double_click_panics_and_right_click_offers_remember_seek() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        let stop = app.probe().entries()["toolbar.stop"].rect;
+        let pos = stop.center();
+        run_frame(&mut app, &ctx, vec![Event::PointerMoved(pos)]);
+        for _ in 0..2 {
+            for pressed in [true, false] {
+                run_frame(
+                    &mut app,
+                    &ctx,
+                    vec![Event::PointerButton {
+                        pos,
+                        button: PointerButton::Primary,
+                        pressed,
+                        modifiers: Modifiers::default(),
+                    }],
+                );
+            }
+        }
+        assert!(app.session.take_panic(), "double-click is panic");
+        click_button(&mut app, &ctx, stop, PointerButton::Secondary);
+        run_frame(&mut app, &ctx, Vec::new());
+        let item = app.probe().entries()["toolbar.stop-menu.item.0"].rect;
+        click(&mut app, &ctx, item);
+        assert!(app.session.remember_seek());
     }
 
     #[test]

@@ -985,6 +985,14 @@ static SPECS: &[CommandSpec] = &[
         Step
     ),
     spec!(
+        "transport.remember_seek.toggle",
+        "Remember seek time",
+        "",
+        None,
+        "{}",
+        Step
+    ),
+    spec!(
         "playlist.selection.clear",
         "Clear timeline selection",
         "",

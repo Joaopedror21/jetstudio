@@ -9,7 +9,7 @@ Legenda: ✅ disponível e testado · 🟡 parcial (o que falta está ao lado) �
 
 | Sistema | Itens catalogados | ✅ | 🟡 | ⬜ | ⛔ |
 |---|---:|---:|---:|---:|---:|
-| Interface e controles globais (GLB) | 23 | 7 | 9 | 7 | 0 |
+| Interface e controles globais (GLB) | 23 | 8 | 8 | 7 | 0 |
 | Channel Rack e Step Sequencer (CR) | 33 | 14 | 9 | 9 | 1 |
 | Sampler e instrumentos (SMP/INS) | 20 | 8 | 3 | 9 | 0 |
 | Piano Roll (PR) | 27 | 9 | 12 | 6 | 0 |
@@ -20,7 +20,7 @@ Legenda: ✅ disponível e testado · 🟡 parcial (o que falta está ao lado) �
 | Plugins externos (PLG) | 4 | 0 | 0 | 4 | 0 |
 | Browser e arquivos (BR/FILE) | 12 | 2 | 4 | 5 | 1 |
 | Automação, MIDI, gravação (AUT/MIDI/REC) | 10 | 0 | 4 | 6 | 0 |
-| **Total** | **192** | **71** | **58** | **61** | **2** |
+| **Total** | **192** | **72** | **57** | **61** | **2** |
 
 As contagens foram geradas por script a partir da coluna Estado do inventário: ✅ = Testado; 🟡 = Implementado ou Parcialmente compatível; ⬜ = Pesquisado ou Especificado; ⛔ = Bloqueado. 
 
@@ -28,7 +28,7 @@ As contagens foram geradas por script a partir da coluna Estado do inventário: 
 
 | FL Studio | JetStudio | Estado | Evidência / o que falta |
 |---|---|---|---|
-| Play, Stop, Pause, PAT/SONG | transporte com relógio do dispositivo | ✅ | `pattern_mode_loops_the_pattern`, `stop_releases_synth_voices...`; falta o duplo clique de pânico e "Remember seek time" |
+| Play, Stop, Pause, PAT/SONG | transporte com relógio do dispositivo, pânico no duplo clique, Remember seek time | ✅ | `pattern_mode_loops_the_pattern`, `stop_double_click_panics_...`, `remember_seek_time_...` |
 | Tempo 10–522 BPM | LCD editável por teclado | 🟡 | falta arrastar o LCD e o tap tempo |
 | Undo/Redo (Ctrl+Z, Ctrl+Alt+Z) | histórico com gestos coalescidos | ✅ | `a_continuous_gesture_undoes_as_one_step` |
 | Janelas F5/F6/F7/F9 | Playlist, Channel rack, Piano roll, Mixer | ✅ | `workspace::tests::*`, `piano_roll_click_adds_a_note...` |
