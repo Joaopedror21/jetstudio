@@ -39,14 +39,23 @@ pub struct StampedNote {
     pub frame: u64,
 }
 
-/// Open MIDI input connections; dropping it closes them.
+type Queues = (rtrb::Producer<LiveNote>, rtrb::Producer<StampedNote>);
+
+/// MIDI input connections; dropping it closes them. "Input device - Select the device in the
+/// Input list"; "Enable device - ... FL Studio will now receive MIDI from that device" [Manual:
+/// envsettings_midi]. Every device starts enabled (our choice: FL starts with none).
 pub struct MidiInputs {
-    _connections: Vec<midir::MidiInputConnection<()>>,
+    connections: Vec<midir::MidiInputConnection<()>>,
+    /// Names of the connected (enabled) ports.
     pub names: Vec<String>,
+    /// Every input port found, enabled or not.
+    pub available: Vec<String>,
     /// Channel id that incoming notes play (0 = none).
     pub target: Arc<AtomicU64>,
     /// Every note played, for note recording; drain it each UI frame.
     pub log: rtrb::Consumer<StampedNote>,
+    sink: Arc<Mutex<Queues>>,
+    frames: Arc<AtomicU64>,
 }
 
 impl MidiInputs {
@@ -56,23 +65,44 @@ impl MidiInputs {
         sink: rtrb::Producer<LiveNote>,
         frames: Arc<AtomicU64>,
     ) -> Result<Self, String> {
-        let target = Arc::new(AtomicU64::new(0));
         let (log_sink, log) = rtrb::RingBuffer::new(1024);
-        let sink = Arc::new(Mutex::new((sink, log_sink)));
+        let mut inputs = Self {
+            connections: Vec::new(),
+            names: Vec::new(),
+            available: Vec::new(),
+            target: Arc::new(AtomicU64::new(0)),
+            log,
+            sink: Arc::new(Mutex::new((sink, log_sink))),
+            frames,
+        };
+        inputs.connect(&[])?;
+        Ok(inputs)
+    }
+
+    /// (Re)connect every input port except those named in `disabled`.
+    pub fn connect(&mut self, disabled: &[String]) -> Result<(), String> {
+        self.connections.clear();
+        self.names.clear();
         let probe = midir::MidiInput::new("JetStudio").map_err(|e| e.to_string())?;
         let ports = probe.ports();
-        let mut connections = Vec::new();
-        let mut names = Vec::new();
-        for port in &ports {
-            let name = probe
-                .port_name(port)
-                .unwrap_or_else(|_| "MIDI input".to_owned());
+        self.available = ports
+            .iter()
+            .map(|port| {
+                probe
+                    .port_name(port)
+                    .unwrap_or_else(|_| "MIDI input".to_owned())
+            })
+            .collect();
+        for (port, name) in ports.iter().zip(self.available.clone()) {
+            if disabled.contains(&name) {
+                continue;
+            }
             let Ok(input) = midir::MidiInput::new("JetStudio") else {
                 continue;
             };
-            let sink = Arc::clone(&sink);
-            let target = Arc::clone(&target);
-            let frames = Arc::clone(&frames);
+            let sink = Arc::clone(&self.sink);
+            let target = Arc::clone(&self.target);
+            let frames = Arc::clone(&self.frames);
             let callback = move |_stamp: u64, bytes: &[u8], _: &mut ()| {
                 let channel = target.load(Ordering::Relaxed);
                 if channel == 0 {
@@ -87,16 +117,11 @@ impl MidiInputs {
                 }
             };
             if let Ok(connection) = input.connect(port, "jetstudio-in", callback, ()) {
-                connections.push(connection);
-                names.push(name);
+                self.connections.push(connection);
+                self.names.push(name);
             }
         }
-        Ok(Self {
-            _connections: connections,
-            names,
-            target,
-            log,
-        })
+        Ok(())
     }
 
     pub fn set_target(&self, channel: Option<u64>) {

@@ -11,7 +11,95 @@ pub const RATES: [u32; 5] = [44_100, 48_000, 88_200, 96_000, 192_000];
 /// Buffer lengths in frames (our choice of steps).
 pub const BUFFERS: [u32; 6] = [128, 256, 512, 1024, 2048, 4096];
 
+/// Settings window tabs (F10) [Manual: envsettings_audio, envsettings_midi, envsettings_files].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SettingsTab {
+    #[default]
+    Audio,
+    Midi,
+    File,
+}
+
+/// "Autosave - Autosaves are made according to the following settings" [Manual:
+/// envsettings_files, "Backup (Autosave)"].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AutosaveMode {
+    /// "Never (just remind every 10 min)".
+    Never,
+    /// "Rarely (every 15 minutes)".
+    Rarely,
+    /// "Occasionally (every 10 minutes)".
+    Occasionally,
+    /// "Regularly (every 5 minutes)". Our default (the manual does not name one).
+    #[default]
+    Regularly,
+    /// "Frequently (every 5 minutes & before risky operations)": also while playing.
+    Frequently,
+    /// "Very frequently (every minute & before risky operations)".
+    VeryFrequently,
+}
+
+impl AutosaveMode {
+    pub const ALL: [AutosaveMode; 6] = [
+        AutosaveMode::Never,
+        AutosaveMode::Rarely,
+        AutosaveMode::Occasionally,
+        AutosaveMode::Regularly,
+        AutosaveMode::Frequently,
+        AutosaveMode::VeryFrequently,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AutosaveMode::Never => "Never (just remind every 10 min)",
+            AutosaveMode::Rarely => "Rarely (every 15 minutes)",
+            AutosaveMode::Occasionally => "Occasionally (every 10 minutes)",
+            AutosaveMode::Regularly => "Regularly (every 5 minutes)",
+            AutosaveMode::Frequently => "Frequently (every 5 minutes, also while playing)",
+            AutosaveMode::VeryFrequently => "Very frequently (every minute, also while playing)",
+        }
+    }
+
+    /// Seconds between backups (for Never, between reminders).
+    pub fn interval(self) -> u64 {
+        match self {
+            AutosaveMode::Never | AutosaveMode::Occasionally => 600,
+            AutosaveMode::Rarely => 900,
+            AutosaveMode::Regularly | AutosaveMode::Frequently => 300,
+            AutosaveMode::VeryFrequently => 60,
+        }
+    }
+
+    /// "... UNLESS FL Studio is playing, then the autosave is postponed until the project is
+    /// stopped" (Rarely, Occasionally, Regularly).
+    pub fn waits_for_stop(self) -> bool {
+        matches!(
+            self,
+            AutosaveMode::Rarely | AutosaveMode::Occasionally | AutosaveMode::Regularly
+        )
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            AutosaveMode::Never => "never",
+            AutosaveMode::Rarely => "rarely",
+            AutosaveMode::Occasionally => "occasionally",
+            AutosaveMode::Regularly => "regularly",
+            AutosaveMode::Frequently => "frequently",
+            AutosaveMode::VeryFrequently => "very_frequently",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.key() == key)
+    }
+}
+
 pub struct AudioSettingsView {
+    pub tab: SettingsTab,
+    /// Every MIDI input found, and whether it is enabled.
+    pub midi: Vec<(String, bool)>,
+    pub autosave: AutosaveMode,
     pub devices: Vec<String>,
     /// Selection to apply (device, rate, buffer); `None` = device default.
     pub pending: (Option<String>, Option<u32>, Option<u32>),
@@ -23,6 +111,10 @@ pub struct AudioSettingsView {
 }
 
 pub enum AudioSettingsAction {
+    Tab(SettingsTab),
+    /// Enable or disable a MIDI input device.
+    MidiDevice(String, bool),
+    Autosave(AutosaveMode),
     Device(Option<String>),
     Rate(Option<u32>),
     Buffer(Option<u32>),
@@ -41,7 +133,47 @@ pub fn paint_audio_settings(
     painter.rect_filled(rect, 0.0, t.rack_bg);
     let left = rect.left() + 10.0;
     let width = rect.width() - 20.0;
-    let mut y = rect.top() + 8.0;
+    let mut y = rect.top() + 6.0;
+    let mut tab_x = left;
+    for (tab, label) in [
+        (SettingsTab::Audio, "Audio"),
+        (SettingsTab::Midi, "MIDI"),
+        (SettingsTab::File, "File"),
+    ] {
+        let b = Rect::from_min_size(pos2(tab_x, y), vec2(70.0, 20.0));
+        if paint.toggle(
+            &format!("settings.tab.{}", label.to_lowercase()),
+            b,
+            label,
+            view.tab == tab,
+            "Settings page",
+        ) {
+            actions.push(AudioSettingsAction::Tab(tab));
+        }
+        tab_x += 74.0;
+    }
+    y += 30.0;
+    match view.tab {
+        SettingsTab::Audio => {}
+        SettingsTab::Midi => {
+            paint_midi(
+                paint,
+                view,
+                Rect::from_min_max(pos2(left, y), rect.max),
+                &mut actions,
+            );
+            return actions;
+        }
+        SettingsTab::File => {
+            paint_file(
+                paint,
+                view,
+                Rect::from_min_max(pos2(left, y), rect.max),
+                &mut actions,
+            );
+            return actions;
+        }
+    }
     let heading = |painter: &egui::Painter, y: f32, text: &str| {
         painter.text(
             pos2(left, y + 10.0),
@@ -201,4 +333,89 @@ pub fn paint_audio_settings(
         y += 20.0;
     }
     actions
+}
+
+/// MIDI page: "Input - Lists detected devices"; "Enable device".
+fn paint_midi(
+    paint: &mut PaintCtx<'_>,
+    view: &AudioSettingsView,
+    area: Rect,
+    actions: &mut Vec<AudioSettingsAction>,
+) {
+    let t = *paint.tokens;
+    let painter = paint.painter().with_clip_rect(area);
+    let mut y = area.top();
+    painter.text(
+        pos2(area.left(), y + 10.0),
+        Align2::LEFT_CENTER,
+        "Input",
+        theme::medium(15.0),
+        t.menu_text,
+    );
+    y += 26.0;
+    if view.midi.is_empty() {
+        painter.text(
+            pos2(area.left(), y + 10.0),
+            Align2::LEFT_CENTER,
+            "No MIDI input device found.",
+            theme::regular(13.0),
+            t.hint_text,
+        );
+        return;
+    }
+    for (i, (name, enabled)) in view.midi.iter().enumerate() {
+        let row = Rect::from_min_size(pos2(area.left(), y), vec2(area.width() - 20.0, 22.0));
+        painter.text(
+            pos2(row.left(), row.center().y),
+            Align2::LEFT_CENTER,
+            name,
+            theme::regular(13.0),
+            t.title_text,
+        );
+        let toggle = Rect::from_min_size(pos2(row.right() - 90.0, row.top()), vec2(90.0, 22.0));
+        if paint.toggle(
+            &format!("settings.midi.{i}"),
+            toggle,
+            if *enabled { "Enabled" } else { "Enable" },
+            *enabled,
+            "Receive MIDI from this device",
+        ) {
+            actions.push(AudioSettingsAction::MidiDevice(name.clone(), !enabled));
+        }
+        y += 26.0;
+    }
+}
+
+/// File page: "Backup (Autosave)".
+fn paint_file(
+    paint: &mut PaintCtx<'_>,
+    view: &AudioSettingsView,
+    area: Rect,
+    actions: &mut Vec<AudioSettingsAction>,
+) {
+    let t = *paint.tokens;
+    let painter = paint.painter().with_clip_rect(area);
+    let mut y = area.top();
+    painter.text(
+        pos2(area.left(), y + 10.0),
+        Align2::LEFT_CENTER,
+        "Backup (Autosave)",
+        theme::medium(15.0),
+        t.menu_text,
+    );
+    y += 26.0;
+    for mode in AutosaveMode::ALL {
+        let row = Rect::from_min_size(pos2(area.left(), y), vec2(area.width() - 20.0, 22.0));
+        if paint.toggle(
+            &format!("settings.autosave.{}", mode.key()),
+            row,
+            mode.label(),
+            view.autosave == mode,
+            "Backups go to Documents/JetStudio Projects/Backup",
+        ) && view.autosave != mode
+        {
+            actions.push(AudioSettingsAction::Autosave(mode));
+        }
+        y += 26.0;
+    }
 }

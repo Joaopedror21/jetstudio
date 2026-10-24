@@ -9,7 +9,9 @@ use jet_model::{ChannelId, ChannelKind, ClipSource};
 use jet_playback::{AudioOutput, OutputRequest};
 use serde_json::{Value, json};
 
-use crate::audio_settings::{AudioSettingsAction, AudioSettingsView, paint_audio_settings};
+use crate::audio_settings::{
+    AudioSettingsAction, AudioSettingsView, AutosaveMode, SettingsTab, paint_audio_settings,
+};
 use crate::automation_settings::{
     AutomationSettingsAction, AutomationSettingsView, paint_automation_settings,
 };
@@ -162,8 +164,12 @@ pub struct JetApp {
     fonts_installed: bool,
     pending_show: Vec<WindowKind>,
     pending_focus: Option<WindowKind>,
-    /// Last autosave check [Manual: envsettings_files, "Regularly (every 5 minutes)"].
+    /// Last autosave check [Manual: envsettings_files, "Backup (Autosave)"].
     last_autosave: std::time::Instant,
+    autosave: AutosaveMode,
+    settings_tab: SettingsTab,
+    /// MIDI input devices switched off in the MIDI settings.
+    midi_disabled: Vec<String>,
     /// Audio recording [Manual: recording_audio]: the input opens when armed.
     armed: bool,
     input: Option<jet_playback::input::AudioInput>,
@@ -220,6 +226,9 @@ impl Default for JetApp {
             pending_show: Vec::new(),
             pending_focus: None,
             last_autosave: std::time::Instant::now(),
+            autosave: AutosaveMode::default(),
+            settings_tab: SettingsTab::Audio,
+            midi_disabled: Vec::new(),
             armed: false,
             input: None,
             take: None,
@@ -297,6 +306,7 @@ impl JetApp {
             .or_else(|| home.map(|h| std::path::PathBuf::from(h).join(".config")));
         app.settings_file = config.map(|d| d.join("JetStudio").join("settings.json"));
         app.audio_request = app.load_audio_settings();
+        app.load_other_settings();
         app.audio_pending = app.audio_request.clone();
         app.hardware_audio = true;
         app.open_audio();
@@ -320,6 +330,29 @@ impl JetApp {
         }
     }
 
+    /// MIDI devices switched off and the autosave mode, from the settings file.
+    fn load_other_settings(&mut self) {
+        let Some(value) = self
+            .settings_file
+            .as_ref()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        else {
+            return;
+        };
+        self.midi_disabled = value["midi"]["disabled"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(mode) = value["autosave"].as_str().and_then(AutosaveMode::from_key) {
+            self.autosave = mode;
+        }
+    }
+
     fn save_audio_settings(&mut self) {
         let Some(path) = &self.settings_file else {
             return;
@@ -328,7 +361,7 @@ impl JetApp {
             "device": self.audio_request.device,
             "rate": self.audio_request.rate,
             "buffer_frames": self.audio_request.buffer_frames,
-        }});
+        }, "midi": { "disabled": self.midi_disabled }, "autosave": self.autosave.key() });
         let written = path
             .parent()
             .map_or(Ok(()), std::fs::create_dir_all)
@@ -359,7 +392,12 @@ impl JetApp {
             Ok(mut output) => {
                 self.session.set_clock(Box::new(output.clock()));
                 let info = output.info().clone();
-                let midi = output.open_midi_inputs().ok();
+                let mut midi = output.open_midi_inputs().ok();
+                if let Some(inputs) = &mut midi
+                    && !self.midi_disabled.is_empty()
+                {
+                    let _ = inputs.connect(&self.midi_disabled);
+                }
                 self.audio_status = Some(format!(
                     "MIDI in: {} - {} Hz - {}",
                     midi.as_ref().map_or(0, |m| m.names.len()),
@@ -387,7 +425,21 @@ impl JetApp {
     }
 
     fn audio_settings_view(&self) -> AudioSettingsView {
+        let midi = self
+            .audio
+            .as_ref()
+            .and_then(|h| h.midi.as_ref())
+            .map(|m| {
+                m.available
+                    .iter()
+                    .map(|name| (name.clone(), !self.midi_disabled.contains(name)))
+                    .collect()
+            })
+            .unwrap_or_default();
         AudioSettingsView {
+            tab: self.settings_tab,
+            midi,
+            autosave: self.autosave,
             devices: self.device_list.clone(),
             pending: (
                 self.audio_pending.device.clone(),
@@ -419,6 +471,23 @@ impl JetApp {
 
     fn run_audio_settings(&mut self, action: AudioSettingsAction) {
         match action {
+            AudioSettingsAction::Tab(tab) => self.settings_tab = tab,
+            AudioSettingsAction::MidiDevice(name, enabled) => {
+                self.midi_disabled.retain(|n| *n != name);
+                if !enabled {
+                    self.midi_disabled.push(name);
+                }
+                if let Some(inputs) = self.audio.as_mut().and_then(|h| h.midi.as_mut())
+                    && let Err(error) = inputs.connect(&self.midi_disabled)
+                {
+                    self.last_error = Some(format!("MIDI: {error}"));
+                }
+                self.save_audio_settings();
+            }
+            AudioSettingsAction::Autosave(mode) => {
+                self.autosave = mode;
+                self.save_audio_settings();
+            }
             AudioSettingsAction::Device(device) => self.audio_pending.device = device,
             AudioSettingsAction::Rate(rate) => self.audio_pending.rate = rate,
             AudioSettingsAction::Buffer(frames) => self.audio_pending.buffer_frames = frames,
@@ -494,6 +563,26 @@ impl JetApp {
             }
         }
         self.session.end_gesture();
+    }
+
+    /// Autosave by the chosen mode [Manual: envsettings_files, "Backup (Autosave)"]: backups every
+    /// interval when there are changes, postponed while playing for the modes that say so;
+    /// "Never" only reminds in the hint bar.
+    fn autosave_tick(&mut self, playing: bool, elapsed: Duration) {
+        let mode = self.autosave;
+        if elapsed < Duration::from_secs(mode.interval()) || (playing && mode.waits_for_stop()) {
+            return;
+        }
+        self.last_autosave = std::time::Instant::now();
+        if !self.session.needs_backup() {
+            return;
+        }
+        if mode == AutosaveMode::Never {
+            self.audio_status =
+                Some("Reminder: the project has unsaved changes (autosave is off)".to_owned());
+        } else if let Err(error) = self.session.execute("file.autosave", json!({})) {
+            self.last_error = Some(error.to_string());
+        }
     }
 
     /// The selected channels in Channel rack order (the target channel when none is marked).
@@ -2678,16 +2767,7 @@ impl JetApp {
         self.pump_audio();
         self.pump_recording(toolbar_view.playing);
         self.pump_note_recording(toolbar_view.playing);
-        // Autosave every 5 minutes "UNLESS FL Studio is playing, then the autosave is postponed
-        // until the project is stopped" [Manual: envsettings_files, "Regularly"].
-        if self.last_autosave.elapsed() >= Duration::from_secs(300) && !toolbar_view.playing {
-            self.last_autosave = std::time::Instant::now();
-            if self.session.needs_backup()
-                && let Err(error) = self.session.execute("file.autosave", json!({}))
-            {
-                self.last_error = Some(error.to_string());
-            }
-        }
+        self.autosave_tick(toolbar_view.playing, self.last_autosave.elapsed());
         if (toolbar_view.playing || self.audio.is_some()) && !self.static_capture {
             ctx.request_repaint_after(Duration::from_millis(30));
         }
@@ -2869,7 +2949,14 @@ fn paint_window(
         | WindowKind::GraphEditor
         | WindowKind::AutomationSettings => {
             let label = if win.kind == WindowKind::AudioSettings {
-                "Settings - Audio".to_owned()
+                format!(
+                    "Settings - {}",
+                    match surfaces.audio_settings_view.tab {
+                        SettingsTab::Audio => "Audio",
+                        SettingsTab::Midi => "MIDI",
+                        SettingsTab::File => "File",
+                    }
+                )
             } else if win.kind == WindowKind::AutomationSettings {
                 surfaces.automation_view.map_or_else(
                     || "Automation clip settings".to_owned(),
@@ -4811,6 +4898,54 @@ mod tests {
             "found in a Browser folder"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn settings_tabs_and_autosave_modes() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        let dir = std::env::temp_dir().join(format!("jet-ui-autosave-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        app.session.set_backup_dir(Some(dir.clone()));
+        toggle(&mut app, &ctx, Key::F10);
+        let file = app.probe().entries()["settings.tab.file"].rect;
+        click(&mut app, &ctx, file);
+        assert_eq!(app.settings_tab, SettingsTab::File);
+        run_frame(&mut app, &ctx, Vec::new());
+        let very = app.probe().entries()["settings.autosave.very_frequently"].rect;
+        click(&mut app, &ctx, very);
+        assert_eq!(app.autosave, AutosaveMode::VeryFrequently);
+        app.execute("channel.add", json!({"name": "Kick"}));
+        // A minute passes while playing: this mode saves anyway.
+        app.autosave_tick(true, Duration::from_secs(61));
+        let backup = dir.join("Untitled (autosave).jetproj");
+        assert!(backup.is_file());
+        std::fs::remove_file(&backup).unwrap();
+        // Regularly waits for 5 minutes and for the transport to stop.
+        app.autosave = AutosaveMode::Regularly;
+        app.execute("channel.add", json!({"name": "Snare"}));
+        app.autosave_tick(false, Duration::from_secs(61));
+        app.autosave_tick(true, Duration::from_secs(301));
+        assert!(!backup.is_file());
+        app.autosave_tick(false, Duration::from_secs(301));
+        assert!(backup.is_file());
+        // Never only reminds.
+        app.autosave = AutosaveMode::Never;
+        app.execute("channel.add", json!({"name": "Hat"}));
+        std::fs::remove_file(&backup).unwrap();
+        app.autosave_tick(false, Duration::from_secs(601));
+        assert!(!backup.is_file());
+        assert!(
+            app.audio_status
+                .as_deref()
+                .is_some_and(|s| s.contains("unsaved"))
+        );
+        // The MIDI tab lists the inputs (none without hardware).
+        let midi = app.probe().entries()["settings.tab.midi"].rect;
+        click(&mut app, &ctx, midi);
+        assert_eq!(app.settings_tab, SettingsTab::Midi);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
