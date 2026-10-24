@@ -35,6 +35,12 @@
 | `f595cbb` | Porta, Mono legato e slide notes (glide em cents, exato por amostra) |
 | `da845f4` | Editor de eventos do Piano roll: Velocity, Pan, Release, Fine pitch, Mod X/Y |
 | `67e4ff4` | Gravação de notas (MIDI e teclado de digitação) no pattern selecionado, filtro de gravação |
+| `f4495e9` | Audio clips: ganho, fade-in/out e reverse por instância, alças na Playlist |
+| `d7bda39` | Playlist: seleção de timeline (loop e export da seção), marcadores Start e Song loop |
+| `33833fc` | Transporte: duplo clique no Stop é pânico, Remember seek time, Home |
+| `dc01e99` | Browser: busca (Ctrl+F, F3, Esc) |
+| `eef6009` | Global snap funcional e snap Main do Piano roll; quantização da entrada pelo Global snap |
+| `210c07a` | Mixer: EQ integrado de 3 bandas por faixa |
 
 ## 1. Funcionalidades pesquisadas
 
@@ -50,11 +56,11 @@ O corpus de texto do manual fica na scratchpad da sessão (`flman/*.txt`). Ele n
 - **Playback** (`jet-playback`): cpal 0.18.2, filas rtrb, relógio do dispositivo, plano e transporte aplicados juntos, estatísticas de carga e overruns.
 - **Engine** (`jet-engine`): cerca de 80 comandos (lista: `jet-cli commands`); pool de samples fora do histórico e liberado só na thread de UI; undo de gestos contínuos; posição do transporte que volta ao início no fim do material.
 - **UI** (`jet-ui`): Channel rack (knobs, seletor de mixer, mute/solo, pintura de steps, renomear, menu de contexto, arrastar samples, swing e comprimento do pattern), Piano roll (ferramentas, snap, mover/redimensionar, velocity, teclado, atalhos, clipboard, MIDI import/export, menu Tools, snap to scale, chord stamp), Mixer (faders, pan, mute/solo, meters, sends, FX e parâmetros, invert, swap, stereo sep), Playlist (clips de pattern, áudio e automação, arranjos, markers), Channel Settings, Audio Settings (F10), gravação, toolbar com CPU, polifonia e osciloscópio reais, Export WAV/MIDI.
-- **Contagem atual da matriz:** 192 itens: 71 ✅, 57 🟡, 62 ⬜, 2 ⛔ (recontada pelo script depois de `67e4ff4`).
+- **Contagem atual da matriz:** 192 itens: 73 ✅, 57 🟡, 60 ⬜, 2 ⛔ (recontada pelo script depois de `210c07a`).
 
 ## 3. Testes realizados e resultados reais
 
-- `cargo xtask ci`: verde em 24/10/2026, depois de cada commit até `67e4ff4` (o commit só é feito se o CI passar).
+- `cargo xtask ci`: verde em 24/10/2026, depois de cada commit até `67e4ff4` (o commit só é feito se o CI passar). Último commit verificado: `210c07a`.
 - Hardware: `jet-cli play` com Mono legato e slide note no dispositivo real: 0 overruns, pico de DSP de 2%. A gravação por MIDI real não foi exercitada (nenhum controlador foi usado).
 - Testes novos por área:
   - jet-seq: 6;
@@ -88,14 +94,15 @@ O corpus de texto do manual fica na scratchpad da sessão (`flman/*.txt`). Ele n
 
 ## 5. Recursos pendentes (por prioridade, respeitando dependências)
 
-Feitos nesta etapa: Graph editor (CR-016), Porta/Mono legato/slide notes (SMP-009, PR-015), editor de eventos (PR-012), gravação de notas (REC-002).
+Feitos nesta etapa: Graph editor (CR-016), Porta/Mono legato/slide notes (SMP-009, PR-015), editor de eventos (PR-012), gravação de notas (REC-002), ganho/fades/reverse de Audio Clip (PL-003), seleção de timeline e marcadores Start/Loop (PL-009/010), Stop/pânico/Remember seek time (GLB-003), busca no Browser (BR-004), Global snap (GLB-011), EQ integrado da faixa (MX-013).
 
-1. **Audio clips:** ganho, fades e stretch (PL-003).
-2. **Tipos de marcador e loop da música** (PL-009); Merge de arranjos (PL-008).
-3. **Efeitos que faltam:** stereo shaper (FX-010), pitch shifter (FX-012), analisadores.
-4. **Hospedagem de plugins** (PLG-001/002) em crate FFI isolado; o VST3 está sob MIT desde a 3.8; CLAP é MIT.
-5. **Outras abas de configurações** (GLB-021) e os demais modos de autosave (FILE-003).
-6. **Ghost notes** (PR-016); countdown e Score logger na gravação (REC-002).
+1. **Ferramentas da Playlist** (PL-005): Select (seleção múltipla), Slice, Slip; zoom e rolagem (PL-011).
+2. **Envelopes e LFO do canal** (SMP-008): pan, cutoff e pitch, LFO.
+3. **Automação** (AUT-001): LFO, mais alvos (parâmetros de EQ e de efeitos), gravação (AUT-002).
+4. **Ctrl+L com vários canais** (MX-017): precisa de seleção múltipla no Channel rack.
+5. **Efeitos que faltam:** stereo shaper (FX-010), pitch shifter (FX-012), analisadores (FX-013).
+6. **Hospedagem de plugins** (PLG-001/002) em crate FFI isolado; o VST3 está sob MIT desde a 3.8; CLAP é MIT.
+7. **Outras abas de configurações** (GLB-021), modos de autosave (FILE-003), Ghost notes (PR-016), Merge de arranjos (PL-008), Marker loop/skip/pause (PL-009).
 
 ## 6. Dependências técnicas
 
@@ -106,11 +113,10 @@ Feitos nesta etapa: Graph editor (CR-016), Porta/Mono legato/slide notes (SMP-00
 
 ## 7. Próxima tarefa
 
-**Audio clips: ganho e fades (PL-003).** Ainda não começou no código. Plano:
-1. Releia `flman/playlist_audioclip.txt` (ou baixe `playlist_audioclip.htm`) para as propriedades do clip: volume, fade in/out, e o que o manual diz de stretch.
-2. Modelo: campos com `serde(default)` no canal AudioClip (o clip de áudio é um canal: `Channel::audio_clip`); comando `channel.audio.set`.
-3. Render: o `SamplerVoice` já tem envelope; fades lineares no início e no fim da clip (o fim é o `hard_end`). Teste de render com rampas medidas.
-4. UI: menu da clip na Playlist ou página no Channel Settings do canal AudioClip.
+**Ferramentas da Playlist (PL-005) e zoom/rolagem (PL-011).** Ainda não começou no código. Plano:
+1. Releia `flman/playlist.txt` (Toolbar: Draw, Paint, Delete, Mute, Slip, Slice, Select, Zoom, Playback) e os atalhos.
+2. Seleção múltipla de clips (Select, Ctrl+arrastar retângulo), mover/apagar a seleção; Slice (corta uma clip em duas no ponto clicado, preservando o offset); Slip (arrastar o conteúdo dentro da clip, alterando `offset`).
+3. Zoom com Ctrl+roda e rolagem horizontal; testes de UI para cada ferramenta e testes de engine para os comandos novos.
 
 Depois disso, siga a lista do §5 a partir do item 2.
 
