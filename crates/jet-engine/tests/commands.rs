@@ -190,3 +190,45 @@ fn remember_seek_time_returns_stop_to_the_set_position() {
         "on: Stop returns to the position set last"
     );
 }
+
+#[test]
+fn slicing_and_slipping_clips() {
+    let mut session = Session::with_clock(Box::new(ManualClock::new(48_000)));
+    session
+        .execute("playlist.track.add", json!({"name": "Track 1"}))
+        .unwrap();
+    session
+        .execute(
+            "playlist.clip.add",
+            json!({"track": 1, "pattern": 1, "start": 384, "length": 768}),
+        )
+        .unwrap();
+    let id = session.project().active().unwrap().clips[0].id.0;
+    session
+        .execute("playlist.clip.slice", json!({"id": id, "at": 576}))
+        .unwrap();
+    let clips = &session.project().active().unwrap().clips;
+    assert_eq!(clips.len(), 2);
+    assert_eq!(
+        (clips[0].start.0, clips[0].length.0, clips[0].offset.0),
+        (384, 192, 0)
+    );
+    assert_eq!(
+        (clips[1].start.0, clips[1].length.0, clips[1].offset.0),
+        (576, 576, 192)
+    );
+    assert!(
+        session
+            .execute("playlist.clip.slice", json!({"id": id, "at": 384}))
+            .is_err(),
+        "a slice on the clip edge is refused"
+    );
+    session
+        .execute("playlist.clip.slip", json!({"id": id, "offset": 96}))
+        .unwrap();
+    let clip = &session.project().active().unwrap().clips[0];
+    assert_eq!((clip.start.0, clip.length.0, clip.offset.0), (384, 192, 96));
+    session.execute("edit.undo_step", json!({})).unwrap();
+    session.execute("edit.undo_step", json!({})).unwrap();
+    assert_eq!(session.project().active().unwrap().clips.len(), 1);
+}

@@ -149,6 +149,8 @@ pub struct JetApp {
     /// Toolbar Global snap [Manual: toolbar_panels, "Global Snap Panel"]; Line by default, as
     /// the reference capture W shows.
     global_snap: crate::snap::SnapValue,
+    /// Counter for multi-clip edits that undo as one step.
+    multi_edit: u64,
     note_take: Option<NoteTake>,
     takes_started: u64,
     /// Typing-keyboard notes for the recorder, stamped with the transport clock frame.
@@ -196,6 +198,7 @@ impl Default for JetApp {
             record_audio: true,
             record_notes: true,
             global_snap: crate::snap::SnapValue::Line,
+            multi_edit: 0,
             note_take: None,
             takes_started: 0,
             typed_notes: Vec::new(),
@@ -1466,27 +1469,57 @@ impl JetApp {
                 PlaylistAction::SelectPattern(id) => {
                     self.execute("pattern.select", json!({"id": id}));
                 }
-                PlaylistAction::MoveClip { id, row, start } => {
-                    while self.track_count() <= row {
-                        let before = self.track_count();
-                        self.add_track();
-                        if self.track_count() == before {
-                            return;
-                        }
-                    }
-                    if let Some(track) = self.track_id_at(row) {
-                        self.execute(
-                            "playlist.clip.move",
-                            json!({"id": id, "track": track, "start": start}),
-                        );
-                    }
-                }
                 PlaylistAction::ResizeClip { id, length } => {
                     self.execute("playlist.clip.resize", json!({"id": id, "length": length}));
                 }
                 PlaylistAction::DeleteClip(id) => {
                     self.execute("playlist.clip.delete", json!({"id": id}));
                 }
+                PlaylistAction::DeleteClips(ids) => {
+                    self.multi_edit += 1;
+                    let key = format!("playlist.multi.{}", self.multi_edit);
+                    for id in ids {
+                        self.gesture(&key, "playlist.clip.delete", json!({"id": id}));
+                    }
+                    self.session.end_gesture();
+                }
+                PlaylistAction::MoveClips(moves) => {
+                    self.multi_edit += 1;
+                    let key = format!("playlist.multi.{}", self.multi_edit);
+                    for (id, row, start) in moves {
+                        while self.track_count() <= row {
+                            let before = self.track_count();
+                            self.add_track();
+                            if self.track_count() == before {
+                                return;
+                            }
+                        }
+                        if let Some(track) = self.track_id_at(row) {
+                            self.gesture(
+                                &key,
+                                "playlist.clip.move",
+                                json!({"id": id, "track": track, "start": start}),
+                            );
+                        }
+                    }
+                    self.session.end_gesture();
+                }
+                PlaylistAction::SliceClip { id, at } => {
+                    self.execute("playlist.clip.slice", json!({"id": id, "at": at}));
+                }
+                PlaylistAction::SlipClip { id, offset } => {
+                    self.execute("playlist.clip.slip", json!({"id": id, "offset": offset}));
+                }
+                PlaylistAction::PlayFrom(tick) => {
+                    if self.session.transport_snapshot().mode != PlayMode::Song {
+                        self.execute("transport.mode.toggle", json!({}));
+                    }
+                    self.execute("transport.position.set", json!({"tick": tick}));
+                    if self.session.transport_snapshot().state != TransportState::Playing {
+                        self.execute("transport.play_stop", json!({}));
+                    }
+                }
+
                 PlaylistAction::MuteClip { id, muted } => {
                     self.execute("playlist.clip.mute.set", json!({"id": id, "muted": muted}));
                 }
@@ -2218,6 +2251,7 @@ impl JetApp {
                         track: clip.track.0,
                         start: clip.start.0,
                         length: clip.length.0,
+                        offset: clip.offset.0,
                         label,
                         color,
                         automation,
@@ -2243,6 +2277,7 @@ impl JetApp {
             ticks_per_bar,
             beats_per_bar: u32::from(project.settings.time_sig.num),
             global_snap: self.global_snap,
+            typing: self.typing,
             step_ticks: project.settings.step_ticks().unwrap_or(24),
             position: song_running.then_some(snapshot.position.0),
             tracks,
@@ -2709,6 +2744,7 @@ fn paint_window(
             );
         }
         WindowKind::Playlist => {
+            surfaces.playlist_state.focused = surfaces.focused == Some(WindowKind::Playlist);
             actions.extend(
                 paint_playlist(paint, surfaces.playlist_state, surfaces.playlist_view, rect)
                     .into_iter()
@@ -3165,11 +3201,14 @@ mod tests {
         let bar_w = app.layout.bar_w;
         // Drag the clip two bars to the right (from its middle, away from the resize edge).
         let from = pos2(clip.left() + 8.0, clip.center().y);
+        // The click placed the clip on the beat under the pointer (the Global snap is Line).
+        let placed = app.session.project().arrangements[0].clips[0].start.0;
+        assert_eq!(placed % 96, 0);
         drag(&mut app, &ctx, from, from + vec2(bar_w * 2.0, 0.0));
         let ticks_per_bar = 384;
         assert_eq!(
             app.session.project().arrangements[0].clips[0].start.0,
-            2 * ticks_per_bar
+            placed + 2 * ticks_per_bar
         );
         let clip = app.probe().entries()["playlist.clip.1"].rect;
         click_button(&mut app, &ctx, clip, PointerButton::Secondary);
@@ -4115,6 +4154,130 @@ mod tests {
         );
         let q = band(&app).q_milli;
         assert!((450..=550).contains(&q), "{q}");
+    }
+
+    #[test]
+    fn playlist_tools_select_move_delete_slice_slip_mute_and_paint() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("playlist.track.add", json!({"name": "Track 1"}));
+        for start in [384, 1152] {
+            app.execute(
+                "playlist.clip.add",
+                json!({"track": 1, "pattern": 1, "start": start, "length": 384}),
+            );
+        }
+        run_frame(&mut app, &ctx, Vec::new());
+        let grid = app.probe().entries()["playlist.grid"].rect;
+        let row0 = app.probe().entries()["playlist.track.1"].rect.center().y;
+        let bar_w = app.layout.bar_w;
+        let x_of = |tick: i64| grid.left() + 1.0 + tick as f32 / 384.0 * bar_w;
+        let clips = |app: &JetApp| app.session.project().arrangements[0].clips.clone();
+        let tool = |app: &mut JetApp, name: &str| {
+            let rect = app.probe().entries()[&format!("playlist.tool.{name}")].rect;
+            click(app, &ctx, rect);
+        };
+
+        // Select tool: a rectangle over both clips selects them; dragging one moves both,
+        // undone in one step.
+        tool(&mut app, "select");
+        drag(
+            &mut app,
+            &ctx,
+            pos2(x_of(100), row0),
+            pos2(x_of(1700), row0 + 5.0),
+        );
+        assert_eq!(app.playlist.selection.len(), 2);
+        let from = pos2(x_of(500), row0);
+        drag(&mut app, &ctx, from, from + vec2(bar_w, 0.0));
+        let starts: Vec<i64> = clips(&app).iter().map(|c| c.start.0).collect();
+        assert_eq!(starts, vec![768, 1536]);
+        app.execute("edit.undo_step", json!({}));
+        let starts: Vec<i64> = clips(&app).iter().map(|c| c.start.0).collect();
+        assert_eq!(starts, vec![384, 1152], "one undo step");
+
+        // Delete removes the selection in one step.
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::Delete, true, Modifiers::default())],
+        );
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::Delete, false, Modifiers::default())],
+        );
+        assert!(clips(&app).is_empty());
+        app.execute("edit.undo_step", json!({}));
+        assert_eq!(clips(&app).len(), 2);
+        run_frame(&mut app, &ctx, Vec::new());
+
+        // Slice (C key): a click in the middle of the first clip cuts it on the beat.
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::C, true, Modifiers::default())],
+        );
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![key(Key::C, false, Modifiers::default())],
+        );
+        assert_eq!(app.playlist.tool, crate::playlist::PlTool::Slice);
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(pos2(x_of(576), row0), vec2(1.0, 1.0)),
+        );
+        let after = clips(&app);
+        assert_eq!(after.len(), 3);
+        assert_eq!((after[1].start.0, after[1].offset.0), (576, 192));
+
+        // Slip: dragging the right part's content one beat to the right lowers its offset.
+        tool(&mut app, "slip");
+        let from = pos2(x_of(700), row0);
+        drag(&mut app, &ctx, from, from + vec2(bar_w / 4.0, 0.0));
+        let slipped = clips(&app).into_iter().find(|c| c.start.0 == 576).unwrap();
+        assert_eq!(
+            (slipped.start.0, slipped.length.0, slipped.offset.0),
+            (576, 192, 96)
+        );
+
+        // Mute tool: a drag across the clips mutes each one it crosses.
+        tool(&mut app, "mute");
+        drag(
+            &mut app,
+            &ctx,
+            pos2(x_of(450), row0),
+            pos2(x_of(1300), row0),
+        );
+        assert!(clips(&app).iter().all(|c| c.muted), "{:?}", clips(&app));
+
+        // Paint tool: a drag along an empty row paints one clip per pattern length.
+        tool(&mut app, "paint");
+        let row1 = app.probe().entries()["playlist.track.placeholder.2"]
+            .rect
+            .center()
+            .y;
+        let painted_before = clips(&app).len();
+        drag(&mut app, &ctx, pos2(x_of(10), row1), pos2(x_of(1200), row1));
+        assert!(
+            clips(&app).len() >= painted_before + 3,
+            "{}",
+            clips(&app).len()
+        );
+
+        // Play tool (Y): a click on a clip plays the song from there.
+        tool(&mut app, "play");
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(pos2(x_of(1250), row0), vec2(1.0, 1.0)),
+        );
+        let snapshot = app.session.transport_snapshot();
+        assert_eq!(snapshot.mode, PlayMode::Song);
+        assert_eq!(snapshot.state, TransportState::Playing);
     }
 
     #[test]

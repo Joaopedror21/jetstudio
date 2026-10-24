@@ -16,6 +16,8 @@ pub struct PlaylistView {
     pub beats_per_bar: u32,
     /// The toolbar's Global snap.
     pub global_snap: crate::snap::SnapValue,
+    /// Typing keyboard to piano is on: plain letters play notes instead of choosing tools.
+    pub typing: bool,
     pub step_ticks: i64,
     pub position: Option<i64>,
     pub tracks: Vec<TrackView>,
@@ -43,6 +45,8 @@ pub struct ClipView {
     pub track: u64,
     pub start: i64,
     pub length: i64,
+    /// Content offset in ticks (Slip edits it).
+    pub offset: i64,
     pub label: String,
     pub color: Option<u32>,
     pub muted: bool,
@@ -100,12 +104,60 @@ enum ClipDrag {
         anchor: egui::Pos2,
         dl: i64,
     },
+    /// Slip tool: the clip's content moves by `d` ticks (its offset decreases by `d`).
+    Slip { id: u64, anchor: egui::Pos2, d: i64 },
+}
+
+/// Playlist tools [Manual: playlist, "Tool Bar icons"]: Draw (P), Paint (B), Delete (D), Mute (T),
+/// Slip (S), Slice (C), Select (E), Play (Y).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlTool {
+    #[default]
+    Draw,
+    Paint,
+    Delete,
+    Mute,
+    Slip,
+    Slice,
+    Select,
+    Play,
+}
+
+impl PlTool {
+    const KEYS: [(PlTool, egui::Key); 8] = [
+        (PlTool::Draw, egui::Key::P),
+        (PlTool::Paint, egui::Key::B),
+        (PlTool::Delete, egui::Key::D),
+        (PlTool::Mute, egui::Key::T),
+        (PlTool::Slip, egui::Key::S),
+        (PlTool::Slice, egui::Key::C),
+        (PlTool::Select, egui::Key::E),
+        (PlTool::Play, egui::Key::Y),
+    ];
+}
+
+/// A drag across the grid that is not on a clip.
+#[derive(Clone, Copy, Debug)]
+enum GridDrag {
+    /// Select tool or Ctrl: a rectangle from `from` to `to`.
+    Rect { from: egui::Pos2, to: egui::Pos2 },
+    /// Slice tool: a vertical cut at `x` from `from_y` to `to_y`.
+    Slice { x: f32, from_y: f32, to_y: f32 },
 }
 
 #[derive(Clone)]
 pub struct PlaylistState {
     pub selected_track: Option<u64>,
-    pub selected_clip: Option<u64>,
+    pub tool: PlTool,
+    /// Selected clips (Select tool, Ctrl+drag, Shift+click).
+    pub selection: std::collections::BTreeSet<u64>,
+    /// The Playlist window has the keyboard (set by the host each frame).
+    pub focused: bool,
+    grid_drag: Option<GridDrag>,
+    /// Delete/Mute sweep in progress: the mute value to set (None = delete) and the clips done.
+    sweep: Option<(Option<bool>, std::collections::BTreeSet<u64>)>,
+    /// Paint tool drag: (row, starts painted so far).
+    painting: Option<(usize, Vec<i64>)>,
     drag: Option<ClipDrag>,
     /// Control point being dragged: (automation id, index, tick, value).
     point_drag: Option<(u64, usize, i64, u16)>,
@@ -131,7 +183,12 @@ impl Default for PlaylistState {
     fn default() -> Self {
         Self {
             selected_track: None,
-            selected_clip: None,
+            tool: PlTool::Draw,
+            selection: std::collections::BTreeSet::new(),
+            focused: false,
+            grid_drag: None,
+            sweep: None,
+            painting: None,
             drag: None,
             point_drag: None,
             point_menu: None,
@@ -158,17 +215,25 @@ pub enum PlaylistAction {
         start: i64,
         length: i64,
     },
-    /// Move a clip to display row `row` and tick `start`.
-    MoveClip {
-        id: u64,
-        row: usize,
-        start: i64,
-    },
     ResizeClip {
         id: u64,
         length: i64,
     },
     DeleteClip(u64),
+    /// Several clips deleted as one undo step.
+    DeleteClips(Vec<u64>),
+    /// Several clips moved as one undo step: (id, display row, start).
+    MoveClips(Vec<(u64, usize, i64)>),
+    SliceClip {
+        id: u64,
+        at: i64,
+    },
+    SlipClip {
+        id: u64,
+        offset: i64,
+    },
+    /// Play tool: start playback (Song mode) from this tick.
+    PlayFrom(i64),
     MuteClip {
         id: u64,
         muted: bool,
@@ -244,49 +309,43 @@ pub fn paint_title_tools(
     let t = *paint.tokens;
     let painter = paint.painter();
     type IconFn = fn(&egui::Painter, Rect, egui::Color32);
-    let tools: [(f32, IconFn, &str, bool); 11] = [
-        (13.0, icons::chevron_right, "Playlist options", false),
-        (34.0, icons::magnet, "Snap - Main", false),
-        (66.0, icons::pencil, "Draw tool", true),
+    let tools: [(f32, IconFn, &str, Option<PlTool>); 11] = [
+        (13.0, icons::chevron_right, "Playlist options", None),
+        (34.0, icons::magnet, "Snap - Main (the Global snap)", None),
+        (66.0, icons::pencil, "Draw (P)", Some(PlTool::Draw)),
+        (88.0, icons::brush, "Paint (B)", Some(PlTool::Paint)),
+        (108.0, icons::delete, "Delete (D)", Some(PlTool::Delete)),
+        (128.0, icons::mute, "Mute (T)", Some(PlTool::Mute)),
+        (150.0, icons::slip, "Slip (S)", Some(PlTool::Slip)),
+        (171.0, icons::slice, "Slice (C)", Some(PlTool::Slice)),
+        (192.0, icons::select, "Select (E)", Some(PlTool::Select)),
         (
-            88.0,
-            icons::brush,
-            "Paint tool - not implemented yet",
-            false,
+            213.0,
+            icons::zoom,
+            "Zoom - Ctrl+wheel zooms (the zoom tool is not implemented yet)",
+            None,
         ),
-        (
-            108.0,
-            icons::delete,
-            "Delete tool - not implemented yet",
-            false,
-        ),
-        (128.0, icons::mute, "Mute tool - not implemented yet", false),
-        (150.0, icons::slip, "Slip tool - not implemented yet", false),
-        (
-            171.0,
-            icons::slice,
-            "Slice tool - not implemented yet",
-            false,
-        ),
-        (
-            192.0,
-            icons::select,
-            "Select tool - not implemented yet",
-            false,
-        ),
-        (213.0, icons::zoom, "Zoom tool - not implemented yet", false),
         (
             235.0,
             icons::playback,
-            "Playback tool - not implemented yet",
-            false,
+            "Play selected (Y)",
+            Some(PlTool::Play),
         ),
     ];
-    for (x, icon, hint, active) in tools {
+    for (x, icon, hint, tool) in tools {
         let cell =
             Rect::from_center_size(pos2(title.left() + x, title.center().y), vec2(19.0, 20.0));
-        let _ = paint.hit(&format!("playlist.tool.{x}"), cell, "tool", false, hint);
-        let color = if active {
+        let id = match tool {
+            Some(tool) => format!("playlist.tool.{tool:?}").to_lowercase(),
+            None => format!("playlist.tool.{x}"),
+        };
+        if paint.hit(&id, cell, "tool", tool.is_some(), hint).clicked()
+            && let Some(tool) = tool
+        {
+            state.tool = tool;
+        }
+        // [W] The active tool (Draw in the capture) is drawn in the full title-icon colour.
+        let color = if tool == Some(state.tool) {
             t.title_icon
         } else {
             theme::shade(t.title_icon, 0.82)
@@ -628,6 +687,7 @@ pub fn paint_playlist(
     // Track rows: model tracks first, then placeholders named like FL's empty tracks.
     let first_row = state.scroll_tracks.floor() as usize;
     let rows_visible = (grid.height() / l.track_h).ceil() as usize + 1;
+    let mut row_responses: Vec<(usize, Option<u64>, egui::Response)> = Vec::new();
     for row in first_row..first_row + rows_visible {
         let y = grid.top() + (row as f32 - state.scroll_tracks) * l.track_h;
         let track = view.tracks.get(row);
@@ -742,44 +802,30 @@ pub fn paint_playlist(
         let row_response = paint.ui.interact(
             row_rect.intersect(grid),
             Id::new(("playlist.row", row)),
-            Sense::click(),
+            Sense::click_and_drag(),
         );
-        if row_response.clicked()
-            && let Some(pointer) = row_response.interact_pointer_pos()
-            && view.ticks_per_bar > 0
-        {
-            let bar = ((pointer.x - grid.left() - 1.0) / bar_w + state.scroll_bars)
-                .floor()
-                .max(0.0);
-            let start = bar as i64 * view.ticks_per_bar;
-            let occupied = track.is_some_and(|tr| {
-                view.clips
-                    .iter()
-                    .any(|c| c.track == tr.id && start >= c.start && start < c.start + c.length)
-            });
-            if !occupied {
-                let length = view
-                    .patterns
-                    .iter()
-                    .find(|p| p.id == view.pattern_id)
-                    .map_or(view.ticks_per_bar, |p| p.length.max(1));
-                actions.push(PlaylistAction::AddClipOnRow {
-                    row,
-                    pattern: view.pattern_id,
-                    start,
-                    length,
-                });
-            }
-        }
+        row_responses.push((row, track.map(|tr| tr.id), row_response.clone()));
         if row_response.hovered() {
-            *paint.hint = "Click to place the selected pattern; Ctrl+wheel zooms".to_owned();
+            *paint.hint = match state.tool {
+                PlTool::Draw => "Draw (P): click places the selected pattern; Ctrl+drag selects",
+                PlTool::Paint => "Paint (B): click or drag to paint clips",
+                PlTool::Delete => "Delete (D): click or drag across clips to delete them",
+                PlTool::Mute => "Mute (T): click or drag across clips to mute them",
+                PlTool::Slip => "Slip (S): drag a clip's content left or right",
+                PlTool::Slice => "Slice (C): click a clip, or drag vertically, to slice",
+                PlTool::Select => "Select (E): click or drag to select; Shift adds",
+                PlTool::Play => "Play (Y): click a clip to play from there",
+            }
+            .to_owned();
         }
     }
 
     // Pattern clips. No clip is visible in W, so the clip look is derived from capture A.
     let tpb = view.ticks_per_bar.max(1);
     let beat = (tpb / i64::from(view.beats_per_bar.max(1))).max(1);
-    let (alt, ctrl_down) = paint.ui.input(|i| (i.modifiers.alt, i.modifiers.ctrl));
+    let (alt, ctrl_down, shift_down) = paint
+        .ui
+        .input(|i| (i.modifiers.alt, i.modifiers.ctrl, i.modifiers.shift));
     let snap = if alt {
         1
     } else {
@@ -800,7 +846,7 @@ pub fn paint_playlist(
         }
         let (mut start, mut length, mut row_shown) = (clip.start, clip.length, row as i64);
         match state.drag {
-            Some(ClipDrag::Move { id, dt, drow, .. }) if id == clip.id => {
+            Some(ClipDrag::Move { dt, drow, .. }) if state.selection.contains(&clip.id) => {
                 start = (start + dt).max(0);
                 row_shown = (row_shown + drow).max(0);
             }
@@ -823,7 +869,7 @@ pub fn paint_playlist(
         } else {
             base
         };
-        let selected = state.selected_clip == Some(clip.id);
+        let selected = state.selection.contains(&clip.id);
         grid_painter.rect_filled(clip_rect, 1.0, theme::shade(color, 0.45));
         grid_painter.rect_filled(
             clip_rect.shrink(1.0),
@@ -846,7 +892,12 @@ pub fn paint_playlist(
             );
         // Automation Clips are moved by their title bar because "the lower clip area is used to
         // edit Control Points" [Manual: playlist, "Resizing & Slip-editing Clips"].
+        let slipped = match state.drag {
+            Some(ClipDrag::Slip { id, d, .. }) if id == clip.id => d,
+            _ => 0,
+        };
         if let Some((columns, sample_ticks, offset)) = &clip.waveform {
+            let offset = &(offset - slipped).max(0);
             let body =
                 Rect::from_min_max(pos2(clip_rect.left(), label_band.bottom()), clip_rect.max)
                     .intersect(grid);
@@ -937,40 +988,112 @@ pub fn paint_playlist(
             .ui
             .input(|i| i.pointer.press_origin().or(i.pointer.interact_pos()));
         let on_edge = pointer.is_some_and(|p| p.x > clip_rect.right() - 6.0);
+        let (shift, primary_down, hover) = paint.ui.input(|i| {
+            (
+                i.modifiers.shift,
+                i.pointer.primary_down(),
+                i.pointer.hover_pos(),
+            )
+        });
+        let click_tick = |x: f32| {
+            let raw = ((x - grid.left() - 1.0) / bar_w + state.scroll_bars) * tpb as f32;
+            let tick = raw.max(0.0) as i64;
+            (tick + snap / 2).div_euclid(snap) * snap
+        };
         if response.clicked() {
-            state.selected_clip = Some(clip.id);
-            if ctrl_down {
-                actions.push(PlaylistAction::MuteClip {
+            match state.tool {
+                PlTool::Delete => actions.push(PlaylistAction::DeleteClip(clip.id)),
+                PlTool::Mute => actions.push(PlaylistAction::MuteClip {
                     id: clip.id,
                     muted: !clip.muted,
-                });
+                }),
+                PlTool::Slice => {
+                    if let Some(p) = response.interact_pointer_pos() {
+                        actions.push(PlaylistAction::SliceClip {
+                            id: clip.id,
+                            at: click_tick(p.x),
+                        });
+                    }
+                }
+                // "Play selected (Y) - Click the clips you want to play. Click position will set
+                // the start location."
+                PlTool::Play => {
+                    if let Some(p) = response.interact_pointer_pos() {
+                        actions.push(PlaylistAction::PlayFrom(click_tick(p.x)));
+                    }
+                }
+                PlTool::Draw | PlTool::Paint | PlTool::Select | PlTool::Slip => {
+                    // Shift (Select tool) or Ctrl adds to / removes from the selection.
+                    if shift || ctrl_down {
+                        if !state.selection.remove(&clip.id) {
+                            state.selection.insert(clip.id);
+                        }
+                    } else {
+                        state.selection = [clip.id].into();
+                    }
+                }
             }
         }
         // Right-click deletes [Manual: playlist, "Draw mode ... Right-Click to delete Clips"].
         if response.secondary_clicked() {
             actions.push(PlaylistAction::DeleteClip(clip.id));
         }
+        // Delete and Mute tools: "Click-and-drag to delete Clips", "Left-click and drag to mute
+        // multiple clips" - every clip the pointer crosses while the button is down.
+        if response.drag_started_by(PointerButton::Primary)
+            && matches!(state.tool, PlTool::Delete | PlTool::Mute)
+        {
+            let mute = (state.tool == PlTool::Mute).then_some(!clip.muted);
+            state.sweep = Some((mute, std::collections::BTreeSet::new()));
+        }
+        if primary_down
+            && hover.is_some_and(|p| clip_rect.contains(p))
+            && let Some((mute, done)) = &mut state.sweep
+            && done.insert(clip.id)
+        {
+            actions.push(match mute {
+                Some(muted) => PlaylistAction::MuteClip {
+                    id: clip.id,
+                    muted: *muted,
+                },
+                None => PlaylistAction::DeleteClip(clip.id),
+            });
+        }
         if response.drag_started_by(PointerButton::Primary)
             && let Some(p) = pointer
+            && !matches!(
+                state.tool,
+                PlTool::Delete | PlTool::Mute | PlTool::Slice | PlTool::Play
+            )
         {
-            state.selected_clip = Some(clip.id);
-            state.drag = Some(if on_edge {
-                ClipDrag::Resize {
+            if state.tool == PlTool::Slip {
+                state.drag = Some(ClipDrag::Slip {
+                    id: clip.id,
+                    anchor: p,
+                    d: 0,
+                });
+            } else if on_edge {
+                state.selection = [clip.id].into();
+                state.drag = Some(ClipDrag::Resize {
                     id: clip.id,
                     anchor: p,
                     dl: 0,
-                }
+                });
             } else {
-                ClipDrag::Move {
+                // Dragging a selected clip moves the whole selection.
+                if !state.selection.contains(&clip.id) {
+                    state.selection = [clip.id].into();
+                }
+                state.drag = Some(ClipDrag::Move {
                     id: clip.id,
                     anchor: p,
                     dt: 0,
                     drow: 0,
-                }
-            });
+                });
+            }
         }
         if response.dragged()
-            && let Some(p) = paint.ui.input(|i| i.pointer.hover_pos())
+            && let Some(p) = hover
         {
             match &mut state.drag {
                 Some(ClipDrag::Move {
@@ -987,22 +1110,42 @@ pub fn paint_playlist(
                     let raw = ((p.x - anchor.x) / px_per_tick).round() as i64;
                     *dl = (raw + snap / 2).div_euclid(snap) * snap;
                 }
+                Some(ClipDrag::Slip { id, anchor, d }) if *id == clip.id => {
+                    let raw = ((p.x - anchor.x) / px_per_tick).round() as i64;
+                    // The content cannot slide before its start (offset stays >= 0).
+                    *d = ((raw + snap / 2).div_euclid(snap) * snap).min(clip.offset);
+                }
                 _ => {}
             }
         }
         if response.drag_stopped() {
             match state.drag.take() {
-                Some(ClipDrag::Move { id, dt, drow, .. }) if dt != 0 || drow != 0 => {
-                    actions.push(PlaylistAction::MoveClip {
-                        id,
-                        row: (row as i64 + drow).max(0) as usize,
-                        start: (clip.start + dt).max(0),
-                    });
+                Some(ClipDrag::Move { dt, drow, .. }) if dt != 0 || drow != 0 => {
+                    let moves = view
+                        .clips
+                        .iter()
+                        .filter(|c| state.selection.contains(&c.id))
+                        .filter_map(|c| {
+                            let row = view.tracks.iter().position(|tr| tr.id == c.track)?;
+                            Some((
+                                c.id,
+                                (row as i64 + drow).max(0) as usize,
+                                (c.start + dt).max(0),
+                            ))
+                        })
+                        .collect();
+                    actions.push(PlaylistAction::MoveClips(moves));
                 }
                 Some(ClipDrag::Resize { id, dl, .. }) if dl != 0 => {
                     actions.push(PlaylistAction::ResizeClip {
                         id,
                         length: (clip.length + dl).max(snap),
+                    });
+                }
+                Some(ClipDrag::Slip { id, d, .. }) if d != 0 => {
+                    actions.push(PlaylistAction::SlipClip {
+                        id,
+                        offset: (clip.offset - d).max(0),
                     });
                 }
                 _ => {}
@@ -1022,6 +1165,183 @@ pub fn paint_playlist(
                 view.ms_per_tick,
                 &mut actions,
             );
+        }
+    }
+
+    // Gestures on the empty grid [Manual: playlist, "Tool Bar icons"].
+    let tick_at_x = |x: f32| {
+        (((x - grid.left() - 1.0) / bar_w + state.scroll_bars) * tpb as f32).max(0.0) as i64
+    };
+    let row_at_y = |y: f32| {
+        ((y - grid.top()) / l.track_h + state.scroll_tracks)
+            .floor()
+            .max(0.0) as usize
+    };
+    let pattern_length = view
+        .patterns
+        .iter()
+        .find(|p| p.id == view.pattern_id)
+        .map_or(tpb, |p| p.length.max(1));
+    let row_free = |row: usize, start: i64, length: i64| {
+        view.tracks.get(row).is_none_or(|tr| {
+            !view
+                .clips
+                .iter()
+                .any(|c| c.track == tr.id && start < c.start + c.length && c.start < start + length)
+        })
+    };
+    for (row, _track, response) in &row_responses {
+        let selecting = state.tool == PlTool::Select || ctrl_down;
+        if response.clicked()
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            let start = tick_at_x(p.x).div_euclid(snap) * snap;
+            if selecting {
+                state.selection.clear();
+            } else if matches!(state.tool, PlTool::Draw | PlTool::Paint) && row_free(*row, start, 1)
+            {
+                // "Left-click to add the currently selected Clip", at the snap position.
+                actions.push(PlaylistAction::AddClipOnRow {
+                    row: *row,
+                    pattern: view.pattern_id,
+                    start,
+                    length: pattern_length,
+                });
+            } else if state.tool == PlTool::Play {
+                actions.push(PlaylistAction::PlayFrom(start));
+            }
+        }
+        if response.drag_started_by(PointerButton::Primary)
+            && let Some(origin) = paint.ui.input(|i| i.pointer.press_origin())
+        {
+            if selecting {
+                state.grid_drag = Some(GridDrag::Rect {
+                    from: origin,
+                    to: origin,
+                });
+            } else if state.tool == PlTool::Slice {
+                state.grid_drag = Some(GridDrag::Slice {
+                    x: origin.x,
+                    from_y: origin.y,
+                    to_y: origin.y,
+                });
+            } else if state.tool == PlTool::Paint {
+                state.painting = Some((*row, Vec::new()));
+            } else if matches!(state.tool, PlTool::Delete | PlTool::Mute) {
+                state.sweep = Some((
+                    (state.tool == PlTool::Mute).then_some(true),
+                    std::collections::BTreeSet::new(),
+                ));
+            }
+        }
+        if response.dragged()
+            && let Some(p) = paint.ui.input(|i| i.pointer.hover_pos())
+        {
+            match &mut state.grid_drag {
+                Some(GridDrag::Rect { to, .. }) => *to = p,
+                Some(GridDrag::Slice { to_y, .. }) => *to_y = p.y,
+                None => {}
+            }
+            // "Click-and-drag to paint multiple clips": one clip per free slot the pointer reaches.
+            if let Some((paint_row, painted)) = &mut state.painting {
+                let start = tick_at_x(p.x).div_euclid(pattern_length) * pattern_length;
+                if !painted.contains(&start) && row_free(*paint_row, start, pattern_length) {
+                    painted.push(start);
+                    actions.push(PlaylistAction::AddClipOnRow {
+                        row: *paint_row,
+                        pattern: view.pattern_id,
+                        start,
+                        length: pattern_length,
+                    });
+                }
+            }
+        }
+        if response.drag_stopped() {
+            state.painting = None;
+            match state.grid_drag.take() {
+                Some(GridDrag::Rect { from, to }) => {
+                    let area = Rect::from_two_pos(from, to);
+                    let (t0, t1) = (tick_at_x(area.left()), tick_at_x(area.right()));
+                    let (r0, r1) = (row_at_y(area.top()), row_at_y(area.bottom()));
+                    if !(shift_down || ctrl_down) {
+                        state.selection.clear();
+                    }
+                    for clip in &view.clips {
+                        let Some(row) = view.tracks.iter().position(|tr| tr.id == clip.track)
+                        else {
+                            continue;
+                        };
+                        if (r0..=r1).contains(&row)
+                            && clip.start < t1
+                            && clip.start + clip.length > t0
+                        {
+                            state.selection.insert(clip.id);
+                        }
+                    }
+                }
+                // "Click and drag to make vertical slices through Clip".
+                Some(GridDrag::Slice { x, from_y, to_y }) => {
+                    let at = (tick_at_x(x) + snap / 2).div_euclid(snap) * snap;
+                    let (r0, r1) = (row_at_y(from_y.min(to_y)), row_at_y(from_y.max(to_y)));
+                    for clip in &view.clips {
+                        let Some(row) = view.tracks.iter().position(|tr| tr.id == clip.track)
+                        else {
+                            continue;
+                        };
+                        if (r0..=r1).contains(&row)
+                            && clip.start < at
+                            && at < clip.start + clip.length
+                        {
+                            actions.push(PlaylistAction::SliceClip { id: clip.id, at });
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+    if !paint.ui.input(|i| i.pointer.primary_down()) {
+        state.sweep = None;
+    }
+    match state.grid_drag {
+        Some(GridDrag::Rect { from, to }) => {
+            painter.with_clip_rect(grid).rect_stroke(
+                Rect::from_two_pos(from, to),
+                0.0,
+                Stroke::new(1.0, t.select_on),
+                egui::StrokeKind::Inside,
+            );
+        }
+        Some(GridDrag::Slice { x, from_y, to_y }) => {
+            painter.with_clip_rect(grid).line_segment(
+                [pos2(x, from_y), pos2(x, to_y)],
+                Stroke::new(1.5, t.playhead),
+            );
+        }
+        None => {}
+    }
+    // Tool keys and Delete when the Playlist has the keyboard.
+    if state.focused {
+        let (pressed_tool, delete, plain) = paint.ui.input(|i| {
+            (
+                PlTool::KEYS
+                    .iter()
+                    .find(|(_, key)| i.key_pressed(*key))
+                    .map(|(tool, _)| *tool),
+                i.key_pressed(egui::Key::Delete),
+                !i.modifiers.any(),
+            )
+        });
+        if plain
+            && !view.typing
+            && let Some(tool) = pressed_tool
+        {
+            state.tool = tool;
+        }
+        if delete && !state.selection.is_empty() {
+            actions.push(PlaylistAction::DeleteClips(
+                std::mem::take(&mut state.selection).into_iter().collect(),
+            ));
         }
     }
 

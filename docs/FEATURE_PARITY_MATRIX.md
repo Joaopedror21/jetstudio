@@ -56,7 +56,7 @@ As contagens foram geradas por script a partir da coluna Estado do inventário: 
 | Copy/Paste de notas | Ctrl+C/X/V | ✅ | PR-020 |
 | Chord stamp, snap to scale, flip, strum, limit, arpeggiate | menu Tools e seletores | 🟡 | `piano_roll_tools_flip_strum_limit_stamp_arpeggiate_and_snap`; faltam diálogos com parâmetros, Flam, Randomize, Articulate |
 | Import/Export MIDI | SMF tipo 0/1 | ✅ | AE-008 |
-| Playlist: pattern clips | criar, mover, redimensionar, apagar, mutar | 🟡 | PL-005: faltam Slip, Slice, seleção de timeline |
+| Playlist: pattern clips e ferramentas | Draw, Paint, Delete, Mute, Slip, Slice, Select, Play; seleção múltipla | 🟡 | PL-005: `playlist_tools_...`; faltam Zoom e corte diagonal |
 | Playlist: audio clips | soltar arquivo, waveform, offset, ganho, fades, reverse | 🟡 | PL-003: `audio_clip_gain_fades_and_reverse_shape_the_render`; faltam crossfade, pitch/stretch |
 | Playlist: automation clips | criar pelo knob, editar pontos e curvas | 🟡 | PL-004 / AUT-001: faltam LFO e gravação |
 | Arranjos e time markers | menu do título, Alt+T, ações Start e Song loop | 🟡 | PL-008/009: faltam Merge, Marker loop/skip/pause e fórmula de compasso |

@@ -1,4 +1,4 @@
-use super::parse;
+use super::{invalid, parse};
 use crate::{CmdError, Session};
 use jet_model::{Arrangement, ClipId, ClipInstance, ClipSource, PatternId, PlaylistTrack, TrackId};
 use jet_time::Tick;
@@ -44,6 +44,18 @@ struct MoveClip {
 struct ResizeClip {
     id: u64,
     length: i64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SliceClip {
+    id: u64,
+    at: i64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SlipClip {
+    id: u64,
+    offset: i64,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -331,6 +343,54 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                     .find(|clip| clip.id == ClipId(p.id))
                     .ok_or_else(|| CmdError::Failed("clip does not exist".into()))?;
                 clip.length = Tick(p.length);
+                Ok(())
+            })
+        }
+        // "Slice (C) - Click and drag to make vertical slices through Clip" [Manual: playlist]: the
+        // clip becomes two, the right part continuing the content (its offset advances). An Audio
+        // Clip keeps its fade-in on the left part and its fade-out on the right part.
+        "playlist.clip.slice" => {
+            let p: SliceClip = parse(id, params)?;
+            session.edit_project(|project| {
+                let new_id = project.ids.clip();
+                let clips = &mut active_arrangement_mut(project)?.clips;
+                let index = clips
+                    .iter()
+                    .position(|clip| clip.id == ClipId(p.id))
+                    .ok_or_else(|| CmdError::Failed("clip does not exist".into()))?;
+                let clip = &mut clips[index];
+                if p.at <= clip.start.0 || p.at >= clip.end().0 {
+                    return Err(CmdError::Failed(
+                        "the slice must fall inside the clip".into(),
+                    ));
+                }
+                let cut = p.at - clip.start.0;
+                let mut right = clip.clone();
+                right.id = new_id;
+                right.start = Tick(p.at);
+                right.length = Tick(clip.length.0 - cut);
+                right.offset = Tick(clip.offset.0 + cut);
+                right.audio.fade_in_ms = 0;
+                clip.length = Tick(cut);
+                clip.audio.fade_out_ms = 0;
+                clips.insert(index + 1, right);
+                Ok(())
+            })
+        }
+        // "Slip Edit (S) - Left-click on the content of Clips to slide them left or right relative
+        // to the time-line while retaining the start/end points of the Clip".
+        "playlist.clip.slip" => {
+            let p: SlipClip = parse(id, params)?;
+            if p.offset < 0 {
+                return Err(invalid(id, "offset must be >= 0"));
+            }
+            session.edit_project(|project| {
+                let clip = active_arrangement_mut(project)?
+                    .clips
+                    .iter_mut()
+                    .find(|clip| clip.id == ClipId(p.id))
+                    .ok_or_else(|| CmdError::Failed("clip does not exist".into()))?;
+                clip.offset = Tick(p.offset);
                 Ok(())
             })
         }

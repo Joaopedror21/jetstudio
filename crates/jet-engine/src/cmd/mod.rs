@@ -856,6 +856,22 @@ static SPECS: &[CommandSpec] = &[
         Step
     ),
     spec!(
+        "playlist.clip.slice",
+        "Slice clip",
+        "",
+        None,
+        "{id:uint,at:int}",
+        Step
+    ),
+    spec!(
+        "playlist.clip.slip",
+        "Slip clip content",
+        "",
+        None,
+        "{id:uint,offset:int}",
+        Step
+    ),
+    spec!(
         "playlist.clip.audio.set",
         "Audio Clip gain, fades and reverse",
         "",
