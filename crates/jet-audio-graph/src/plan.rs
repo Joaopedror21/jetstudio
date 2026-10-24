@@ -42,6 +42,65 @@ pub struct ChannelPlan {
     pub last_cents: Option<f64>,
 }
 
+/// The integrated 3-band track EQ: one biquad per band and side.
+pub struct TrackEq {
+    pub bands: [jet_model::EqBand; 3],
+    pub left: [jet_dsp::filter::Biquad; 3],
+    pub right: [jet_dsp::filter::Biquad; 3],
+}
+
+impl TrackEq {
+    pub fn new(bands: &[jet_model::EqBand; 3], rate: f64) -> Option<Self> {
+        if bands.iter().all(|b| b.gain_db_tenths == 0) {
+            return None;
+        }
+        let filter = |band: &jet_model::EqBand| {
+            let kind = match band.shape {
+                jet_model::EqShape::LowShelf => jet_dsp::filter::BiquadKind::LowShelf,
+                jet_model::EqShape::HighShelf => jet_dsp::filter::BiquadKind::HighShelf,
+                jet_model::EqShape::LowPass => jet_dsp::filter::BiquadKind::LowPass,
+                jet_model::EqShape::HighPass => jet_dsp::filter::BiquadKind::HighPass,
+                jet_model::EqShape::Peak => jet_dsp::filter::BiquadKind::Peak,
+            };
+            jet_dsp::filter::Biquad::new(
+                kind,
+                f64::from(band.freq_hz),
+                f64::from(band.q_milli) / 1000.0,
+                f64::from(band.gain_db_tenths) / 10.0,
+                rate,
+            )
+        };
+        let set = [filter(&bands[0]), filter(&bands[1]), filter(&bands[2])];
+        Some(Self {
+            bands: *bands,
+            left: set,
+            right: set,
+        })
+    }
+
+    /// Keep the filter memory of `old` (only the coefficients change), so moving a band while
+    /// playing does not click.
+    pub fn take_state(&mut self, old: &TrackEq) {
+        for i in 0..3 {
+            self.left[i].copy_state(&old.left[i]);
+            self.right[i].copy_state(&old.right[i]);
+        }
+    }
+
+    pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
+        for filter in &mut self.left {
+            for sample in left.iter_mut() {
+                *sample = filter.process(*sample);
+            }
+        }
+        for filter in &mut self.right {
+            for sample in right.iter_mut() {
+                *sample = filter.process(*sample);
+            }
+        }
+    }
+}
+
 pub struct FxInstance {
     pub kind: FxKind,
     pub enabled: bool,
@@ -67,6 +126,8 @@ pub struct TrackPlan {
     pub sends: Vec<(usize, f32)>,
     pub fx: Vec<FxInstance>,
     pub fx_enabled: bool,
+    /// Integrated EQ (after the FX slots), `None` when every band is flat.
+    pub eq: Option<TrackEq>,
     pub left: Vec<f32>,
     pub right: Vec<f32>,
     /// Wet buffer used by FX slots with a mix below 100%.
@@ -270,6 +331,7 @@ pub fn build_plan(
                     })
                     .collect(),
                 fx_enabled: track.fx_enabled,
+                eq: TrackEq::new(&track.eq, f64::from(rate)),
                 left: vec![0.0; MAX_BLOCK],
                 right: vec![0.0; MAX_BLOCK],
                 scratch_left: vec![0.0; MAX_BLOCK],

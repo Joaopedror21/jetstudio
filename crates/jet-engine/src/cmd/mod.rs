@@ -631,6 +631,14 @@ static SPECS: &[CommandSpec] = &[
         Coalesce
     ),
     spec!(
+        "mixer.track.eq.set",
+        "Track EQ band",
+        "",
+        None,
+        "{track:uint,band:0|1|2,freq_hz?:uint,gain_db_tenths?:int,q_milli?:uint}",
+        Coalesce
+    ),
+    spec!(
         "mixer.track.mute.set",
         "Mute track",
         "",

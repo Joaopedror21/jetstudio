@@ -1175,6 +1175,35 @@ pub struct MixerInsert {
     /// Master switch for all effects on the track [Manual: mixer, "Mixer Track FX master switch"].
     #[serde(default = "default_true")]
     pub fx_enabled: bool,
+    /// Integrated parametric EQ: "Band 1 - Low Shelf; Band 2 - Peaking; 3 - High Shelf"
+    /// [Manual: mixer_trackprops]. Flat (0 dB) bands do nothing.
+    #[serde(default = "default_track_eq")]
+    pub eq: [EqBand; 3],
+}
+
+/// Default track EQ bands (hypothesis H-MIX-3: frequencies and Q of FL's integrated EQ are not
+/// documented; the same as our EQ effect's defaults).
+pub fn default_track_eq() -> [EqBand; 3] {
+    [
+        EqBand {
+            shape: EqShape::LowShelf,
+            freq_hz: 120,
+            q_milli: 707,
+            gain_db_tenths: 0,
+        },
+        EqBand {
+            shape: EqShape::Peak,
+            freq_hz: 1000,
+            q_milli: 1000,
+            gain_db_tenths: 0,
+        },
+        EqBand {
+            shape: EqShape::HighShelf,
+            freq_hz: 8000,
+            q_milli: 707,
+            gain_db_tenths: 0,
+        },
+    ]
 }
 
 fn default_mixer_volume() -> u16 {
@@ -1199,6 +1228,7 @@ impl MixerInsert {
             sends: Vec::new(),
             fx: Vec::new(),
             fx_enabled: true,
+            eq: default_track_eq(),
         }
     }
 
@@ -1222,6 +1252,11 @@ impl MixerInsert {
                 .fx
                 .iter()
                 .all(|slot| slot.mix <= 1000 && slot.kind.valid())
+            && self.eq.iter().all(|band| {
+                (20..=20_000).contains(&band.freq_hz)
+                    && (100..=10_000).contains(&band.q_milli)
+                    && i32::from(band.gain_db_tenths).abs() <= 180
+            })
     }
 }
 

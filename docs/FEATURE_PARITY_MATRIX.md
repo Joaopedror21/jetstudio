@@ -14,13 +14,13 @@ Legenda: ✅ disponível e testado · 🟡 parcial (o que falta está ao lado) �
 | Sampler e instrumentos (SMP/INS) | 20 | 8 | 3 | 9 | 0 |
 | Piano Roll (PR) | 27 | 9 | 12 | 6 | 0 |
 | Playlist (PL) | 17 | 5 | 9 | 3 | 0 |
-| Mixer (MX) | 17 | 8 | 5 | 4 | 0 |
+| Mixer (MX) | 17 | 9 | 4 | 4 | 0 |
 | Motor de áudio (AE) | 15 | 9 | 2 | 4 | 0 |
 | Efeitos (FX) | 14 | 9 | 1 | 4 | 0 |
 | Plugins externos (PLG) | 4 | 0 | 0 | 4 | 0 |
 | Browser e arquivos (BR/FILE) | 12 | 2 | 5 | 4 | 1 |
 | Automação, MIDI, gravação (AUT/MIDI/REC) | 10 | 0 | 4 | 6 | 0 |
-| **Total** | **192** | **72** | **58** | **60** | **2** |
+| **Total** | **192** | **73** | **57** | **60** | **2** |
 
 As contagens foram geradas por script a partir da coluna Estado do inventário: ✅ = Testado; 🟡 = Implementado ou Parcialmente compatível; ⬜ = Pesquisado ou Especificado; ⛔ = Bloqueado. 
 
@@ -63,6 +63,7 @@ As contagens foram geradas por script a partir da coluna Estado do inventário: 
 | Seleção de timeline | Ctrl+arrastar no ruler; toca em loop e renderiza só a seleção | 🟡 | PL-010: `timeline_selection_and_time_markers_shape_playback_and_export` |
 | Mute de faixa/clip | engine | ✅ | `song_mode_places_clip_windows...` |
 | Mixer: fader, pan, mute/solo, meters | sim, mais invert, swap L/R e stereo sep | 🟡 | fader H-MIX-1 |
+| EQ integrado de 3 bandas | gráfico no inspector, depois dos FX | ✅ | MX-013: `track_eq_shapes_the_mixer_output`, `mixer_eq_handles_...` (H-MIX-3) |
 | Sends pós-fader, Route to Master | sim, sem ciclos | ✅ | `sends_route_post_fader...` |
 | 10 FX slots | 11 efeitos próprios, mix, enable, mover | ✅ | `effects_keep_their_state_across_plan_swaps` |
 | Export WAV 16/24/32 | Song/Pattern, Tail leave/cut/wrap | ✅ | `offline_render_leaves_the_remainder...` |

@@ -146,6 +146,14 @@ impl Biquad {
         self.y2 = 0.0;
     }
 
+    /// Take the delay-line memory of `other`, keeping these coefficients.
+    pub fn copy_state(&mut self, other: &Biquad) {
+        self.x1 = other.x1;
+        self.x2 = other.x2;
+        self.y1 = other.y1;
+        self.y2 = other.y2;
+    }
+
     #[inline]
     pub fn process(&mut self, x: f32) -> f32 {
         let x = f64::from(x);

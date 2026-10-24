@@ -1199,3 +1199,59 @@ fn timeline_selection_and_time_markers_shape_playback_and_export() {
     let (left, _) = export(&mut session, "song");
     assert_eq!(left.len(), 1536 * 250);
 }
+
+#[test]
+fn track_eq_shapes_the_mixer_output() {
+    let mut session = session_120();
+    session
+        .execute("channel.add", json!({"name": "Lead", "kind": "synth"}))
+        .unwrap();
+    let id = session.selected_channel().unwrap().0;
+    session
+        .execute(
+            "channel.synth.set",
+            json!({"id": id, "params": {"waveform": "Sine", "attack_ms": 0, "decay_ms": 0,
+                "sustain": 1000, "release_ms": 5, "cutoff_hz": 20000, "resonance": 0, "detune_cents": 0}}),
+        )
+        .unwrap();
+    // Key 69 is 440 Hz; one beat.
+    session
+        .execute(
+            "note.add",
+            json!({"pattern": 1, "channel": id, "start": 0, "length": 96, "key": 69}),
+        )
+        .unwrap();
+    let rms = |data: &[f32]| (data.iter().map(|v| v * v).sum::<f32>() / data.len() as f32).sqrt();
+    let (flat, _) = export(&mut session, "pattern");
+    // +12 dB peaking band at 440 Hz on the Master: about 3.98 times louder.
+    session
+        .execute(
+            "mixer.track.eq.set",
+            json!({"track": 0, "band": 1, "freq_hz": 440, "gain_db_tenths": 120}),
+        )
+        .unwrap();
+    let (boosted, _) = export(&mut session, "pattern");
+    let ratio = rms(&boosted[4_800..20_000]) / rms(&flat[4_800..20_000]);
+    assert!((ratio - 3.98).abs() < 0.1, "{ratio}");
+    // A -18 dB high shelf far above the tone barely changes it.
+    session
+        .execute(
+            "mixer.track.eq.set",
+            json!({"track": 0, "band": 1, "gain_db_tenths": 0}),
+        )
+        .unwrap();
+    session
+        .execute(
+            "mixer.track.eq.set",
+            json!({"track": 0, "band": 2, "freq_hz": 12000, "gain_db_tenths": -180}),
+        )
+        .unwrap();
+    let (shelved, _) = export(&mut session, "pattern");
+    let ratio = rms(&shelved[4_800..20_000]) / rms(&flat[4_800..20_000]);
+    assert!((ratio - 1.0).abs() < 0.02, "{ratio}");
+    assert!(
+        session
+            .execute("mixer.track.eq.set", json!({"track": 0, "band": 3}))
+            .is_err()
+    );
+}

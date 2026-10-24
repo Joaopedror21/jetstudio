@@ -20,6 +20,18 @@ struct TrackFlag {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct TrackEqParams {
+    track: u16,
+    band: usize,
+    #[serde(default)]
+    freq_hz: Option<u16>,
+    #[serde(default)]
+    gain_db_tenths: Option<i16>,
+    #[serde(default)]
+    q_milli: Option<u16>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TrackOnly {
     track: u16,
 }
@@ -150,6 +162,27 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
             let v = ranged(id, p.value, -1000, 1000)? as i16;
             session.edit_project(|project| {
                 track_mut(project, p.track)?.stereo_sep = v;
+                Ok(())
+            })
+        }
+        // Integrated EQ band [Manual: mixer_trackprops, "Parametric EQ"]: frequency 20 Hz-20 kHz,
+        // gain +-18 dB, bandwidth as Q 0.1-10 (ranges ours, H-MIX-3).
+        "mixer.track.eq.set" => {
+            let p: TrackEqParams = parse(id, params)?;
+            if p.band > 2 {
+                return Err(invalid(id, "band must be 0, 1 or 2"));
+            }
+            session.edit_project(|project| {
+                let band = &mut track_mut(project, p.track)?.eq[p.band];
+                if let Some(v) = p.freq_hz {
+                    band.freq_hz = v.clamp(20, 20_000);
+                }
+                if let Some(v) = p.gain_db_tenths {
+                    band.gain_db_tenths = v.clamp(-180, 180);
+                }
+                if let Some(v) = p.q_milli {
+                    band.q_milli = v.clamp(100, 10_000);
+                }
                 Ok(())
             })
         }

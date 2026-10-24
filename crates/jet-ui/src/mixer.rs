@@ -20,6 +20,8 @@ pub struct MixerState {
     pub levels: Vec<(f32, f32)>,
     menu: Option<(MixerMenu, Pos2)>,
     pub selected_slot: Option<usize>,
+    /// Track EQ band being dragged: (band, its Q x 1000 when the drag started).
+    eq_drag: Option<(usize, u16)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +45,7 @@ pub struct MixerTrackView {
     pub stereo_sep: i16,
     pub invert: bool,
     pub swap: bool,
+    pub eq: [jet_model::EqBand; 3],
     /// Peak since the last frame (from the audio thread), linear.
     pub peak: (f32, f32),
 }
@@ -52,6 +55,14 @@ pub struct MixerView {
 }
 
 pub enum MixerAction {
+    /// Track EQ band change (part of a drag gesture).
+    Eq {
+        track: u16,
+        band: usize,
+        freq_hz: u16,
+        gain_db_tenths: i16,
+        q_milli: u16,
+    },
     Volume {
         track: u16,
         value: u16,
@@ -880,6 +891,11 @@ fn paint_inspector(
         }
         y += 25.0;
     }
+    // Integrated track EQ [Manual: mixer_trackprops, "Parametric EQ"]; geometry is ours.
+    y += 4.0;
+    let graph = Rect::from_min_size(pos2(rect.left() + 10.0, y), vec2(rect.width() - 20.0, 96.0));
+    paint_track_eq(paint, painter, state, track, graph, actions);
+    y += 102.0;
     // Parameters of the selected effect.
     let Some(slot) = state.selected_slot else {
         return;
@@ -1076,6 +1092,144 @@ fn paint_menus(
                     });
                 }
             }
+        }
+    }
+}
+
+/// The track EQ graph: "Left-click to control center frequency (left-right)/amplitude(up/down) or
+/// Right-Click to control bandwidth (left-right)/amplitude(up/down)" [Manual: mixer_trackprops].
+/// Frequency is logarithmic over 20 Hz-20 kHz, gain spans +-18 dB.
+fn paint_track_eq(
+    paint: &mut PaintCtx<'_>,
+    painter: &egui::Painter,
+    state: &mut MixerState,
+    track: &MixerTrackView,
+    graph: Rect,
+    actions: &mut Vec<MixerAction>,
+) {
+    let t = *paint.tokens;
+    framed(
+        painter,
+        graph,
+        2.0,
+        theme::shade(t.rack_bg, 0.45),
+        theme::shade(t.rack_bg, 0.3),
+    );
+    let gp = painter.with_clip_rect(graph);
+    let span = (20_000.0_f32 / 20.0).ln();
+    let x_of = |hz: f32| graph.left() + graph.width() * (hz.max(20.0) / 20.0).ln() / span;
+    let hz_at = |x: f32| 20.0 * (((x - graph.left()) / graph.width()).clamp(0.0, 1.0) * span).exp();
+    let half = graph.height() / 2.0 - 6.0;
+    let y_of = |db: f32| graph.center().y - db / 18.0 * half;
+    let db_at = |y: f32| ((graph.center().y - y) / half * 18.0).clamp(-18.0, 18.0);
+    gp.line_segment(
+        [
+            pos2(graph.left(), graph.center().y),
+            pos2(graph.right(), graph.center().y),
+        ],
+        Stroke::new(1.0, theme::shade(t.rack_bg, 0.8)),
+    );
+    for hz in [100.0, 1000.0, 10_000.0] {
+        let x = x_of(hz);
+        gp.line_segment(
+            [pos2(x, graph.top()), pos2(x, graph.bottom())],
+            Stroke::new(1.0, theme::shade(t.rack_bg, 0.7)),
+        );
+    }
+    // Response curve: the bands' magnitudes multiplied (dB added).
+    let rate = 48_000.0;
+    let filters: Vec<jet_dsp::filter::Biquad> = track
+        .eq
+        .iter()
+        .map(|band| {
+            let kind = match band.shape {
+                jet_model::EqShape::LowShelf => jet_dsp::filter::BiquadKind::LowShelf,
+                jet_model::EqShape::HighShelf => jet_dsp::filter::BiquadKind::HighShelf,
+                jet_model::EqShape::LowPass => jet_dsp::filter::BiquadKind::LowPass,
+                jet_model::EqShape::HighPass => jet_dsp::filter::BiquadKind::HighPass,
+                jet_model::EqShape::Peak => jet_dsp::filter::BiquadKind::Peak,
+            };
+            jet_dsp::filter::Biquad::new(
+                kind,
+                f64::from(band.freq_hz),
+                f64::from(band.q_milli) / 1000.0,
+                f64::from(band.gain_db_tenths) / 10.0,
+                rate,
+            )
+        })
+        .collect();
+    let points: Vec<Pos2> = (0..=graph.width() as i32)
+        .step_by(2)
+        .map(|dx| {
+            let x = graph.left() + dx as f32;
+            let hz = f64::from(hz_at(x));
+            let db: f64 = filters
+                .iter()
+                .map(|f| 20.0 * f.magnitude(hz, rate).max(1e-6).log10())
+                .sum();
+            pos2(x, y_of(db as f32))
+        })
+        .collect();
+    gp.add(egui::Shape::line(points, Stroke::new(1.5, t.step_on)));
+
+    for (band_index, band) in track.eq.iter().enumerate() {
+        let center = pos2(
+            x_of(f32::from(band.freq_hz)),
+            y_of(f32::from(band.gain_db_tenths) / 10.0),
+        );
+        gp.circle_filled(center, 6.0, t.step_on);
+        gp.text(
+            center,
+            Align2::CENTER_CENTER,
+            (band_index + 1).to_string(),
+            theme::regular(10.0),
+            theme::shade(t.rack_bg, 0.4),
+        );
+        let response = paint.hit(
+            &format!("mixer.eq.{band_index}"),
+            Rect::from_center_size(center, vec2(14.0, 14.0)),
+            "handle",
+            true,
+            &format!(
+                "Band {} ({}): {} Hz, {:+.1} dB, Q {:.2} - drag: frequency/level; right-drag: bandwidth/level",
+                band_index + 1,
+                ["low shelf", "peaking", "high shelf"][band_index],
+                band.freq_hz,
+                f32::from(band.gain_db_tenths) / 10.0,
+                f32::from(band.q_milli) / 1000.0
+            ),
+        );
+        if response.drag_started() {
+            state.eq_drag = Some((band_index, band.q_milli));
+        }
+        if response.dragged()
+            && let (Some((dragged, q0)), Some(p)) =
+                (state.eq_drag, paint.ui.input(|i| i.pointer.interact_pos()))
+            && dragged == band_index
+        {
+            let gain = (db_at(p.y) * 10.0).round() as i16;
+            let (freq, q) = if response.dragged_by(egui::PointerButton::Secondary) {
+                // Bandwidth: 40 px to the right halves Q (wider), to the left doubles it.
+                let origin = paint.ui.input(|i| i.pointer.press_origin()).unwrap_or(p);
+                let q = f32::from(q0) * 2f32.powf(-(p.x - origin.x) / 40.0);
+                (band.freq_hz, q.clamp(100.0, 10_000.0) as u16)
+            } else {
+                (
+                    hz_at(p.x).round().clamp(20.0, 20_000.0) as u16,
+                    band.q_milli,
+                )
+            };
+            actions.push(MixerAction::Eq {
+                track: track.index,
+                band: band_index,
+                freq_hz: freq,
+                gain_db_tenths: gain,
+                q_milli: q,
+            });
+        }
+        if response.drag_stopped() {
+            state.eq_drag = None;
+            actions.push(MixerAction::EndGesture);
         }
     }
 }

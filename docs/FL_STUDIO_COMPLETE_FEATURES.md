@@ -62,6 +62,7 @@
 | H-REC-2 | Filtro de gravação padrão | Áudio e notas ligados | O manual não dá o padrão do filtro do botão Record | `jet-ui/src/app.rs` (`record_audio`, `record_notes`) |
 | H-REC-3 | Quantização da entrada | Pelo Global snap (exceto Line, Cell e (none), como diz o manual); o início vai para a linha mais próxima e a duração tocada é mantida | O manual lista as opções de quantização, mas não qual é o padrão | `jet-ui/src/app.rs` (`record_note_off`) |
 | H-PL-2 | Curva e escala das alças da Audio Clip | Fades lineares em amplitude; a alça de ganho anda 0,25 dB por pixel | O manual descreve as alças, mas não a curva padrão nem a sensibilidade | `jet-dsp/src/sampler.rs` (`ClipEnvelope`), `jet-ui/src/playlist.rs` (`audio_controls`) |
+| H-MIX-3 | EQ integrado da faixa | Bandas padrão 120 Hz (shelf, Q 0,707), 1 kHz (pico, Q 1) e 8 kHz (shelf, Q 0,707); ganho ±18 dB; Q de 0,1 a 10; 40 px à direita no arrasto com botão direito dividem o Q por 2 | O manual descreve os tipos de banda e os gestos, mas não os valores | `jet-model` (`default_track_eq`), `jet-ui/src/mixer.rs` (`paint_track_eq`) |
 | H-UI-1 | Sensibilidade dos knobs e faders | 200 px por curso de knob; 150 px por curso de fader; 6 px por insert | Não medido | `jet-ui` |
 
 ## 3. Interface e controles globais (GLB)
@@ -225,7 +226,7 @@
 | MX-010 | 10 FX slots, mix por slot, enable, mover, master FX switch | "Each Track has 10 effects slots" | — | FX | M | P0 | Testado | `effects_keep_their_state_across_plan_swaps`, `mixer_routing_faders...` |
 | MX-011 | Peak meters (laranja acima de 0 dB) | [Manual: mixer_levelsandmixing] | — | AE | S | P0 | Implementado (picos reais por faixa) | `meters_report_master_peaks` |
 | MX-012 | Faixas de inserts não clipam; o Master pode clipar | "it is practically IMPOSSIBLE to clip insert Mixer Tracks" | Float interno; hard clip só na saída do dispositivo | AE | S | P0 | Testado (o render em float mantém overs) | — |
-| MX-013 | EQ paramétrico integrado de 3 bandas | "Mixer Track Properties - The Parametric Equalizer" | — | FX | S | P1 | Parcialmente compatível: EQ como efeito de slot | `peak_filter_boosts_its_center_by_its_gain` |
+| MX-013 | EQ paramétrico integrado de 3 bandas | [Manual: mixer_trackprops] "Band 1 - Low Shelf; Band 2 - Peaking; 3 - High Shelf"; "Left-click to control center frequency (left-right)/amplitude(up/down) or Right-Click to control bandwidth (left-right)/amplitude(up/down)"; "the last processing/FX stage" | — | FX | S | P1 | Testado: EQ de 3 bandas fixas em cada faixa, depois dos slots e antes do fader; gráfico no inspector com a curva de resposta; arrastar define frequência/nível, botão direito define largura/nível; cada arrasto é um passo de undo; bandas em 0 dB não processam; a memória dos filtros passa entre planos (sem clique); padrões e faixas são H-MIX-3; falta automação dos parâmetros | `track_eq_shapes_the_mixer_output`, `mixer_eq_handles_set_level_frequency_and_bandwidth` |
 | MX-014 | Track delay / PDC | "Track delay", PDC | Compensação de latência | AE | L | P2 | Especificado (`Effect::latency`; nenhum efeito atual tem latência) | — |
 | MX-015 | Entrada/saída de áudio por faixa | "Audio Input & Output" | Requer ASIO | REC | L | P2 | Pesquisado | — |
 | MX-016 | Docks, layouts, renomear/colorir faixas | — | — | — | S | P3 | Renomear: Testado no engine; o resto: Pesquisado | — |

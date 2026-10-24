@@ -901,6 +901,23 @@ impl JetApp {
                     json!({"track": track, "value": value}),
                 );
             }
+            MixerAction::Eq {
+                track,
+                band,
+                freq_hz,
+                gain_db_tenths,
+                q_milli,
+            } => self.gesture(
+                &format!("mixer.eq.{track}.{band}"),
+                "mixer.track.eq.set",
+                json!({
+                    "track": track,
+                    "band": band,
+                    "freq_hz": freq_hz,
+                    "gain_db_tenths": gain_db_tenths,
+                    "q_milli": q_milli,
+                }),
+            ),
             MixerAction::StereoSep { track, value } => self.gesture(
                 &format!("mixer.sep.{track}"),
                 "mixer.track.stereo_sep.set",
@@ -2057,6 +2074,7 @@ impl JetApp {
                         .collect(),
                     fx_enabled: track.fx_enabled,
                     stereo_sep: track.stereo_sep,
+                    eq: track.eq,
                     invert: track.invert_phase,
                     swap: track.swap_lr,
                     peak: meters
@@ -4065,6 +4083,38 @@ mod tests {
         let half_beat = app.probe().entries()["piano-roll.snap-menu.item.12"].rect;
         click(&mut app, &ctx, half_beat);
         assert_eq!(app.piano.snap, crate::snap::SnapValue::Beat(2));
+    }
+
+    #[test]
+    fn mixer_eq_handles_set_level_frequency_and_bandwidth() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        toggle(&mut app, &ctx, Key::F9);
+        let band = |app: &JetApp| app.session.project().mixer.track(0).unwrap().eq[1];
+        let handle = app.probe().entries()["mixer.eq.1"].rect;
+        // Drag the peaking band up: louder (one undo step).
+        drag(
+            &mut app,
+            &ctx,
+            handle.center(),
+            handle.center() - vec2(0.0, 20.0),
+        );
+        assert!(band(&app).gain_db_tenths > 50, "{:?}", band(&app));
+        app.execute("edit.undo_step", json!({}));
+        assert_eq!(band(&app).gain_db_tenths, 0, "one undo step");
+        // Right-drag 40 px to the right: half the Q (twice the bandwidth).
+        run_frame(&mut app, &ctx, Vec::new());
+        let handle = app.probe().entries()["mixer.eq.1"].rect;
+        drag_button(
+            &mut app,
+            &ctx,
+            handle.center(),
+            handle.center() + vec2(40.0, 0.0),
+            PointerButton::Secondary,
+        );
+        let q = band(&app).q_milli;
+        assert!((450..=550).contains(&q), "{q}");
     }
 
     #[test]

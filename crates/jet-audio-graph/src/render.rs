@@ -171,6 +171,9 @@ impl Renderer {
             let Some(old) = self.plan.tracks.iter_mut().find(|t| t.index == track.index) else {
                 continue;
             };
+            if let (Some(eq), Some(previous)) = (&mut track.eq, &old.eq) {
+                eq.take_state(previous);
+            }
             for (slot, instance) in track.fx.iter_mut().enumerate() {
                 if let Some(previous) = old.fx.get_mut(slot)
                     && previous.kind == instance.kind
@@ -982,6 +985,11 @@ fn process_track(track: &mut crate::plan::TrackPlan, frames: usize) {
                 }
             }
         }
+    }
+    // "The integrated effects are the last processing/FX stage prior to audio leaving the Mixer
+    // Track and so follow any plugin FX loaded into slots" [Manual: mixer_trackprops].
+    if let Some(eq) = &mut track.eq {
+        eq.process(&mut track.left[..frames], &mut track.right[..frames]);
     }
     let p = f32::from(track.auto_pan.unwrap_or(track.pan)) / 1000.0;
     let gain = track.auto_gain.unwrap_or(track.gain);
