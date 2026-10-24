@@ -819,6 +819,24 @@ impl ClipInstance {
 pub struct Marker {
     pub at: Tick,
     pub name: String,
+    #[serde(default)]
+    pub action: MarkerAction,
+}
+
+/// "Action - Set the Markers purpose" [Manual: playlist, "Time Markers"]. The other actions the
+/// manual lists (Marker loop, Marker skip, Marker pause, Time signature, Start/Stop recording)
+/// are not modelled yet.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MarkerAction {
+    /// "The marker has no effect. Default type used where markers are just labels."
+    #[default]
+    None,
+    /// "Playback and time = 0 starts from the set point."
+    Start,
+    /// "Playback will return to this marker when the end of all data in the Playlist is reached.
+    /// ... Placing this marker type beyond the end of the last data will also cause FL Studio to
+    /// render to that point."
+    Loop,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

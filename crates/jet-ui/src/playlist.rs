@@ -24,7 +24,9 @@ pub struct PlaylistView {
     pub arrangements: Vec<(u64, String)>,
     pub arrangement_id: u64,
     /// Time markers of the active arrangement: (tick, name).
-    pub markers: Vec<(i64, String)>,
+    pub markers: Vec<(i64, String, jet_model::MarkerAction)>,
+    /// Timeline selection (start, end) in ticks.
+    pub selection: Option<(i64, i64)>,
 }
 
 pub struct TrackView {
@@ -112,6 +114,10 @@ pub struct PlaylistState {
     audio_menu: Option<(u64, egui::Pos2)>,
     /// Arrangements menu opened from the title bar.
     arrangement_menu: Option<egui::Pos2>,
+    /// Ctrl+drag on the ruler in progress: (anchor tick, current tick).
+    selecting: Option<(i64, i64)>,
+    /// Marker menu: (marker index, where it opened).
+    marker_menu: Option<(usize, egui::Pos2)>,
     /// Horizontal zoom as a multiple of the measured default bar width.
     pub zoom: f32,
     pub scroll_bars: f32,
@@ -129,6 +135,8 @@ impl Default for PlaylistState {
             audio_drag: None,
             audio_menu: None,
             arrangement_menu: None,
+            selecting: None,
+            marker_menu: None,
             zoom: 1.0,
             scroll_bars: 0.0,
             scroll_tracks: 0.0,
@@ -180,6 +188,15 @@ pub enum PlaylistAction {
     DeleteArrangement(u64),
     AddMarker,
     DeleteMarker(usize),
+    MarkerAction {
+        index: usize,
+        action: jet_model::MarkerAction,
+    },
+    SetSelection {
+        start: i64,
+        end: i64,
+    },
+    ClearSelection,
     /// Audio Clip instance settings: `None` fields stay as they are.
     ClipAudio {
         id: u64,
@@ -996,17 +1013,109 @@ pub fn paint_playlist(
         }
     }
 
-    // Time markers on the ruler: click seeks, right-click deletes; Alt+T adds one at the
-    // playhead [Manual: playlist, "Time Markers"].
-    for (index, (tick, name)) in view.markers.iter().enumerate() {
+    // Clicking the bar ruler relocates the playback position [Manual: playlist,
+    // "Relocate the playback position - Click on the upper timeline"]; Ctrl+drag makes a timeline
+    // selection, Ctrl+click or double-click deletes it [Manual: playlist, "Timeline Selection"].
+    let ruler_response =
+        paint
+            .ui
+            .interact(ruler, Id::new("playlist.ruler"), Sense::click_and_drag());
+    paint
+        .probe
+        .insert("playlist.ruler", ruler, "ruler", true, None);
+    let tick_at = |x: f32| {
+        (((x - grid.left() - 1.0) / bar_w + state.scroll_bars) * tpb as f32).max(0.0) as i64
+    };
+    let ctrl = paint.ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+    if ruler_response.double_clicked() || (ruler_response.clicked() && ctrl) {
+        state.selecting = None;
+        actions.push(PlaylistAction::ClearSelection);
+    } else if ruler_response.drag_started() && ctrl {
+        let origin = paint
+            .ui
+            .input(|i| i.pointer.press_origin())
+            .map_or(0, |p| tick_at(p.x));
+        state.selecting = Some((origin / beat * beat, origin / beat * beat));
+    } else if let Some((from, _)) = state.selecting {
+        if let Some(p) = paint.ui.input(|i| i.pointer.interact_pos()) {
+            let to = (tick_at(p.x) + beat / 2) / beat * beat;
+            state.selecting = Some((from, to));
+        }
+        if ruler_response.drag_stopped() {
+            state.selecting = None;
+            if let Some(p) = paint.ui.input(|i| i.pointer.interact_pos()) {
+                let to = (tick_at(p.x) + beat / 2) / beat * beat;
+                let (a, b) = (from.min(to), from.max(to));
+                if b > a {
+                    actions.push(PlaylistAction::SetSelection { start: a, end: b });
+                }
+            }
+        }
+    } else if (ruler_response.clicked() || ruler_response.dragged())
+        && !ctrl
+        && let Some(p) = paint.ui.input(|i| i.pointer.interact_pos())
+    {
+        actions.push(PlaylistAction::Seek((tick_at(p.x) / beat) * beat));
+    }
+    // The selection is shaded over the ruler and the grid.
+    let shown_selection = state
+        .selecting
+        .map(|(a, b)| (a.min(b), a.max(b)))
+        .or(view.selection);
+    if let Some((a, b)) = shown_selection {
+        let (x0, x1) = (
+            bar_x(a as f32 / tpb as f32).max(grid.left()),
+            bar_x(b as f32 / tpb as f32).min(grid.right()),
+        );
+        if x1 > x0 {
+            let band = Rect::from_min_max(pos2(x0, ruler.top()), pos2(x1, grid.bottom()));
+            painter.with_clip_rect(grid.union(ruler)).rect_filled(
+                band,
+                0.0,
+                t.playhead.gamma_multiply(0.18),
+            );
+            painter.with_clip_rect(ruler).rect_filled(
+                Rect::from_min_max(pos2(x0, ruler.top()), pos2(x1, ruler.top() + 4.0)),
+                0.0,
+                t.playhead,
+            );
+        }
+    }
+
+    // Time markers on the ruler: click seeks, right-click opens the marker menu; Alt+T adds one
+    // at the playhead [Manual: playlist, "Time Markers"].
+    for (index, (tick, name, action)) in view.markers.iter().enumerate() {
         let x = bar_x(*tick as f32 / tpb as f32);
         if x < ruler.left() || x > ruler.right() {
             continue;
         }
         let flag = Rect::from_min_size(pos2(x, ruler.top()), vec2(8.0, ruler.height()));
-        painter
-            .with_clip_rect(ruler)
-            .rect_filled(flag, 0.0, t.playhead);
+        let rp = painter.with_clip_rect(ruler);
+        let points = match action {
+            // "The 'Song loop' marker (note the down facing arrow)".
+            jet_model::MarkerAction::Loop => vec![
+                pos2(flag.left(), flag.top()),
+                pos2(flag.right() + 2.0, flag.top()),
+                pos2(flag.center().x + 1.0, flag.bottom()),
+            ],
+            // Ours: a right-pointing flag for the Start marker.
+            jet_model::MarkerAction::Start => vec![
+                pos2(flag.left(), flag.top()),
+                pos2(flag.right() + 2.0, flag.center().y),
+                pos2(flag.left(), flag.bottom()),
+            ],
+            jet_model::MarkerAction::None => vec![
+                flag.left_top(),
+                flag.right_top(),
+                flag.right_bottom(),
+                flag.left_bottom(),
+            ],
+        };
+        rp.add(egui::Shape::convex_polygon(
+            points,
+            t.playhead,
+            Stroke::NONE,
+        ));
         painter.with_clip_rect(grid.union(ruler)).text(
             pos2(x + 10.0, ruler.center().y),
             Align2::LEFT_CENTER,
@@ -1019,13 +1128,13 @@ pub fn paint_playlist(
             flag.expand2(vec2(2.0, 0.0)),
             "marker",
             true,
-            &format!("Marker {name}: click to jump, right-click to delete"),
+            &format!("Marker {name} ({action:?}): click to jump, right-click for the marker menu"),
         );
         if response.clicked() {
             actions.push(PlaylistAction::Seek(*tick));
         }
         if response.secondary_clicked() {
-            actions.push(PlaylistAction::DeleteMarker(index));
+            state.marker_menu = Some((index, pos2(flag.left(), ruler.bottom())));
         }
     }
     if paint
@@ -1068,23 +1177,6 @@ pub fn paint_playlist(
         }
     }
 
-    // Clicking the bar ruler relocates the playback position [Manual: playlist,
-    // "Relocate the playback position - Click on the upper timeline"].
-    let ruler_response =
-        paint
-            .ui
-            .interact(ruler, Id::new("playlist.ruler"), Sense::click_and_drag());
-    paint
-        .probe
-        .insert("playlist.ruler", ruler, "ruler", true, None);
-    if (ruler_response.clicked() || ruler_response.dragged())
-        && let Some(p) = paint.ui.input(|i| i.pointer.interact_pos())
-    {
-        let tick =
-            (((p.x - grid.left() - 1.0) / bar_w + state.scroll_bars) * tpb as f32).max(0.0) as i64;
-        actions.push(PlaylistAction::Seek((tick / beat) * beat));
-    }
-
     // Song-position line while playing in SONG mode.
     if let Some(position) = view.position
         && view.ticks_per_bar > 0
@@ -1110,6 +1202,7 @@ pub fn paint_playlist(
     // Last, so the popups' items sit above every other control of the window.
     paint_point_menu(paint, state, &mut actions);
     paint_audio_menu(paint, state, view, &mut actions);
+    paint_marker_menu(paint, state, view, &mut actions);
     paint_arrangement_menu(paint, state, view, &mut actions);
     actions
 }
@@ -1575,6 +1668,57 @@ fn paint_audio_menu(
                 fade_out_ms: (choice == 1).then_some(0),
                 reverse: (choice == 0).then_some(!audio.reverse),
             });
+        }
+    }
+}
+
+/// Marker right-click menu [Manual: playlist, "Marker/lane right-click menu": "Delete", "Action -
+/// Set the Markers purpose"].
+fn paint_marker_menu(
+    paint: &mut PaintCtx<'_>,
+    state: &mut PlaylistState,
+    view: &PlaylistView,
+    actions: &mut Vec<PlaylistAction>,
+) {
+    let Some((index, origin)) = state.marker_menu else {
+        return;
+    };
+    let Some((_, _, current)) = view.markers.get(index) else {
+        state.marker_menu = None;
+        return;
+    };
+    const ACTIONS: [(jet_model::MarkerAction, &str); 3] = [
+        (jet_model::MarkerAction::None, "Action: None"),
+        (jet_model::MarkerAction::Start, "Action: Start"),
+        (jet_model::MarkerAction::Loop, "Action: Song loop"),
+    ];
+    let mut items = vec![crate::widgets::MenuItem {
+        label: "Delete",
+        shortcut: "",
+        enabled: true,
+    }];
+    items.extend(
+        ACTIONS
+            .iter()
+            .map(|(action, label)| crate::widgets::MenuItem {
+                label,
+                shortcut: "",
+                enabled: action != current,
+            }),
+    );
+    match paint.popup_menu("playlist.marker-menu", origin, &items) {
+        crate::widgets::MenuResult::Open => {}
+        crate::widgets::MenuResult::Dismissed => state.marker_menu = None,
+        crate::widgets::MenuResult::Chosen(choice) => {
+            state.marker_menu = None;
+            if choice == 0 {
+                actions.push(PlaylistAction::DeleteMarker(index));
+            } else if let Some((action, _)) = ACTIONS.get(choice - 1) {
+                actions.push(PlaylistAction::MarkerAction {
+                    index,
+                    action: *action,
+                });
+            }
         }
     }
 }

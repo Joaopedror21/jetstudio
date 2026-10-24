@@ -570,3 +570,27 @@ fn slide_notes_bend_overlapping_notes_of_their_color_and_are_silent() {
     run(&mut renderer, 24_000, 256);
     assert_eq!(renderer.held_cents(), vec![4800.0, 6300.0, 6700.0]);
 }
+
+#[test]
+fn playback_returns_to_the_loop_start_at_the_end() {
+    // Steps 0 and 12 of a 16-step pattern (one step = 6 000 frames).
+    let project = project(&[0, 12]);
+    let mut looping = plan(&project, dc_sample(2_000));
+    let mut renderer = playing(plan(&project, dc_sample(2_000)));
+    let out = run(&mut renderer, 192_000, 256);
+    assert_eq!(onsets(&out), vec![0, 72_000, 96_000, 168_000]);
+    // With the loop start at step 8 the second pass plays only steps 8..16.
+    looping.sequence.loop_start = 8 * 24;
+    let mut renderer = playing(looping);
+    let out = run(&mut renderer, 192_000, 256);
+    assert_eq!(onsets(&out), vec![0, 72_000, 120_000, 168_000]);
+}
+
+#[test]
+fn an_offline_range_renders_only_that_section() {
+    let project = project(&[0, 12]);
+    // Ticks 192..384 (steps 8..16): step 12 lands 24 000 frames in.
+    let out = render_offline_range(plan(&project, dc_sample(2_000)), 192, 384, Tail::Cut);
+    assert_eq!(out.len(), 48_000 * 2);
+    assert_eq!(onsets(&out), vec![24_000]);
+}

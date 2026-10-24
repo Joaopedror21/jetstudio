@@ -113,8 +113,35 @@ fn place_track(
     Ok(new_track)
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Selection {
+    start: i64,
+    end: i64,
+}
+
 pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool, CmdError> {
     match id {
+        // "(Ctrl+Left-click) & drag in the bar-ruler area to make a vertical selection across all
+        // tracks" [Manual: playlist, "Timeline Selection"].
+        "playlist.selection.set" => {
+            let p: Selection = parse(id, params)?;
+            if p.start < 0 || p.end <= p.start {
+                return Err(CmdError::InvalidParams {
+                    command: id.into(),
+                    message: "start must be >= 0 and end > start".into(),
+                });
+            }
+            session.time_selection = Some((p.start, p.end));
+            Ok(true)
+        }
+        // "Ctrl+Click on the selection or Double-Click anywhere on the time-ruler ... will delete
+        // the time-line selection".
+        "playlist.selection.clear" => {
+            super::empty(id, params)?;
+            session.time_selection = None;
+            Ok(true)
+        }
         "playlist.track.add" => {
             let p: AddTrack = parse(id, params)?;
             if p.name.trim().is_empty() {

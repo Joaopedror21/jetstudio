@@ -182,7 +182,11 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
             let plan = jet_audio_graph::build_plan(project, source, rate, false, &|id| {
                 session.samples.get(id)
             });
-            let audio = jet_audio_graph::render_offline(plan, length, tail);
+            let (start, end) = match (source, session.time_selection) {
+                (Source::Song, Some(range)) => range,
+                _ => (0, length),
+            };
+            let audio = jet_audio_graph::render_offline_range(plan, start, end, tail);
             jet_media::write_wav(&p.path, rate, 2, &audio, format)
                 .map_err(|e| CmdError::Failed(e.to_string()))?;
             Ok(false)

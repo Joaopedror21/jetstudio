@@ -1506,6 +1506,21 @@ impl JetApp {
                 PlaylistAction::DeleteMarker(index) => {
                     self.execute("marker.delete", json!({"index": index}));
                 }
+                PlaylistAction::MarkerAction { index, action } => {
+                    self.execute(
+                        "marker.action.set",
+                        json!({"index": index, "action": action}),
+                    );
+                }
+                PlaylistAction::SetSelection { start, end } => {
+                    self.execute(
+                        "playlist.selection.set",
+                        json!({"start": start, "end": end}),
+                    );
+                }
+                PlaylistAction::ClearSelection => {
+                    self.execute("playlist.selection.clear", json!({}));
+                }
                 PlaylistAction::DropAudio { row, start, path } => {
                     while self.track_count() <= row {
                         let before = self.track_count();
@@ -2199,8 +2214,12 @@ impl JetApp {
                 .collect(),
             arrangement_id: project.active_arrangement.0,
             markers: arrangement.map_or_else(Vec::new, |a| {
-                a.markers.iter().map(|m| (m.at.0, m.name.clone())).collect()
+                a.markers
+                    .iter()
+                    .map(|m| (m.at.0, m.name.clone(), m.action))
+                    .collect()
             }),
+            selection: self.session.time_selection(),
         }
     }
 }
@@ -3828,6 +3847,55 @@ mod tests {
         click(&mut app, &ctx, reverse);
         assert!(audio(&app).reverse);
         let _ = std::fs::remove_file(&wav);
+    }
+
+    #[test]
+    fn ruler_selection_and_marker_menu() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        let ruler = app.probe().entries()["playlist.ruler"].rect;
+        let ctrl = Modifiers {
+            ctrl: true,
+            command: true,
+            ..Modifiers::default()
+        };
+        // Ctrl+drag across the ruler makes a timeline selection on beat lines.
+        run_frame(&mut app, &ctx, vec![Event::ModifiersChanged(ctrl)]);
+        drag(
+            &mut app,
+            &ctx,
+            pos2(ruler.left() + 20.0, ruler.center().y),
+            pos2(ruler.left() + 220.0, ruler.center().y),
+        );
+        let (start, end) = app.session.time_selection().expect("a selection");
+        assert!(end > start);
+        assert_eq!((start % 96, end % 96), (0, 0));
+        // Ctrl+click on the ruler deletes it.
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(pos2(ruler.left() + 100.0, ruler.center().y), vec2(1.0, 1.0)),
+        );
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(Modifiers::default())],
+        );
+        assert_eq!(app.session.time_selection(), None);
+
+        // Right-click a marker: its menu sets the Song loop action.
+        app.execute("marker.add", json!({"at": 384}));
+        run_frame(&mut app, &ctx, Vec::new());
+        let marker = app.probe().entries()["playlist.marker.0"].rect;
+        click_button(&mut app, &ctx, marker, PointerButton::Secondary);
+        run_frame(&mut app, &ctx, Vec::new());
+        let song_loop = app.probe().entries()["playlist.marker-menu.item.3"].rect;
+        click(&mut app, &ctx, song_loop);
+        assert_eq!(
+            app.session.project().active().unwrap().markers[0].action,
+            jet_model::MarkerAction::Loop
+        );
     }
 
     #[test]

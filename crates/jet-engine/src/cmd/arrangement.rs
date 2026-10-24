@@ -44,6 +44,13 @@ struct MarkerRef {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct MarkerAction {
+    index: usize,
+    action: jet_model::MarkerAction,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MarkerRename {
     index: usize,
     name: String,
@@ -172,6 +179,7 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                 arrangement.markers.push(Marker {
                     at: Tick(p.at),
                     name,
+                    action: jet_model::MarkerAction::None,
                 });
                 arrangement.markers.sort_by_key(|m| m.at);
                 Ok(())
@@ -185,6 +193,24 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                     return Err(CmdError::Failed("marker does not exist".into()));
                 }
                 arrangement.markers.remove(p.index);
+                Ok(())
+            })
+        }
+        // "Action - Set the Markers purpose" [Manual: playlist]. One marker per Start/Loop action:
+        // setting one clears the action from the others.
+        "marker.action.set" => {
+            let p: MarkerAction = parse(id, params)?;
+            session.edit_project(|project| {
+                let markers = &mut active_mut(project)?.markers;
+                if p.index >= markers.len() {
+                    return Err(CmdError::Failed("marker does not exist".into()));
+                }
+                if p.action != jet_model::MarkerAction::None {
+                    for marker in markers.iter_mut().filter(|m| m.action == p.action) {
+                        marker.action = jet_model::MarkerAction::None;
+                    }
+                }
+                markers[p.index].action = p.action;
                 Ok(())
             })
         }

@@ -168,10 +168,12 @@ pub fn demo_project() -> Project {
         arrangement.markers.push(Marker {
             at: Tick(28 * bar),
             name: "Drop 1".to_owned(),
+            action: jet_model::MarkerAction::None,
         });
         arrangement.markers.push(Marker {
             at: Tick(36 * bar),
             name: "V2".to_owned(),
+            action: jet_model::MarkerAction::None,
         });
     }
     project

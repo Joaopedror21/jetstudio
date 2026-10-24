@@ -59,13 +59,31 @@ pub enum Source {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Sequence {
     pub events: Vec<NoteEvent>,
-    /// Loop length in ticks (always > 0).
+    /// Loop length in ticks (always > 0): the end of the material, where playback wraps.
     pub length: i64,
+    /// Where playback returns when it reaches `length` (a Song loop marker or a timeline
+    /// selection start; 0 otherwise).
+    pub loop_start: i64,
     /// Ticks in one step, used for step-style note gates.
     pub step_ticks: i64,
 }
 
 impl Sequence {
+    /// The material tick for an unwrapped play tick: the play runs straight up to `length`, then
+    /// repeats `loop_start..length`.
+    pub fn wrap(&self, tick: i64) -> i64 {
+        let length = self.length.max(1);
+        if tick < length {
+            return tick;
+        }
+        let start = if self.loop_start < length {
+            self.loop_start.max(0)
+        } else {
+            0
+        };
+        start + (tick - length).rem_euclid(length - start)
+    }
+
     /// Gate length for a note: zero-length (step) notes hold for one step.
     /// Hypothesis H-SEQ-2: the manual describes steps as zero-length notes but not their gate.
     pub fn gate_for(&self, event: &NoteEvent) -> i64 {
@@ -219,7 +237,24 @@ pub fn song_length(project: &Project) -> i64 {
                 .unwrap_or(0)
         })
         .unwrap_or(0);
-    ceil_to(end.max(1), bar_ticks(&project.settings))
+    let data = ceil_to(end.max(1), bar_ticks(&project.settings));
+    // A Loop marker past the last data extends the song (and the render) to it.
+    loop_marker(project).map_or(data, |at| data.max(at))
+}
+
+/// Tick of the active arrangement's first marker with `action`.
+pub fn marker_at(project: &Project, action: jet_model::MarkerAction) -> Option<i64> {
+    project
+        .active()?
+        .markers
+        .iter()
+        .find(|m| m.action == action)
+        .map(|m| m.at.0)
+}
+
+/// The Song loop point: a Loop marker [Manual: playlist, "Song Loop (uses Time Markers)"].
+pub fn loop_marker(project: &Project) -> Option<i64> {
+    marker_at(project, jet_model::MarkerAction::Loop)
 }
 
 /// Compile the material that plays in `source`.
@@ -297,9 +332,14 @@ pub fn compile(project: &Project, source: Source) -> Sequence {
     };
     // Slide notes follow the notes that start with them, so they can bend those notes.
     events.sort_by_key(|event| (event.tick, event.channel, event.slide, event.key));
+    let loop_start = match source {
+        Source::Song => loop_marker(project).filter(|at| *at < length).unwrap_or(0),
+        Source::Pattern(_) => 0,
+    };
     Sequence {
         events,
         length: length.max(1),
+        loop_start,
         step_ticks: step_ticks(&project.settings),
     }
 }

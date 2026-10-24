@@ -118,6 +118,13 @@ const SILENCE: f32 = 1e-5;
 
 /// Render `length_ticks` of the plan starting at tick 0 to interleaved stereo.
 pub fn render_offline(plan: RenderPlan, length_ticks: i64, tail: Tail) -> Vec<f32> {
+    render_offline_range(plan, 0, length_ticks, tail)
+}
+
+/// Render ticks `start..end` (a timeline selection renders "as a single section" [Manual:
+/// playlist, "Timeline Selection"]).
+pub fn render_offline_range(plan: RenderPlan, start: i64, end: i64, tail: Tail) -> Vec<f32> {
+    let length_ticks = (end - start).max(0);
     let rate = plan.rate;
     let frames_per_tick = |ticks: i64| -> usize {
         let numerator = i128::from(ticks.max(0)) * i128::from(rate) * 60_000;
@@ -130,10 +137,10 @@ pub fn render_offline(plan: RenderPlan, length_ticks: i64, tail: Tail) -> Vec<f3
         Arc::new(AtomicU64::new(0)),
         Arc::new(Meters::default()),
     );
-    renderer.stop_events_after(Some(length_ticks));
+    renderer.stop_events_after(Some(end));
     renderer.sync(TransportSync {
         playing: true,
-        anchor_tick: 0,
+        anchor_tick: start,
         anchor_frame: 0,
     });
     let mut out = vec![0.0_f32; body * 2];

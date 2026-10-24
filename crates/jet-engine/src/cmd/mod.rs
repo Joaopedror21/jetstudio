@@ -969,6 +969,30 @@ static SPECS: &[CommandSpec] = &[
         Step
     ),
     spec!(
+        "marker.action.set",
+        "Time marker action",
+        "",
+        None,
+        "{index:uint,action:None|Start|Loop}",
+        Step
+    ),
+    spec!(
+        "playlist.selection.set",
+        "Timeline selection",
+        "",
+        None,
+        "{start:int,end:int}",
+        Step
+    ),
+    spec!(
+        "playlist.selection.clear",
+        "Clear timeline selection",
+        "",
+        None,
+        "{}",
+        Step
+    ),
+    spec!(
         "automation.create",
         "Create automation clip",
         "",

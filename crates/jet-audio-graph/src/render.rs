@@ -291,34 +291,34 @@ impl Renderer {
         (numerator / denominator.max(1)) as u64
     }
 
+    /// Schedule the events of play ticks `from..to`. Looping plans play the material straight
+    /// to its end, then repeat `loop_start..length` (see `Sequence::wrap`); each stretch between
+    /// wraps is one segment.
     fn schedule(&mut self, from: i64, to: i64) {
         let length = self.plan.sequence.length.max(1);
         let limit = self.stop_events_after.unwrap_or(i64::MAX);
         let to = to.min(limit);
-        if from >= to {
-            return;
-        }
-        let mut base = if self.plan.looping {
-            from.div_euclid(length) * length
-        } else {
-            0
-        };
-        while base < to {
-            let local_from = (from - base).max(0);
-            let local_to = to - base;
-            let first = self.plan.sequence.first_at_or_after(local_from);
-            let mut index = first;
+        let mut from = from;
+        while from < to {
+            let (local_from, local_end) = if self.plan.looping {
+                (self.plan.sequence.wrap(from), length)
+            } else {
+                (from, i64::MAX)
+            };
+            let segment_to = to.min(from.saturating_add(local_end - local_from));
+            let local_to = local_from + (segment_to - from);
+            let mut index = self.plan.sequence.first_at_or_after(local_from);
             while let Some(event) = self.plan.sequence.events.get(index).copied() {
-                if event.tick >= local_to || (self.plan.looping && event.tick >= length) {
+                if event.tick >= local_to {
                     break;
                 }
-                self.note_on(&event, base + event.tick);
+                self.note_on(&event, from + (event.tick - local_from));
                 index += 1;
             }
-            if !self.plan.looping {
+            if segment_to <= from {
                 break;
             }
-            base += length;
+            from = segment_to;
         }
     }
 
@@ -332,9 +332,8 @@ impl Renderer {
     /// When playback starts inside an Audio Clip, the clip sounds from that point (pattern
     /// notes that started earlier are not restarted).
     fn start_audio_in_progress(&mut self, tick: i64) {
-        let length = self.plan.sequence.length.max(1);
         let local = if self.plan.looping {
-            tick.rem_euclid(length)
+            self.plan.sequence.wrap(tick)
         } else {
             tick
         };
@@ -648,7 +647,7 @@ impl Renderer {
         let tick = if playing {
             let t = self.tick_at(block_start);
             if self.plan.looping {
-                t.rem_euclid(self.plan.sequence.length.max(1))
+                self.plan.sequence.wrap(t)
             } else {
                 t
             }
@@ -720,7 +719,7 @@ impl Renderer {
         }
         while tick < to {
             let local = if self.plan.looping {
-                tick.rem_euclid(self.plan.sequence.length.max(1))
+                self.plan.sequence.wrap(tick)
             } else {
                 tick
             };

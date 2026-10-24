@@ -149,9 +149,9 @@ impl Transport {
         if self.state == TransportState::Playing {
             self.stop();
         } else {
-            if self.state == TransportState::Stopped {
-                self.anchor_tick = Tick(0);
-            }
+            // A stopped transport starts where it was put ("You can Left-click to reposition this
+            // marker while the song is stopped or playing" [Manual: playlist]); `stop` already
+            // returned it to 0.
             self.anchor_frame = self.clock.now_frames();
             self.state = TransportState::Playing;
         }

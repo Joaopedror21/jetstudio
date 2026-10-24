@@ -13,14 +13,14 @@ Legenda: ✅ disponível e testado · 🟡 parcial (o que falta está ao lado) �
 | Channel Rack e Step Sequencer (CR) | 33 | 14 | 9 | 9 | 1 |
 | Sampler e instrumentos (SMP/INS) | 20 | 8 | 3 | 9 | 0 |
 | Piano Roll (PR) | 27 | 9 | 12 | 6 | 0 |
-| Playlist (PL) | 17 | 5 | 8 | 4 | 0 |
+| Playlist (PL) | 17 | 5 | 9 | 3 | 0 |
 | Mixer (MX) | 17 | 8 | 5 | 4 | 0 |
 | Motor de áudio (AE) | 15 | 9 | 2 | 4 | 0 |
 | Efeitos (FX) | 14 | 9 | 1 | 4 | 0 |
 | Plugins externos (PLG) | 4 | 0 | 0 | 4 | 0 |
 | Browser e arquivos (BR/FILE) | 12 | 2 | 4 | 5 | 1 |
 | Automação, MIDI, gravação (AUT/MIDI/REC) | 10 | 0 | 4 | 6 | 0 |
-| **Total** | **192** | **71** | **57** | **62** | **2** |
+| **Total** | **192** | **71** | **58** | **61** | **2** |
 
 As contagens foram geradas por script a partir da coluna Estado do inventário: ✅ = Testado; 🟡 = Implementado ou Parcialmente compatível; ⬜ = Pesquisado ou Especificado; ⛔ = Bloqueado. 
 
@@ -59,7 +59,8 @@ As contagens foram geradas por script a partir da coluna Estado do inventário: 
 | Playlist: pattern clips | criar, mover, redimensionar, apagar, mutar | 🟡 | PL-005: faltam Slip, Slice, seleção de timeline |
 | Playlist: audio clips | soltar arquivo, waveform, offset, ganho, fades, reverse | 🟡 | PL-003: `audio_clip_gain_fades_and_reverse_shape_the_render`; faltam crossfade, pitch/stretch |
 | Playlist: automation clips | criar pelo knob, editar pontos e curvas | 🟡 | PL-004 / AUT-001: faltam LFO e gravação |
-| Arranjos e time markers | menu do título, Alt+T | 🟡 | PL-008/009: faltam Merge e os tipos de marcador |
+| Arranjos e time markers | menu do título, Alt+T, ações Start e Song loop | 🟡 | PL-008/009: faltam Merge, Marker loop/skip/pause e fórmula de compasso |
+| Seleção de timeline | Ctrl+arrastar no ruler; toca em loop e renderiza só a seleção | 🟡 | PL-010: `timeline_selection_and_time_markers_shape_playback_and_export` |
 | Mute de faixa/clip | engine | ✅ | `song_mode_places_clip_windows...` |
 | Mixer: fader, pan, mute/solo, meters | sim, mais invert, swap L/R e stereo sep | 🟡 | fader H-MIX-1 |
 | Sends pós-fader, Route to Master | sim, sem ciclos | ✅ | `sends_route_post_fader...` |

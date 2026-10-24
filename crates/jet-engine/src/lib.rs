@@ -63,6 +63,7 @@ pub struct PlanKey {
     pub source: Source,
     pub samples: u64,
     pub metronome: bool,
+    pub selection: Option<(i64, i64)>,
 }
 
 pub struct Session {
@@ -86,6 +87,9 @@ pub struct Session {
     backup_dir: Option<PathBuf>,
     /// Revision last written to the backup folder.
     backed_up: Option<u64>,
+    /// Playlist timeline selection (start, end) in ticks: "The Timeline Selections will play in
+    /// loop mode or render as a single section" [Manual: playlist]. Not saved, not undoable.
+    time_selection: Option<(i64, i64)>,
 }
 
 impl Session {
@@ -116,6 +120,7 @@ impl Session {
             clipboard: Vec::new(),
             backup_dir: None,
             backed_up: None,
+            time_selection: None,
         }
     }
 
@@ -166,6 +171,28 @@ impl Session {
         }
     }
 
+    pub fn time_selection(&self) -> Option<(i64, i64)> {
+        self.time_selection
+    }
+
+    /// (loop start, loop end) of the playing material: a Song-mode timeline selection, else the
+    /// Song loop marker to the song end, else the whole material.
+    pub fn loop_range(&self) -> (i64, i64) {
+        let end = self.loop_length();
+        match self.play_source() {
+            Source::Song => match self.time_selection {
+                Some(range) => range,
+                None => (
+                    jet_seq::loop_marker(&self.project)
+                        .filter(|at| *at < end)
+                        .unwrap_or(0),
+                    end,
+                ),
+            },
+            Source::Pattern(_) => (0, end),
+        }
+    }
+
     /// Loop length of the playing material in ticks.
     pub fn loop_length(&self) -> i64 {
         match self.play_source() {
@@ -184,7 +211,13 @@ impl Session {
         let mut snapshot = self
             .transport
             .snapshot(self.project.settings.ppq, self.project.settings.tempo);
-        snapshot.position = Tick(snapshot.position.0.rem_euclid(self.loop_length()));
+        let (start, end) = self.loop_range();
+        let wrap = jet_seq::Sequence {
+            length: end,
+            loop_start: start,
+            ..jet_seq::Sequence::default()
+        };
+        snapshot.position = Tick(wrap.wrap(snapshot.position.0));
         snapshot
     }
 
@@ -227,6 +260,7 @@ impl Session {
             source: self.play_source(),
             samples: self.samples.generation(),
             metronome: self.metronome,
+            selection: self.time_selection,
         }
     }
 
@@ -237,7 +271,28 @@ impl Session {
                 self.samples.get(id)
             });
         plan.metronome = self.metronome;
+        if matches!(self.play_source(), Source::Song) {
+            let (start, end) = self.loop_range();
+            plan.sequence.loop_start = start;
+            plan.sequence.length = end.max(1);
+        }
         plan
+    }
+
+    /// Where Play starts from a stop: the timeline selection start when the position is outside
+    /// it ("only the selected portion of the Playlist will play"), else a Start marker when the
+    /// position is at 0 ("Playback and time = 0 starts from the set point").
+    pub(crate) fn play_start(&self, position: i64) -> Option<i64> {
+        if !matches!(self.play_source(), Source::Song) {
+            return None;
+        }
+        if let Some((start, end)) = self.time_selection {
+            return (position < start || position >= end).then_some(start);
+        }
+        if position == 0 {
+            return jet_seq::marker_at(&self.project, jet_model::MarkerAction::Start);
+        }
+        None
     }
 
     pub fn metronome(&self) -> bool {

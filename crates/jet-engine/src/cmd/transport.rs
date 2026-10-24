@@ -20,6 +20,12 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
     match id {
         "transport.play_stop" => {
             empty(id, params)?;
+            let (playing, anchor, _) = session.transport.anchor();
+            let stopped =
+                !playing && session.transport_snapshot().state == crate::TransportState::Stopped;
+            if stopped && let Some(start) = session.play_start(anchor.0) {
+                session.transport.seek(Tick(start));
+            }
             session
                 .transport
                 .play_stop(session.project.settings.ppq, session.project.settings.tempo);

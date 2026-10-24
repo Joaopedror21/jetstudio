@@ -1111,3 +1111,91 @@ fn piano_roll_tools_flip_strum_limit_stamp_arpeggiate_and_snap() {
         .unwrap();
     assert!(notes(&session).iter().all(|n| n.key != 61));
 }
+
+#[test]
+fn timeline_selection_and_time_markers_shape_playback_and_export() {
+    let clock = ManualClock::new(48_000);
+    let mut session = Session::with_clock(Box::new(clock.clone()));
+    session
+        .execute("transport.tempo.set", json!({"milli_bpm": 120_000}))
+        .unwrap();
+    let id = add_sampler_with_click(&mut session);
+    session
+        .execute(
+            "step.set",
+            json!({"pattern": 1, "channel": id, "index": 0, "on": true}),
+        )
+        .unwrap();
+    session
+        .execute("playlist.track.add", json!({"name": "Track 1"}))
+        .unwrap();
+    // Three one-bar clips: bars 1-3 (one bar = 384 ticks = 96 000 frames).
+    for start in [0, 384, 768] {
+        session
+            .execute(
+                "playlist.clip.add",
+                json!({"track": 1, "pattern": 1, "start": start, "length": 384}),
+            )
+            .unwrap();
+    }
+    session.execute("transport.mode.toggle", json!({})).unwrap();
+    let position = |session: &Session| session.transport_snapshot().position.0;
+    let play_from = |session: &mut Session, frame: u64| {
+        clock.set_frames(frame);
+        session.execute("transport.play_stop", json!({})).unwrap();
+    };
+
+    // A position set while stopped is where Play starts.
+    session
+        .execute("transport.position.set", json!({"tick": 384}))
+        .unwrap();
+    play_from(&mut session, 0);
+    assert_eq!(position(&session), 384);
+    session.execute("transport.stop", json!({})).unwrap();
+
+    // A timeline selection over bar 2: Play starts at its start and loops inside it.
+    session
+        .execute("playlist.selection.set", json!({"start": 384, "end": 768}))
+        .unwrap();
+    play_from(&mut session, 1_000);
+    assert_eq!(position(&session), 384);
+    clock.set_frames(1_000 + 144_000); // 1.5 bars later: 960 unwrapped -> 576
+    assert_eq!(position(&session), 576);
+    session.execute("transport.stop", json!({})).unwrap();
+    // ... and renders "as a single section": one bar, the clip's step at its start.
+    let (left, _) = export(&mut session, "song");
+    assert_eq!(left.len(), 96_000);
+    assert_eq!(onsets(&left), vec![0]);
+    session
+        .execute("playlist.selection.clear", json!({}))
+        .unwrap();
+
+    // A Loop marker at bar 2: the song plays to its end, then returns to the marker.
+    session.execute("marker.add", json!({"at": 384})).unwrap();
+    session
+        .execute("marker.action.set", json!({"index": 0, "action": "Loop"}))
+        .unwrap();
+    play_from(&mut session, 200_000);
+    clock.set_frames(200_000 + 3 * 96_000 + 24_000); // 1152 + 96 unwrapped -> 480
+    assert_eq!(position(&session), 480);
+    session.execute("transport.stop", json!({})).unwrap();
+
+    // A Start marker: Play from 0 starts there.
+    session.execute("marker.add", json!({"at": 768})).unwrap();
+    session
+        .execute("marker.action.set", json!({"index": 1, "action": "Start"}))
+        .unwrap();
+    play_from(&mut session, 600_000);
+    assert_eq!(position(&session), 768);
+    session.execute("transport.stop", json!({})).unwrap();
+
+    // A Loop marker past the last data extends the render to it (one Loop marker at a time).
+    session.execute("marker.add", json!({"at": 1536})).unwrap();
+    session
+        .execute("marker.action.set", json!({"index": 2, "action": "Loop"}))
+        .unwrap();
+    let markers = &session.project().active().unwrap().markers;
+    assert_eq!(markers[0].action, jet_model::MarkerAction::None, "moved");
+    let (left, _) = export(&mut session, "song");
+    assert_eq!(left.len(), 1536 * 250);
+}
