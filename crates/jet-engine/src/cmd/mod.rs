@@ -804,7 +804,7 @@ static SPECS: &[CommandSpec] = &[
         "Add Pattern Clip",
         "",
         None,
-        "{track:uint,pattern:uint,start:int,length:int}",
+        "{track?:uint,pattern:uint,start:int,length:int}",
         Step
     ),
     spec!(

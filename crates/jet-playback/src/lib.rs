@@ -353,7 +353,7 @@ impl AudioOutput {
             .midi_sink
             .take()
             .ok_or_else(|| "MIDI inputs are already open".to_owned())?;
-        midi::MidiInputs::connect_all(sink)
+        midi::MidiInputs::connect_all(sink, Arc::clone(&self.frames))
     }
 
     pub fn clock(&self) -> DeviceClock {

@@ -50,6 +50,9 @@ pub enum ToolbarAction {
     ExportMidi,
     AddChannel(&'static str),
     ToggleTyping,
+    /// Record filter [Manual: recording_scores, "recording filter (Right-Click) ... Audio, Note"].
+    ToggleRecordAudio,
+    ToggleRecordNotes,
     ToggleRecord,
     Minimize,
     Maximize,
@@ -302,6 +305,10 @@ pub fn paint_toolbar(
     );
     if record.clicked() {
         actions.push(ToolbarAction::ToggleRecord);
+    }
+    // Right-click: the record filter lives in the OPTIONS menu.
+    if record.secondary_clicked() {
+        state.open_menu = Some(5);
     }
 
     // Tempo LCD [W 437-490, 8-33]: integer part large, decimals small.
@@ -955,6 +962,16 @@ fn paint_menu(
                 Some(ToolbarAction::ToggleTyping),
             ),
             (
+                "Record filter: audio",
+                "",
+                Some(ToolbarAction::ToggleRecordAudio),
+            ),
+            (
+                "Record filter: notes",
+                "",
+                Some(ToolbarAction::ToggleRecordNotes),
+            ),
+            (
                 "Metronome",
                 "Ctrl+M",
                 Some(ToolbarAction::Engine(
@@ -1030,6 +1047,8 @@ fn paint_menu(
                 ToolbarAction::ExportMidi => ToolbarAction::ExportMidi,
                 ToolbarAction::AddChannel(kind) => ToolbarAction::AddChannel(kind),
                 ToolbarAction::ToggleTyping => ToolbarAction::ToggleTyping,
+                ToolbarAction::ToggleRecordAudio => ToolbarAction::ToggleRecordAudio,
+                ToolbarAction::ToggleRecordNotes => ToolbarAction::ToggleRecordNotes,
                 ToolbarAction::ToggleRecord => ToolbarAction::ToggleRecord,
                 ToolbarAction::Minimize => ToolbarAction::Minimize,
                 ToolbarAction::Maximize => ToolbarAction::Maximize,

@@ -42,6 +42,25 @@ struct AudioHost {
     midi: Option<jet_playback::midi::MidiInputs>,
 }
 
+/// Notes being recorded into a pattern [Manual: recording_scores].
+struct NoteTake {
+    pattern: u64,
+    song: bool,
+    /// Song mode: the tick where pattern tick 0 sits (the start of the clip being recorded).
+    origin: i64,
+    /// A clip of the pattern already covered the start, so none is placed at stop.
+    clip_exists: bool,
+    /// Pattern mode: notes wrap at the loop length.
+    loop_len: i64,
+    gesture: String,
+    /// (channel, key, unwrapped start tick, velocity) of notes still held.
+    held: Vec<(u64, u8, i64, u8)>,
+    /// Last transport tick seen, where held notes end when the transport stops.
+    last_tick: i64,
+    /// End of the latest recorded note, relative to `origin` (Song mode clip length).
+    extent: i64,
+}
+
 /// Audio being captured while recording.
 struct Take {
     start_tick: i64,
@@ -123,6 +142,14 @@ pub struct JetApp {
     armed: bool,
     input: Option<jet_playback::input::AudioInput>,
     take: Option<Take>,
+    /// Record filter: what an armed Play records [Manual: recording_scores]. Both start on
+    /// (hypothesis H-REC-2: the manual does not give the default).
+    record_audio: bool,
+    record_notes: bool,
+    note_take: Option<NoteTake>,
+    takes_started: u64,
+    /// Typing-keyboard notes for the recorder, stamped with the transport clock frame.
+    typed_notes: Vec<jet_playback::midi::StampedNote>,
     typing: bool,
     /// Octave of the Z row in FL naming (C5 = key 60); Alt+NumPad 2-6 changes it.
     typing_octave: u8,
@@ -163,6 +190,11 @@ impl Default for JetApp {
             armed: false,
             input: None,
             take: None,
+            record_audio: true,
+            record_notes: true,
+            note_take: None,
+            takes_started: 0,
+            typed_notes: Vec::new(),
             typing: false,
             typing_octave: 4,
             typing_held: Vec::new(),
@@ -182,6 +214,8 @@ enum UiAction {
     Graph(GraphAction),
     ToggleRecord,
     ToggleTyping,
+    ToggleRecordAudio,
+    ToggleRecordNotes,
     OpenProject,
     SaveProject,
     SaveProjectAs,
@@ -883,11 +917,12 @@ impl JetApp {
         if self.armed {
             self.armed = false;
             self.finish_take();
+            self.finish_note_take();
             self.input = None;
             return;
         }
         self.armed = true;
-        if !self.hardware_audio {
+        if !self.hardware_audio || !self.record_audio {
             return;
         }
         match jet_playback::input::AudioInput::open() {
@@ -899,7 +934,8 @@ impl JetApp {
                 self.input = Some(input);
             }
             Err(error) => {
-                self.armed = false;
+                // Notes can still be recorded without an audio input.
+                self.armed = self.record_notes;
                 self.last_error = Some(format!("No audio input: {error}"));
             }
         }
@@ -928,6 +964,182 @@ impl JetApp {
             }
             (None, false) => input.discard(),
         }
+    }
+
+    fn record_filter_status(&self) -> String {
+        let on = |b: bool| if b { "on" } else { "off" };
+        format!(
+            "Record filter - audio: {}, notes: {}",
+            on(self.record_audio),
+            on(self.record_notes)
+        )
+    }
+
+    /// Note recording: "Arm for recording ... Press the Play button - FL Studio will play the
+    /// project and record any note events received from your controller keyboard" into the
+    /// selected pattern [Manual: recording_scores]. MIDI notes carry the device frame they
+    /// arrived at, so they land where they were heard.
+    fn pump_note_recording(&mut self, playing: bool) {
+        let mut input = std::mem::take(&mut self.typed_notes);
+        if let Some(midi) = self.audio.as_mut().and_then(|h| h.midi.as_mut()) {
+            while let Ok(note) = midi.log.pop() {
+                input.push(note);
+            }
+        }
+        let recording = self.armed && self.record_notes && playing;
+        if !recording {
+            self.finish_note_take();
+            return;
+        }
+        if self.note_take.is_none() {
+            self.start_note_take();
+        }
+        for stamped in input {
+            let Some(tick) = self.session.tick_at_frame(stamped.frame) else {
+                continue;
+            };
+            match stamped.note {
+                jet_playback::midi::LiveNote::On {
+                    channel,
+                    key,
+                    velocity,
+                } => {
+                    if let Some(take) = &mut self.note_take {
+                        take.held.push((channel, key, tick, velocity));
+                    }
+                }
+                jet_playback::midi::LiveNote::Off { channel, key } => {
+                    self.record_note_off(channel, key, tick);
+                }
+            }
+        }
+        let now = self.session.now_frame();
+        if let (Some(take), Some(tick)) = (&mut self.note_take, self.session.tick_at_frame(now)) {
+            take.last_tick = tick;
+        }
+    }
+
+    fn start_note_take(&mut self) {
+        let snapshot = self.session.transport_snapshot();
+        let song = snapshot.mode == PlayMode::Song;
+        let pattern = self.session.selected_pattern().0;
+        let start = self
+            .session
+            .tick_at_frame(self.session.now_frame())
+            .unwrap_or(snapshot.position.0);
+        // "If you have a specific Playlist track that you want the Clip to appear on, place an
+        // empty Pattern Clip for the pattern being recorded ... at the point where you plan to
+        // start recording" [Manual: recording_scores].
+        let existing = song
+            .then(|| {
+                self.session.project().active().and_then(|arrangement| {
+                    arrangement.clips.iter().find(|clip| {
+                        clip.source == ClipSource::Pattern(jet_model::PatternId(pattern))
+                            && clip.start.0 <= start
+                            && clip.end().0 > start
+                    })
+                })
+            })
+            .flatten()
+            .map(|clip| clip.start.0 - clip.offset.0);
+        self.takes_started += 1;
+        self.note_take = Some(NoteTake {
+            pattern,
+            song,
+            origin: existing.unwrap_or(start),
+            clip_exists: existing.is_some(),
+            loop_len: self.session.loop_length().max(1),
+            gesture: format!("record.notes.{}", self.takes_started),
+            held: Vec::new(),
+            last_tick: start,
+            extent: 0,
+        });
+    }
+
+    fn record_note_off(&mut self, channel: u64, key: u8, tick: i64) {
+        let Some(take) = &mut self.note_take else {
+            return;
+        };
+        let Some(index) = take
+            .held
+            .iter()
+            .position(|(c, k, ..)| *c == channel && *k == key)
+        else {
+            return;
+        };
+        let (channel, key, start, velocity) = take.held.remove(index);
+        let length = (tick - start).max(1);
+        // Input quantizing follows the snap: "To enable input quantizing set to - 'Step', 'Beat'
+        // or 'Bar'"; hypothesis H-REC-3: the start moves to the nearest grid line and the
+        // played duration is kept (one of the manual's options; the default is not given).
+        let project = self.session.project();
+        let grid = match self.piano.snap {
+            crate::piano_roll::Snap::Step => project.settings.step_ticks(),
+            crate::piano_roll::Snap::Beat => project.settings.beat_ticks(),
+            crate::piano_roll::Snap::Bar => project.settings.bar_ticks(),
+            _ => None,
+        };
+        let mut at = if take.song {
+            start - take.origin
+        } else {
+            start.rem_euclid(take.loop_len)
+        };
+        if let Some(grid) = grid.filter(|g| *g > 0) {
+            at = ((at + grid / 2) / grid * grid).max(0);
+        }
+        let at = at.max(0);
+        take.extent = take.extent.max(at + length);
+        let gesture = take.gesture.clone();
+        let pattern = take.pattern;
+        self.gesture(
+            &gesture,
+            "note.add",
+            json!({
+                "pattern": pattern,
+                "channel": channel,
+                "start": at,
+                "length": length,
+                "key": key,
+                "velocity": velocity,
+            }),
+        );
+    }
+
+    /// Stop: held notes end where the transport stopped; in Song mode "The Pattern Clip will be
+    /// automatically placed at the point where Playback started from after recording is
+    /// stopped" [Manual: recording_scores]. The whole take undoes as one step.
+    fn finish_note_take(&mut self) {
+        let Some(take) = &self.note_take else {
+            return;
+        };
+        let end = take.last_tick;
+        let held: Vec<(u64, u8)> = take.held.iter().map(|(c, k, ..)| (*c, *k)).collect();
+        for (channel, key) in held {
+            self.record_note_off(channel, key, end);
+        }
+        let Some(take) = self.note_take.take() else {
+            return;
+        };
+        if take.song && !take.clip_exists && take.extent > 0 {
+            let bar = self
+                .session
+                .project()
+                .settings
+                .bar_ticks()
+                .unwrap_or(384)
+                .max(1);
+            let length = (take.extent + bar - 1) / bar * bar;
+            self.gesture(
+                &take.gesture,
+                "playlist.clip.add",
+                json!({
+                    "pattern": take.pattern,
+                    "start": take.origin.max(0),
+                    "length": length,
+                }),
+            );
+        }
+        self.session.end_gesture();
     }
 
     /// Write the take to a WAV file and, in Song mode, place it as an Audio Clip.
@@ -1047,6 +1259,14 @@ impl JetApp {
             if pressed {
                 if !self.typing_held.iter().any(|(k, _)| *k == key) {
                     self.typing_held.push((key, note));
+                    self.typed_notes.push(jet_playback::midi::StampedNote {
+                        note: jet_playback::midi::LiveNote::On {
+                            channel,
+                            key: note,
+                            velocity: jet_model::DEFAULT_VELOCITY,
+                        },
+                        frame: self.session.now_frame(),
+                    });
                     if let Some(host) = &mut self.audio {
                         host.output
                             .note_on(ChannelId(channel), note, jet_model::DEFAULT_VELOCITY);
@@ -1054,6 +1274,10 @@ impl JetApp {
                 }
             } else if let Some(index) = self.typing_held.iter().position(|(k, _)| *k == key) {
                 let (_, held) = self.typing_held.remove(index);
+                self.typed_notes.push(jet_playback::midi::StampedNote {
+                    note: jet_playback::midi::LiveNote::Off { channel, key: held },
+                    frame: self.session.now_frame(),
+                });
                 if let Some(host) = &mut self.audio {
                     host.output.note_off(ChannelId(channel), held);
                 }
@@ -1182,6 +1406,14 @@ impl JetApp {
                     };
                     self.execute("file.export_mid", json!({"path": path, "mode": mode}));
                 }
+            }
+            UiAction::ToggleRecordAudio => {
+                self.record_audio = !self.record_audio;
+                self.audio_status = Some(self.record_filter_status());
+            }
+            UiAction::ToggleRecordNotes => {
+                self.record_notes = !self.record_notes;
+                self.audio_status = Some(self.record_filter_status());
             }
             UiAction::ToggleTyping => {
                 self.typing = !self.typing;
@@ -2115,6 +2347,7 @@ impl JetApp {
         }
         self.pump_audio();
         self.pump_recording(toolbar_view.playing);
+        self.pump_note_recording(toolbar_view.playing);
         // Autosave every 5 minutes "UNLESS FL Studio is playing, then the autosave is postponed
         // until the project is stopped" [Manual: envsettings_files, "Regularly"].
         if self.last_autosave.elapsed() >= Duration::from_secs(300) && !toolbar_view.playing {
@@ -2149,6 +2382,8 @@ impl From<ToolbarAction> for UiAction {
             ToolbarAction::ExportMidi => Self::ExportMidi,
             ToolbarAction::AddChannel(kind) => Self::AddChannel(kind),
             ToolbarAction::ToggleTyping => Self::ToggleTyping,
+            ToolbarAction::ToggleRecordAudio => Self::ToggleRecordAudio,
+            ToolbarAction::ToggleRecordNotes => Self::ToggleRecordNotes,
             ToolbarAction::ToggleRecord => Self::ToggleRecord,
             ToolbarAction::Minimize => Self::Minimize,
             ToolbarAction::Maximize => Self::Maximize,
@@ -3423,6 +3658,92 @@ mod tests {
         );
         assert_eq!(prop(&app, 1), (100, 0));
         assert_eq!(prop(&app, 0), (100, -1000));
+    }
+
+    #[test]
+    fn armed_play_records_typed_notes_into_the_pattern() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("channel.add", json!({"name": "Keys", "kind": "synth"}));
+        let ctrl = Modifiers {
+            ctrl: true,
+            command: true,
+            ..Modifiers::default()
+        };
+        let record_take = |app: &mut JetApp| {
+            // Arm (R), play, type Z (C4 = key 48), stop.
+            toggle(app, &ctx, Key::R);
+            assert!(app.armed);
+            run_frame(app, &ctx, vec![key(Key::Space, true, Modifiers::default())]);
+            run_frame(
+                app,
+                &ctx,
+                vec![key(Key::Space, false, Modifiers::default())],
+            );
+            run_frame(
+                app,
+                &ctx,
+                vec![Event::ModifiersChanged(ctrl), key(Key::T, true, ctrl)],
+            );
+            run_frame(
+                app,
+                &ctx,
+                vec![Event::ModifiersChanged(Modifiers::default())],
+            );
+            assert!(app.typing);
+            run_frame(app, &ctx, vec![key(Key::Z, true, Modifiers::default())]);
+            std::thread::sleep(Duration::from_millis(30));
+            run_frame(app, &ctx, vec![key(Key::Z, false, Modifiers::default())]);
+            // Typing off again, stop, disarm.
+            run_frame(
+                app,
+                &ctx,
+                vec![Event::ModifiersChanged(ctrl), key(Key::T, true, ctrl)],
+            );
+            run_frame(
+                app,
+                &ctx,
+                vec![Event::ModifiersChanged(Modifiers::default())],
+            );
+            run_frame(app, &ctx, vec![key(Key::Space, true, Modifiers::default())]);
+            run_frame(
+                app,
+                &ctx,
+                vec![key(Key::Space, false, Modifiers::default())],
+            );
+            toggle(app, &ctx, Key::R);
+            assert!(!app.armed);
+        };
+
+        record_take(&mut app);
+        let notes = &app.session.project().patterns[0].notes[&ChannelId(1)];
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].key, 48);
+        assert!(notes[0].length.0 >= 1);
+        assert_eq!(notes[0].start.0 % 24, 0, "Step snap quantizes the start");
+        app.execute("edit.undo_step", json!({}));
+        assert!(
+            app.session.project().patterns[0]
+                .notes
+                .get(&ChannelId(1))
+                .is_none_or(Vec::is_empty),
+            "the take undoes as one step"
+        );
+
+        // Song mode: the pattern gets a clip where playback started.
+        toggle(&mut app, &ctx, Key::L);
+        assert_eq!(app.session.transport_snapshot().mode, PlayMode::Song);
+        record_take(&mut app);
+        let arrangement = app.session.project().active().unwrap();
+        assert_eq!(arrangement.clips.len(), 1);
+        assert_eq!(arrangement.clips[0].start.0, 0);
+        assert_eq!(
+            app.session.project().patterns[0].notes[&ChannelId(1)].len(),
+            1
+        );
+        app.execute("edit.undo_step", json!({}));
+        assert!(app.session.project().active().unwrap().clips.is_empty());
     }
 
     #[test]

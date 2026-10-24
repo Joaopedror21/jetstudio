@@ -182,6 +182,22 @@ impl Transport {
         self.anchor_frame = self.clock.now_frames();
     }
 
+    /// Unwrapped tick at a device `frame` while playing (the renderer's formula), for stamping
+    /// recorded input with the frame it arrived at.
+    pub fn tick_at_frame(&self, frame: u64, ppq: Ppq, tempo: Tempo) -> Option<i64> {
+        if self.state != TransportState::Playing {
+            return None;
+        }
+        let frames = i128::from(frame) - i128::from(self.anchor_frame);
+        let numerator = frames * i128::from(tempo.0) * i128::from(ppq.0);
+        let denominator = i128::from(self.clock.rate().max(1)) * 60_000;
+        Some(self.anchor_tick.0 + numerator.div_euclid(denominator) as i64)
+    }
+
+    pub fn now_frame(&self) -> u64 {
+        self.clock.now_frames()
+    }
+
     /// (playing, anchor tick, anchor frame) for mirroring into the renderer.
     pub fn anchor(&self) -> (bool, Tick, u64) {
         (

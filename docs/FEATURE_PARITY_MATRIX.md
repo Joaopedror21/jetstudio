@@ -19,8 +19,8 @@ Legenda: ✅ disponível e testado · 🟡 parcial (o que falta está ao lado) �
 | Efeitos (FX) | 14 | 9 | 1 | 4 | 0 |
 | Plugins externos (PLG) | 4 | 0 | 0 | 4 | 0 |
 | Browser e arquivos (BR/FILE) | 12 | 2 | 4 | 5 | 1 |
-| Automação, MIDI, gravação (AUT/MIDI/REC) | 10 | 0 | 3 | 7 | 0 |
-| **Total** | **192** | **71** | **56** | **63** | **2** |
+| Automação, MIDI, gravação (AUT/MIDI/REC) | 10 | 0 | 4 | 6 | 0 |
+| **Total** | **192** | **71** | **57** | **62** | **2** |
 
 As contagens foram geradas por script a partir da coluna Estado do inventário: ✅ = Testado; 🟡 = Implementado ou Parcialmente compatível; ⬜ = Pesquisado ou Especificado; ⛔ = Bloqueado. 
 
@@ -71,7 +71,8 @@ As contagens foram geradas por script a partir da coluna Estado do inventário: 
 | Browser: pastas, preview, arrastar | sim | 🟡 | busca, favoritos, abas |
 | Projeto: salvar/abrir com samples relativos | sim | ✅ | `save_and_load_keep_samples_and_render_identically` |
 | Autosave/backups | a cada 5 min e ao salvar; revert | 🟡 | FILE-003: faltam os outros modos |
-| Entrada MIDI e typing keyboard | todas as portas, Ctrl+T | 🟡 | MIDI-001: faltam escolha de dispositivo, CC, gravação de notas |
+| Entrada MIDI e typing keyboard | todas as portas, Ctrl+T | 🟡 | MIDI-001: faltam escolha de dispositivo e CC |
+| Gravação de notas | armado + Play, quantização pelo snap, clip no modo Song | 🟡 | REC-002: `armed_play_records_typed_notes_into_the_pattern`; MIDI real não exercitado |
 | Configurações de áudio (F10) | dispositivo, taxa, buffer | 🟡 | AE-004 ✅ no hardware; GLB-021: faltam as outras abas |
 | VST3/CLAP | — | ⬜ | PLG-001/002 (licença do VST3 resolvida: MIT desde a 3.8) |
 | Gravação de áudio | R arma, Play grava, take vira Audio Clip | 🟡 | REC-001: não exercitado no microfone do usuário; faltam pickup, takes e monitoramento |

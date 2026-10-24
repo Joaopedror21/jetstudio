@@ -189,6 +189,20 @@ impl Session {
     }
 
     /// Transport state for the renderer; both use the same frame counter and formula.
+    /// Unwrapped transport tick at a clock frame while playing (see `Transport::tick_at_frame`).
+    pub fn tick_at_frame(&self, frame: u64) -> Option<i64> {
+        self.transport.tick_at_frame(
+            frame,
+            self.project.settings.ppq,
+            self.project.settings.tempo,
+        )
+    }
+
+    /// The transport clock's current frame.
+    pub fn now_frame(&self) -> u64 {
+        self.transport.now_frame()
+    }
+
     pub fn transport_sync(&self) -> TransportSync {
         let (playing, anchor_tick, anchor_frame) = self.transport.anchor();
         TransportSync {

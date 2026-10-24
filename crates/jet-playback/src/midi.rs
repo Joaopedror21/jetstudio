@@ -31,20 +31,34 @@ pub fn parse(bytes: &[u8], channel: u64) -> Option<LiveNote> {
     }
 }
 
+/// A note as it arrived, with the output device frame at that moment (where the live note
+/// sounds), for recording.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StampedNote {
+    pub note: LiveNote,
+    pub frame: u64,
+}
+
 /// Open MIDI input connections; dropping it closes them.
 pub struct MidiInputs {
     _connections: Vec<midir::MidiInputConnection<()>>,
     pub names: Vec<String>,
     /// Channel id that incoming notes play (0 = none).
     pub target: Arc<AtomicU64>,
+    /// Every note played, for note recording; drain it each UI frame.
+    pub log: rtrb::Consumer<StampedNote>,
 }
 
 impl MidiInputs {
     /// Connect every available input port. Notes go into `sink` (shared by all ports; the lock
     /// is taken on MIDI threads only, never on the audio thread).
-    pub fn connect_all(sink: rtrb::Producer<LiveNote>) -> Result<Self, String> {
+    pub fn connect_all(
+        sink: rtrb::Producer<LiveNote>,
+        frames: Arc<AtomicU64>,
+    ) -> Result<Self, String> {
         let target = Arc::new(AtomicU64::new(0));
-        let sink = Arc::new(Mutex::new(sink));
+        let (log_sink, log) = rtrb::RingBuffer::new(1024);
+        let sink = Arc::new(Mutex::new((sink, log_sink)));
         let probe = midir::MidiInput::new("JetStudio").map_err(|e| e.to_string())?;
         let ports = probe.ports();
         let mut connections = Vec::new();
@@ -58,15 +72,18 @@ impl MidiInputs {
             };
             let sink = Arc::clone(&sink);
             let target = Arc::clone(&target);
+            let frames = Arc::clone(&frames);
             let callback = move |_stamp: u64, bytes: &[u8], _: &mut ()| {
                 let channel = target.load(Ordering::Relaxed);
                 if channel == 0 {
                     return;
                 }
                 if let Some(note) = parse(bytes, channel)
-                    && let Ok(mut queue) = sink.lock()
+                    && let Ok(mut queues) = sink.lock()
                 {
-                    let _ = queue.push(note);
+                    let _ = queues.0.push(note);
+                    let frame = frames.load(Ordering::Acquire);
+                    let _ = queues.1.push(StampedNote { note, frame });
                 }
             };
             if let Ok(connection) = input.connect(port, "jetstudio-in", callback, ()) {
@@ -78,6 +95,7 @@ impl MidiInputs {
             _connections: connections,
             names,
             target,
+            log,
         })
     }
 

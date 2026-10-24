@@ -118,3 +118,46 @@ fn a_continuous_gesture_undoes_as_one_step() {
     session.execute("edit.undo_step", json!({})).unwrap();
     assert!(session.project().channels.is_empty());
 }
+
+#[test]
+fn input_frames_map_to_unwrapped_ticks_while_playing() {
+    let clock = ManualClock::new(48_000);
+    let mut session = Session::with_clock(Box::new(clock.clone()));
+    session
+        .execute("transport.tempo.set", json!({"milli_bpm": 120_000}))
+        .unwrap();
+    assert_eq!(session.tick_at_frame(0), None, "stopped");
+    clock.set_frames(1_000);
+    session.execute("transport.play_stop", json!({})).unwrap();
+    // 250 frames per tick at 120 BPM and 96 PPQ; the anchor is frame 1 000.
+    assert_eq!(session.tick_at_frame(1_000), Some(0));
+    assert_eq!(session.tick_at_frame(1_249), Some(0));
+    assert_eq!(session.tick_at_frame(1_250), Some(1));
+    // Past the pattern loop the tick keeps counting (the recorder wraps it itself).
+    assert_eq!(session.tick_at_frame(1_000 + 48_000 * 4), Some(768));
+    assert_eq!(session.now_frame(), 1_000);
+}
+
+#[test]
+fn a_pattern_clip_without_a_track_goes_to_the_first_free_one() {
+    let mut session = Session::with_clock(Box::new(ManualClock::new(48_000)));
+    session
+        .execute("playlist.track.add", json!({"name": "Track 1"}))
+        .unwrap();
+    session
+        .execute(
+            "playlist.clip.add",
+            json!({"pattern": 1, "start": 0, "length": 384}),
+        )
+        .unwrap();
+    // The only track is busy over 0..384, so a second clip there gets a new track.
+    session
+        .execute(
+            "playlist.clip.add",
+            json!({"pattern": 1, "start": 192, "length": 384}),
+        )
+        .unwrap();
+    let arrangement = session.project().active().unwrap();
+    assert_eq!(arrangement.tracks.len(), 2);
+    assert_ne!(arrangement.clips[0].track, arrangement.clips[1].track);
+}
