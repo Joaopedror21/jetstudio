@@ -44,6 +44,7 @@ pub enum ToolbarAction {
     SaveProject,
     SaveProjectAs,
     ExportWav,
+    ExportMidi,
     AddChannel(&'static str),
     ToggleTyping,
     Minimize,
@@ -849,6 +850,16 @@ fn paint_menu(
                 "Ctrl+R",
                 Some(ToolbarAction::ExportWav),
             ),
+            (
+                "Export > MIDI file...",
+                "Shift+Ctrl+M",
+                Some(ToolbarAction::ExportMidi),
+            ),
+            (
+                "Revert to last autosave",
+                "",
+                Some(ToolbarAction::Engine("file.revert_autosave", json!({}))),
+            ),
         ],
         2 => &[
             (
@@ -988,6 +999,7 @@ fn paint_menu(
                 ToolbarAction::SaveProject => ToolbarAction::SaveProject,
                 ToolbarAction::SaveProjectAs => ToolbarAction::SaveProjectAs,
                 ToolbarAction::ExportWav => ToolbarAction::ExportWav,
+                ToolbarAction::ExportMidi => ToolbarAction::ExportMidi,
                 ToolbarAction::AddChannel(kind) => ToolbarAction::AddChannel(kind),
                 ToolbarAction::ToggleTyping => ToolbarAction::ToggleTyping,
                 ToolbarAction::Minimize => ToolbarAction::Minimize,

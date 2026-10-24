@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-//! Versioned JSON project files with same-directory atomic replacement.
+//! Versioned JSON project files with same-directory atomic replacement, and MIDI files.
+
+pub mod smf;
 
 use jet_model::{ModelError, Project, ResourceStatus};
 use serde::{Deserialize, Serialize};

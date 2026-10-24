@@ -79,6 +79,12 @@ pub struct Session {
     gesture: Option<String>,
     /// Metronome switch: a global option, not saved in the project [Manual: menu_options].
     metronome: bool,
+    /// Note clipboard (Ctrl+C/X/V in the Piano roll); not part of the project or history.
+    clipboard: Vec<jet_model::Note>,
+    /// Folder for autosave backups [Manual: envsettings_files, "Backup (Autosave)"].
+    backup_dir: Option<PathBuf>,
+    /// Revision last written to the backup folder.
+    backed_up: Option<u64>,
 }
 
 impl Session {
@@ -106,6 +112,9 @@ impl Session {
             panic_requested: false,
             gesture: None,
             metronome: false,
+            clipboard: Vec::new(),
+            backup_dir: None,
+            backed_up: None,
         }
     }
 
@@ -218,6 +227,32 @@ impl Session {
 
     pub fn metronome(&self) -> bool {
         self.metronome
+    }
+
+    /// Where `file.autosave` writes backups; hosts point it at the user data folder.
+    pub fn set_backup_dir(&mut self, dir: Option<PathBuf>) {
+        self.backup_dir = dir;
+    }
+
+    /// True when the project changed since the last backup.
+    pub fn needs_backup(&self) -> bool {
+        self.backed_up != Some(self.revision) && self.revision > 0
+    }
+
+    fn backup_path(&self) -> Option<PathBuf> {
+        let name = self
+            .path
+            .as_deref()
+            .and_then(std::path::Path::file_stem)
+            .map_or_else(
+                || "Untitled".to_owned(),
+                |s| s.to_string_lossy().into_owned(),
+            );
+        Some(
+            self.backup_dir
+                .as_ref()?
+                .join(format!("{name} (autosave).jetproj")),
+        )
     }
 
     pub fn set_publisher(&mut self, publisher: Box<dyn SnapshotPublisher>) {

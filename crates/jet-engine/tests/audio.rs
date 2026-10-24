@@ -681,3 +681,118 @@ fn audio_clips_play_their_sample_at_the_recorded_level() {
     session.execute("channel.remove", json!({"id": 1})).unwrap();
     assert!(session.project().arrangements[0].clips.is_empty());
 }
+
+#[test]
+fn midi_export_import_and_note_clipboard() {
+    let mut session = session_120();
+    session
+        .execute("channel.add", json!({"name": "Keys", "kind": "synth"}))
+        .unwrap();
+    session
+        .execute("channel.add", json!({"name": "Kick"}))
+        .unwrap();
+    for (start, key) in [(0, 60), (96, 64), (192, 67)] {
+        session
+            .execute(
+                "note.add",
+                json!({"pattern":1,"channel":1,"start":start,"length":48,"key":key}),
+            )
+            .unwrap();
+    }
+    session
+        .execute(
+            "step.set",
+            json!({"pattern":1,"channel":2,"index":4,"on":true}),
+        )
+        .unwrap();
+    // Project export: one track per channel; steps become one-step notes.
+    let path = temp("song.mid");
+    session
+        .execute("file.export_mid", json!({"path": path, "mode": "pattern"}))
+        .unwrap();
+    let smf = jet_format::smf::read(&path).unwrap();
+    assert_eq!(smf.ppq, 96);
+    assert_eq!(smf.tempo_us, 500_000, "120 BPM");
+    assert_eq!(smf.tracks.len(), 2);
+    assert_eq!(smf.tracks[0].name, "Keys");
+    let keys: Vec<(u64, u8)> = smf.tracks[0]
+        .notes
+        .iter()
+        .map(|n| (n.start, n.key))
+        .collect();
+    assert_eq!(keys, vec![(0, 60), (96, 64), (192, 67)]);
+    assert_eq!(smf.tracks[1].notes[0].start, 96);
+    assert_eq!(smf.tracks[1].notes[0].length, 24, "a step lasts one step");
+    // Piano roll export then import into another pattern doubles nothing and keeps timing.
+    let roll = temp("roll.mid");
+    session
+        .execute(
+            "note.export_mid",
+            json!({"pattern":1,"channel":1,"path": roll}),
+        )
+        .unwrap();
+    session.execute("pattern.next_empty", json!({})).unwrap();
+    session
+        .execute(
+            "note.import_mid",
+            json!({"pattern":2,"channel":1,"path": roll}),
+        )
+        .unwrap();
+    let imported = &session.project().patterns[1].notes[&ChannelId(1)];
+    assert_eq!(imported.len(), 3);
+    assert_eq!(
+        (imported[2].start.0, imported[2].length.0, imported[2].key),
+        (192, 48, 67)
+    );
+    // Clipboard: copy two notes, paste at bar 3 (tick 768).
+    session
+        .execute(
+            "note.copy",
+            json!({"pattern":1,"channel":1,"indices":[1,2]}),
+        )
+        .unwrap();
+    session
+        .execute("note.paste", json!({"pattern":1,"channel":1,"at":768}))
+        .unwrap();
+    let notes = &session.project().patterns[0].notes[&ChannelId(1)];
+    let starts: Vec<i64> = notes.iter().map(|n| n.start.0).collect();
+    assert_eq!(
+        starts,
+        vec![0, 96, 192, 768 + 96, 768 + 192],
+        "keeps the place within the bar"
+    );
+    session
+        .execute("note.cut", json!({"pattern":1,"channel":1,"indices":[0]}))
+        .unwrap();
+    assert_eq!(session.project().patterns[0].notes[&ChannelId(1)].len(), 4);
+}
+
+#[test]
+fn autosave_backs_up_changes_and_revert_restores_them() {
+    let mut session = session_120();
+    let dir = temp("backup").with_file_name("Backup");
+    session.set_backup_dir(Some(dir.clone()));
+    session
+        .execute("channel.add", json!({"name": "Kick"}))
+        .unwrap();
+    assert!(session.needs_backup());
+    session.execute("file.autosave", json!({})).unwrap();
+    assert!(dir.join("Untitled (autosave).jetproj").is_file());
+    assert!(!session.needs_backup(), "nothing new to back up");
+    session
+        .execute("channel.add", json!({"name": "Snare"}))
+        .unwrap();
+    assert_eq!(session.project().channels.len(), 2);
+    session.execute("file.revert_autosave", json!({})).unwrap();
+    assert_eq!(
+        session.project().channels.len(),
+        1,
+        "back to the autosaved state"
+    );
+    // A manual save writes the backup too, under the project's name.
+    let path = temp("Beat.jetproj");
+    session
+        .execute("file.save_as", json!({"path": path}))
+        .unwrap();
+    assert!(dir.join("Beat (autosave).jetproj").is_file());
+}

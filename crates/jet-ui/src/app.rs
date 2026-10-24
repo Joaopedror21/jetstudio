@@ -97,6 +97,8 @@ pub struct JetApp {
     fonts_installed: bool,
     pending_show: Vec<WindowKind>,
     pending_focus: Option<WindowKind>,
+    /// Last autosave check [Manual: envsettings_files, "Regularly (every 5 minutes)"].
+    last_autosave: std::time::Instant,
     typing: bool,
     /// Octave of the Z row in FL naming (C5 = key 60); Alt+NumPad 2-6 changes it.
     typing_octave: u8,
@@ -126,6 +128,7 @@ impl Default for JetApp {
             fonts_installed: false,
             pending_show: Vec::new(),
             pending_focus: None,
+            last_autosave: std::time::Instant::now(),
             typing: false,
             typing_octave: 4,
             typing_held: Vec::new(),
@@ -146,6 +149,7 @@ enum UiAction {
     SaveProject,
     SaveProjectAs,
     ExportWav,
+    ExportMidi,
     AddChannel(&'static str),
     Minimize,
     Maximize,
@@ -165,6 +169,12 @@ impl JetApp {
     /// system clock, silently, and the hint bar says why.
     pub fn with_audio() -> Self {
         let mut app = Self::default();
+        // Backups go to the user data folder, like FL's ...\Projects\Backup.
+        let documents = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(|home| std::path::PathBuf::from(home).join("Documents"));
+        app.session
+            .set_backup_dir(documents.map(|d| d.join("JetStudio").join("Backup")));
         let session = &app.session;
         match AudioOutput::open(OutputRequest::default(), |rate| session.build_plan(rate)) {
             Ok(output) => {
@@ -522,6 +532,30 @@ impl JetApp {
                     base(json!({"indices": indices, "grid": grid})),
                 );
             }
+            PianoAction::Copy(indices) => {
+                self.execute("note.copy", base(json!({"indices": indices})))
+            }
+            PianoAction::Cut(indices) => {
+                self.execute("note.cut", base(json!({"indices": indices})))
+            }
+            PianoAction::Paste { at } => self.execute("note.paste", base(json!({"at": at}))),
+            PianoAction::ImportMidi => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("MIDI file", &["mid", "midi"])
+                    .pick_file()
+                {
+                    self.execute("note.import_mid", base(json!({"path": path})));
+                }
+            }
+            PianoAction::ExportMidi => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("MIDI file", &["mid"])
+                    .set_file_name("Piano roll.mid")
+                    .save_file()
+                {
+                    self.execute("note.export_mid", base(json!({"path": path})));
+                }
+            }
             PianoAction::KeyDown(key) => {
                 if let Some(host) = &mut self.audio {
                     host.output
@@ -756,6 +790,20 @@ impl JetApp {
                 SettingsAction::LoadSample(id) => self.rack_menu(id, RackMenu::LoadSample),
             },
             UiAction::ExportWav => self.export_wav(),
+            UiAction::ExportMidi => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("MIDI file", &["mid"])
+                    .set_file_name("Untitled.mid")
+                    .save_file()
+                {
+                    let mode = if self.session.transport_snapshot().mode == PlayMode::Song {
+                        "song"
+                    } else {
+                        "pattern"
+                    };
+                    self.execute("file.export_mid", json!({"path": path, "mode": mode}));
+                }
+            }
             UiAction::ToggleTyping => {
                 self.typing = !self.typing;
                 if !self.typing {
@@ -1591,6 +1639,16 @@ impl JetApp {
             self.run_action(action, desktop, &ctx);
         }
         self.pump_audio();
+        // Autosave every 5 minutes "UNLESS FL Studio is playing, then the autosave is postponed
+        // until the project is stopped" [Manual: envsettings_files, "Regularly"].
+        if self.last_autosave.elapsed() >= Duration::from_secs(300) && !toolbar_view.playing {
+            self.last_autosave = std::time::Instant::now();
+            if self.session.needs_backup()
+                && let Err(error) = self.session.execute("file.autosave", json!({}))
+            {
+                self.last_error = Some(error.to_string());
+            }
+        }
         if (toolbar_view.playing || self.audio.is_some()) && !self.static_capture {
             ctx.request_repaint_after(Duration::from_millis(30));
         }
@@ -1612,6 +1670,7 @@ impl From<ToolbarAction> for UiAction {
             ToolbarAction::SaveProject => Self::SaveProject,
             ToolbarAction::SaveProjectAs => Self::SaveProjectAs,
             ToolbarAction::ExportWav => Self::ExportWav,
+            ToolbarAction::ExportMidi => Self::ExportMidi,
             ToolbarAction::AddChannel(kind) => Self::AddChannel(kind),
             ToolbarAction::ToggleTyping => Self::ToggleTyping,
             ToolbarAction::Minimize => Self::Minimize,

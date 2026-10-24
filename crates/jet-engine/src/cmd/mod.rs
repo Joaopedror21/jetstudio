@@ -3,6 +3,7 @@ mod automation;
 mod channel;
 mod edit;
 mod file;
+mod midi_file;
 mod mixer;
 mod note;
 mod pattern;
@@ -92,6 +93,23 @@ static SPECS: &[CommandSpec] = &[
         "FILE",
         Some("Ctrl+Shift+S"),
         "{path:string}",
+        None
+    ),
+    spec!("file.autosave", "Autosave", "", None, "{}", None),
+    spec!(
+        "file.revert_autosave",
+        "Revert to last autosave",
+        "FILE",
+        None,
+        "{}",
+        None
+    ),
+    spec!(
+        "file.export_mid",
+        "Export > MIDI file",
+        "FILE",
+        Some("Shift+Ctrl+M"),
+        "{path:string,mode?:song|pattern}",
         None
     ),
     spec!(
@@ -456,6 +474,46 @@ static SPECS: &[CommandSpec] = &[
         "",
         None,
         "{pattern:uint,channel:uint}",
+        Step
+    ),
+    spec!(
+        "note.export_mid",
+        "Export as MIDI file",
+        "",
+        Some("Shift+Ctrl+M"),
+        "{pattern:uint,channel:uint,path:string}",
+        None
+    ),
+    spec!(
+        "note.import_mid",
+        "Import MIDI file",
+        "",
+        Some("Ctrl+M"),
+        "{pattern:uint,channel:uint,path:string}",
+        Step
+    ),
+    spec!(
+        "note.copy",
+        "Copy",
+        "",
+        Some("Ctrl+C"),
+        "{pattern:uint,channel:uint,indices?:[uint]}",
+        None
+    ),
+    spec!(
+        "note.cut",
+        "Cut",
+        "",
+        Some("Ctrl+X"),
+        "{pattern:uint,channel:uint,indices?:[uint]}",
+        Step
+    ),
+    spec!(
+        "note.paste",
+        "Paste",
+        "",
+        Some("Ctrl+V"),
+        "{pattern:uint,channel:uint,at:int}",
         Step
     ),
     spec!(
@@ -876,6 +934,7 @@ pub(super) fn dispatch(session: &mut Session, id: &str, params: Value) -> Result
     spec.enabled(session)
         .map_err(|reason| CmdError::Disabled(reason.0))?;
     match id.split('.').next() {
+        Some("file") if id == "file.export_mid" => midi_file::run(session, id, params),
         Some("file") => file::run(session, id, params),
         Some("edit") => edit::run(session, id, params),
         Some("transport") => transport::run(session, id, params),
@@ -884,6 +943,14 @@ pub(super) fn dispatch(session: &mut Session, id: &str, params: Value) -> Result
         Some("step") => step::run(session, id, params),
         Some("project") => project::run(session, id, params),
         Some("playlist") => playlist::run(session, id, params),
+        Some("note")
+            if matches!(
+                id,
+                "note.export_mid" | "note.import_mid" | "note.copy" | "note.cut" | "note.paste"
+            ) =>
+        {
+            midi_file::run(session, id, params)
+        }
         Some("note") => note::run(session, id, params),
         Some("mixer") => mixer::run(session, id, params),
         Some("automation") => automation::run(session, id, params),

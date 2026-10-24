@@ -63,6 +63,17 @@ fn reset_after_load(session: &mut Session, project: Project, path: Option<PathBu
         .on_change(session.revision, Arc::clone(&session.project));
 }
 
+/// Write the backup copy when a backup folder is configured.
+fn write_backup(session: &mut Session) -> Result<(), CmdError> {
+    let Some(path) = session.backup_path() else {
+        return Ok(());
+    };
+    let project = rebase(&session.project, &path);
+    jet_format::save_atomic(&path, &project).map_err(|e| CmdError::Failed(e.to_string()))?;
+    session.backed_up = Some(session.revision);
+    Ok(())
+}
+
 /// Store resource paths relative to the new project location.
 fn rebase(project: &Project, target: &Path) -> Project {
     let base = target.parent();
@@ -97,7 +108,29 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
             let project = rebase(&session.project, &path);
             jet_format::save_atomic(&path, &project)
                 .map_err(|e| CmdError::Failed(e.to_string()))?;
+            // "Backups are made on every manual save" [Manual: envsettings_files].
+            write_backup(session)?;
             Ok(false)
+        }
+        "file.autosave" => {
+            empty(id, params)?;
+            if !session.needs_backup() {
+                return Ok(false);
+            }
+            write_backup(session)?;
+            Ok(false)
+        }
+        // "Revert to last autosave" [Manual: envsettings_files].
+        "file.revert_autosave" => {
+            empty(id, params)?;
+            let backup = session
+                .backup_path()
+                .filter(|p| p.is_file())
+                .ok_or_else(|| CmdError::Disabled("No autosave for this project".into()))?;
+            let project = jet_format::load(&backup).map_err(|e| CmdError::Failed(e.to_string()))?;
+            let path = session.path.clone();
+            reset_after_load(session, project, path);
+            Ok(true)
         }
         "file.save_as" => {
             let p: PathParams = parse(id, params)?;
@@ -106,6 +139,7 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
                 .map_err(|e| CmdError::Failed(e.to_string()))?;
             session.project = Arc::new(project);
             session.path = Some(p.path);
+            write_backup(session)?;
             Ok(false)
         }
         "file.export_wav" => {

@@ -170,11 +170,11 @@
 | PR-017 | Chord stamp | "Chord Stamp" | Acordes por clique | PR-002 | M | P2 | Pesquisado | — |
 | PR-018 | Snap to scale / realce de escala | "Snap to scale", "Root note" | — | — | M | P2 | Pesquisado | — |
 | PR-019 | Arpeggiate, Strum, Flam, Limit, Flip, Randomize, Scale levels, Articulate | [Manual: pianoroll_menu] Alt+A/S/F/K/Y/R/X/L | Ferramentas | PR-001 | L | P2 | Pesquisado | — |
-| PR-020 | Copy/Cut/Paste | Ctrl+C/X/V | Clipboard | — | S | P1 | Pesquisado | — |
+| PR-020 | Copy/Cut/Paste | Ctrl+C/X/V; "Notes are pasted starting from the leftmost bar that is visible" | Clipboard | — | S | P1 | Testado (a posição dentro do compasso é mantida) | `midi_export_import_and_note_clipboard` |
 | PR-021 | Delete space, Insert space | [Manual: pianoroll_menu] | — | — | S | P2 | Pesquisado | — |
 | PR-022 | Grupos de notas (Shift+G) | "Group notes" | — | — | M | P3 | Pesquisado | — |
 | PR-023 | Gravação MIDI | [Manual: recording] | — | MIDI | L | P2 | Pesquisado | — |
-| PR-024 | Import/Export MIDI | [Manual: pianoroll_menu "File"] | Arquivos .mid | FILE | M | P2 | Pesquisado | — |
+| PR-024 | Import/Export MIDI | [Manual: pianoroll_menu "File"]: "Importing MIDI from the Piano roll only adds Notes" | Arquivos .mid (SMF tipo 0/1, running status) | FILE | M | P2 | Testado (botões no Piano roll; reescala PPQ) | `midi_export_import_and_note_clipboard`, `smf::tests::*` |
 | PR-025 | Fórmula de compasso por pattern | "Time Signatures" | Só visual | GLB-007 | M | P3 | Pesquisado | — |
 | PR-026 | Riff machine, Chord progression | [Manual: pianoroll_riff, pianoroll_chordprogression] | Geradores | — | L | P3 | Pesquisado | — |
 | PR-027 | Playhead no Piano roll | — | Posição no modo Pattern | AE | S | P1 | Implementado | — |
@@ -234,7 +234,7 @@
 | AE-005 | Render offline idêntico ao playback | [ARQ M2] | — | — | M | P0 | Testado | `offline_render_leaves_the_remainder_and_matches_live_playback` |
 | AE-006 | Export WAV 16/24/32 float | [Manual: fformats_save_export] | Modo Song/Pattern, Tail leave/cut/wrap, taxa 22–192 kHz | AE-005 | M | P0 | Testado | `wav_round_trips...`, testes de `jet-engine/tests/audio.rs` |
 | AE-007 | Export MP3/OGG/FLAC | idem | Licenças do encoder | — | M | P2 | Pesquisado (requer encoder de licença compatível; LAME é LGPL e é proibido pela ADR) | — |
-| AE-008 | Export MIDI | idem | — | FILE | M | P2 | Pesquisado | — |
+| AE-008 | Export MIDI | idem | Uma faixa por canal, tempo e nomes | FILE | M | P2 | Testado (File > Export > MIDI file; steps viram notas de 1 step) | `midi_export_import_and_note_clipboard` |
 | AE-009 | Split mixer tracks | idem | Uma faixa por arquivo | AE-006 | M | P2 | Pesquisado | — |
 | AE-010 | Dithering | idem | Shaped dither para 16 bits | AE-006 | S | P3 | Pesquisado | — |
 | AE-011 | Medidor de carga/underruns | [W], envsettings_audio "Underruns" | — | AE-001 | S | P1 | Testado no dispositivo (overruns = callback mais longo que o buffer) | `jet-cli play` |
@@ -283,7 +283,7 @@
 | BR-006 | Favoritos e histórico | — | — | S | P2 | Pesquisado |
 | FILE-001 | Formato próprio .jetproj (JSON versionado, save atômico) | ARQ §6 | — | S | P0 | Testado | `save_load_and_replace_existing_file`, `save_and_load_keep_samples_and_render_identically` |
 | FILE-002 | Caminhos relativos de samples | [Manual: songsettings_settings "Project Data Folder"] | Relativo ao projeto, mais hint absoluto | S | P0 | Testado | `save_and_load_keep_samples...` |
-| FILE-003 | Autosave e backups | [Manual: envsettings_files "Autosave", "Create local sequential backups"] | — | M | P1 | Pesquisado |
+| FILE-003 | Autosave e backups | [Manual: envsettings_files]: "Regularly (every 5 minutes)", adiado enquanto toca; backup a cada save manual; "Revert to last autosave" | — | M | P1 | Parcialmente compatível: modo Regularly fixo em `Documentos\JetStudio\Backup`, revert no menu File; faltam os outros modos e o versionamento sequencial. Teste: `autosave_backs_up_changes_and_revert_restores_them` |
 | FILE-004 | Templates | [Manual: menu_file] | — | S | P2 | Pesquisado |
 | FILE-005 | Zip com samples | [Manual: fformats_project] | — | M | P2 | Pesquisado |
 | FILE-006 | Ler .flp | [Manual: fformats_project] esquema não publicado | — | — | — | Bloqueado (sem especificação pública; fora de escopo pela ADR) |

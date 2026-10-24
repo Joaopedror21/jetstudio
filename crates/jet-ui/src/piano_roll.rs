@@ -109,6 +109,8 @@ pub struct PianoRollState {
     pub held_key: Option<u8>,
     /// Channel shown last frame; a new target scrolls to its notes.
     shown_channel: Option<u64>,
+    /// MIDI file button clicked: `Some(true)` import, `Some(false)` export.
+    file_request: Option<bool>,
 }
 
 impl Default for PianoRollState {
@@ -126,6 +128,7 @@ impl Default for PianoRollState {
             reselect: Vec::new(),
             held_key: None,
             shown_channel: None,
+            file_request: None,
         }
     }
 }
@@ -196,6 +199,14 @@ pub enum PianoAction {
         indices: Vec<usize>,
         grid: i64,
     },
+    Copy(Vec<usize>),
+    Cut(Vec<usize>),
+    /// Paste at the leftmost visible bar [Manual: pianoroll_menu, "Paste (Ctrl+V)"].
+    Paste {
+        at: i64,
+    },
+    ImportMidi,
+    ExportMidi,
     KeyDown(u8),
     KeyUp(u8),
 }
@@ -645,6 +656,11 @@ pub fn paint_piano_roll(
     if focused {
         keyboard(paint, state, view, &mut actions);
     }
+    match state.file_request.take() {
+        Some(true) => actions.push(PianoAction::ImportMidi),
+        Some(false) => actions.push(PianoAction::ExportMidi),
+        None => {}
+    }
     actions
 }
 
@@ -716,6 +732,22 @@ fn paint_toolbar(
     {
         state.snap = state.snap.next();
     }
+    // MIDI file import/export [Manual: pianoroll_menu, "File"].
+    let mut bx = snap.right() + 8.0;
+    for (key, label, hint) in [
+        ("import", "Import MIDI", "Import MIDI file... (adds notes)"),
+        ("export", "Export MIDI", "Export as MIDI file..."),
+    ] {
+        let b = Rect::from_min_size(
+            pos2(bx, toolbar.top() + 4.0),
+            vec2(84.0, toolbar.height() - 8.0),
+        );
+        if paint.toggle(&format!("piano-roll.{key}"), b, label, false, hint) {
+            state.file_request = Some(key == "import");
+        }
+        bx += 88.0;
+    }
+    let snap = Rect::from_min_max(snap.min, pos2(bx - 8.0, snap.max.y));
     let channel = view
         .channel
         .as_ref()
@@ -1044,6 +1076,16 @@ fn keyboard(
                 actions.push(PianoAction::Chop { indices: sel, grid })
             }
             Key::G if only(m(true, false, false)) => actions.push(PianoAction::Glue(sel)),
+            Key::C if only(m(true, false, false)) => actions.push(PianoAction::Copy(sel)),
+            Key::X if only(m(true, false, false)) => {
+                actions.push(PianoAction::Cut(sel));
+                state.selection.clear();
+            }
+            Key::V if only(m(true, false, false)) => {
+                let bar = view.bar_ticks.max(1);
+                let first_visible = (state.scroll_ticks as i64 + bar - 1) / bar * bar;
+                actions.push(PianoAction::Paste { at: first_visible });
+            }
             Key::D if only(m(false, true, false)) => {
                 actions.push(PianoAction::DiscardLengths { indices: sel, grid })
             }
