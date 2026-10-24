@@ -50,6 +50,11 @@
 | `9a51c4f` | Channel rack: botões vermelhos para samples ausentes; religar pelas pastas do Browser |
 | `08dc7a9` | Settings: abas MIDI (Enable por dispositivo) e File (modos de autosave) |
 | `d1761c4` | Menus PATTERNS, TOOLS, HELP e itens novos em EDIT/VIEW; Ctrl+H |
+| `a145e26` | Efeitos: Stereo shaper; analisador (espectro e vectorscope) no Mixer |
+| `91bc0b8` | Piano roll: ghost notes (Alt+V, duplo clique direito troca de canal) |
+| `2dc2968` | Playlist: Merge de arranjos (posição x modo) |
+| `c9b53ce` | Automation clips: alças de tensão e prévia da saída (Min/Max/Time/LFO) |
+| `e3a191a` | Marcadores: Marker loop, Marker skip e Marker pause (saltos no renderer e no transporte) |
 
 ## 1. Funcionalidades pesquisadas
 
@@ -65,11 +70,11 @@ O corpus de texto do manual fica na scratchpad da sessão (`flman/*.txt`). Ele n
 - **Playback** (`jet-playback`): cpal 0.18.2, filas rtrb, relógio do dispositivo, plano e transporte aplicados juntos, estatísticas de carga e overruns.
 - **Engine** (`jet-engine`): cerca de 80 comandos (lista: `jet-cli commands`); pool de samples fora do histórico e liberado só na thread de UI; undo de gestos contínuos; posição do transporte que volta ao início no fim do material.
 - **UI** (`jet-ui`): Channel rack (knobs, seletor de mixer, mute/solo, pintura de steps, renomear, menu de contexto, arrastar samples, swing e comprimento do pattern), Piano roll (ferramentas, snap, mover/redimensionar, velocity, teclado, atalhos, clipboard, MIDI import/export, menu Tools, snap to scale, chord stamp), Mixer (faders, pan, mute/solo, meters, sends, FX e parâmetros, invert, swap, stereo sep), Playlist (clips de pattern, áudio e automação, arranjos, markers), Channel Settings, Audio Settings (F10), gravação, toolbar com CPU, polifonia e osciloscópio reais, Export WAV/MIDI.
-- **Contagem atual da matriz:** 192 itens: 77 ✅, 56 🟡, 57 ⬜, 2 ⛔.
+- **Contagem atual da matriz:** 192 itens: 78 ✅, 58 🟡, 54 ⬜, 2 ⛔ (depois de `e3a191a`).
 
 ## 3. Testes realizados e resultados reais
 
-- `cargo xtask ci`: verde em 24/10/2026, depois de cada commit até `67e4ff4` (o commit só é feito se o CI passar). Último commit verificado: `bd29c10`.
+- `cargo xtask ci`: verde em 24/10/2026, depois de cada commit até `67e4ff4` (o commit só é feito se o CI passar). Último commit verificado: `e3a191a`.
 - Hardware: `jet-cli play` com Mono legato e slide note no dispositivo real: 0 overruns, pico de DSP de 2%. A gravação por MIDI real não foi exercitada (nenhum controlador foi usado).
 - Testes novos por área:
   - jet-seq: 6;
@@ -103,11 +108,11 @@ O corpus de texto do manual fica na scratchpad da sessão (`flman/*.txt`). Ele n
 
 ## 5. Recursos pendentes (por prioridade, respeitando dependências)
 
-Feitos desde a última atualização: seleção de canais e roteamento (MX-017), seção Time (SMP-010), samples ausentes (CR-030), abas MIDI/File do F10 (GLB-021, MIDI-001, FILE-003), menus (GLB-001), Select unused channels (CR-025).
+Feitos desde a última atualização: Stereo shaper (FX-010), analisador (FX-013), ghost notes (PR-016), Merge de arranjos (PL-008), tensão e prévia nas Automation Clips (PL-004), Marker loop/skip/pause (PL-009).
 
-1. **Efeitos que faltam:** stereo shaper (FX-010), analisadores (FX-013), pitch shifter (FX-012).
-2. **Gravação de automação** (AUT-002) e mais alvos de automação (EQ da faixa, parâmetros dos efeitos).
-3. **Ghost notes** (PR-016); Merge de arranjos (PL-008); Marker loop/skip/pause (PL-009).
+1. **Gravação de automação** (AUT-002): mexer num knob tocando no modo Song com o Record armado cria/edita uma Automation Clip.
+2. **Arpeggiator do canal** (SMP-011), Advanced fill (CR-018), Rotate (CR-019), Delete/Insert space (PR-021).
+3. **Export:** split mixer tracks (AE-009), dithering (AE-010); templates e zip com samples (FILE-004/005).
 4. **Hospedagem de plugins** (PLG-001/002) em crate FFI isolado; o VST3 está sob MIT desde a 3.8; CLAP é MIT.
 5. **Itens que dependem de capturas do FL** para sair de hipótese: curvas de volume do canal e do fader (CR-009, MX-002, H-VOL-1, H-MIX-1).
 
@@ -120,10 +125,10 @@ Feitos desde a última atualização: seleção de canais e roteamento (MX-017),
 
 ## 7. Próxima tarefa
 
-**Efeitos: stereo shaper (FX-010) e analisador de espectro (FX-013).** Ainda não começou no código. Plano:
-1. Releia o inventário (FX-010, FX-013) e escreva o comportamento esperado; o FL tem Fruity Stereo Shaper e Wave Candy, que não podem ser clonados: implemente efeitos próprios (balanço/largura/delay entre lados; espectro por FFT no medidor).
-2. `jet-dsp/src/fx.rs`: novo `FxKind`, `build()` e parâmetros; testes de DSP medindo a saída.
-3. Mixer: parâmetros no inspector (já genérico via `fx_params`).
+**Gravação de automação (AUT-002).** Ainda não começou no código. Plano:
+1. Releia `flman/recording_automation.txt`.
+2. Com o Record armado (filtro de automação) e tocando no modo Song, cada gesto num knob automatizável (volume/pan/pitch de canal, fader/pan de faixa, mix de slot) grava pontos com a posição do transporte numa Automation Clip do alvo (criada se não existir), num passo de undo por gesto.
+3. Testes de engine (comando de gravação de pontos) e de UI (arrastar o knob tocando cria pontos).
 
 Depois disso, siga a lista do §5 a partir do item 2.
 
