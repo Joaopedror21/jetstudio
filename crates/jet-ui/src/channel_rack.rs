@@ -1,18 +1,29 @@
-use egui::{Align2, Rect, Stroke, StrokeKind, pos2, vec2};
+use std::path::PathBuf;
+
+use egui::{Align2, Event, Key, Pos2, Rect, Stroke, StrokeKind, pos2, vec2};
 
 use crate::theme;
-use crate::widgets::{PaintCtx, framed, vgradient};
+use crate::widgets::{MenuItem, MenuResult, PaintCtx, framed, vgradient};
 
 #[derive(Default)]
 pub struct RackState {
     pub selected_channel: Option<u64>,
     pub step_scroll: usize,
+    /// Step paint gesture: `Some(true)` paints steps on, `Some(false)` off.
+    pub painting: Option<bool>,
+    /// Open channel context menu: channel id and where it was opened.
+    pub menu: Option<(u64, Pos2)>,
+    /// Inline rename: channel id and the text typed so far.
+    pub rename: Option<(u64, String)>,
 }
 
 pub struct RackView {
     pub pattern_id: u64,
     pub steps_per_beat: usize,
+    pub step_ticks: i64,
     pub channels: Vec<ChannelView>,
+    /// A Browser file being dragged, if any.
+    pub dragging_file: Option<PathBuf>,
 }
 
 pub struct ChannelView {
@@ -24,6 +35,25 @@ pub struct ChannelView {
     pub pan: i16,
     pub mixer_target: u16,
     pub steps: Vec<bool>,
+    pub is_sampler: bool,
+    /// (start tick, length tick, key) of Piano roll notes; non-empty replaces the steps.
+    pub notes: Vec<(i64, i64, u8)>,
+    pub cut_itself: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RackMenu {
+    PianoRoll,
+    Rename,
+    LoadSample,
+    CutItself,
+    Clone,
+    Delete,
+    Fill(usize),
+    ClearSteps,
+    FreeMixer,
+    MakeSampler,
+    MakeSynth,
 }
 
 pub enum RackAction {
@@ -33,11 +63,32 @@ pub enum RackAction {
         channel: u64,
         index: usize,
         on: bool,
+        gesture: bool,
     },
     SelectChannel(u64),
     SetMute {
         channel: u64,
         muted: bool,
+    },
+    Solo(u64),
+    SetVolume {
+        channel: u64,
+        value: u16,
+    },
+    SetPan {
+        channel: u64,
+        value: i16,
+    },
+    SetMixer {
+        channel: u64,
+        value: u16,
+    },
+    EndGesture,
+    Menu(u64, RackMenu),
+    Rename(u64, String),
+    DropSample {
+        channel: Option<u64>,
+        path: PathBuf,
     },
 }
 
@@ -56,6 +107,57 @@ const SELECT_X0: f32 = 186.0;
 const SELECT_X1: f32 = 190.0;
 const STEPS_X: f32 = 201.0;
 const FIRST_ROW: f32 = 8.0; // UNMEASURED: top padding above the first row
+/// Pixels of vertical drag for a knob's full range (our choice; FL's drag rate is unmeasured).
+const KNOB_TRAVEL: f32 = 200.0;
+/// Pixels of vertical drag per mixer track step (our choice).
+const MIXER_STEP_PX: f32 = 6.0;
+
+fn menu_items(channel: &ChannelView) -> Vec<(RackMenu, &'static str, &'static str, bool)> {
+    vec![
+        (RackMenu::PianoRoll, "Piano roll", "", true),
+        (RackMenu::Rename, "Rename...", "F2", true),
+        (
+            RackMenu::LoadSample,
+            "Load sample...",
+            "",
+            channel.is_sampler,
+        ),
+        (
+            RackMenu::CutItself,
+            if channel.cut_itself {
+                "Cut itself: on"
+            } else {
+                "Cut itself: off"
+            },
+            "",
+            true,
+        ),
+        (RackMenu::Clone, "Clone", "Alt+C", true),
+        (RackMenu::Delete, "Delete", "Alt+Del", true),
+        (RackMenu::Fill(2), "Fill each 2 steps", "", true),
+        (RackMenu::Fill(4), "Fill each 4 steps", "", true),
+        (RackMenu::Fill(8), "Fill each 8 steps", "", true),
+        (RackMenu::ClearSteps, "Clear steps", "", true),
+        (
+            RackMenu::FreeMixer,
+            "Assign to free mixer track",
+            "Ctrl+L",
+            true,
+        ),
+        (
+            RackMenu::MakeSampler,
+            "Replace with Sampler",
+            "",
+            !channel.is_sampler,
+        ),
+        (
+            RackMenu::MakeSynth,
+            "Replace with Synth",
+            "",
+            channel.is_sampler,
+        ),
+    ]
+}
 
 pub fn paint_channel_rack(
     paint: &mut PaintCtx<'_>,
@@ -73,6 +175,19 @@ pub fn paint_channel_rack(
         .floor()
         .max(0.0) as usize;
     let group = view.steps_per_beat.max(1);
+    let (pointer, released, primary_down, secondary_down) = paint.ui.input(|i| {
+        (
+            i.pointer.hover_pos(),
+            i.pointer.any_released(),
+            i.pointer.primary_down(),
+            i.pointer.secondary_down(),
+        )
+    });
+    if !primary_down && !secondary_down && state.painting.take().is_some() {
+        actions.push(RackAction::EndGesture);
+    }
+    let os_drops = paint.ui.input(|i| i.raw.dropped_files.clone());
+    let mut dropped_on_row = false;
 
     for (row_index, channel) in view.channels.iter().enumerate() {
         let top = rect.top() + FIRST_ROW + row_index as f32 * row_h;
@@ -81,8 +196,37 @@ pub fn paint_channel_rack(
         }
         let cy = top + row_h / 2.0;
         let x = |dx: f32| rect.left() + dx;
+        let row_rect = Rect::from_min_max(pos2(rect.left(), top), pos2(rect.right(), top + row_h));
 
-        // Mute LED (green when the channel plays).
+        // Sample drops: from the Browser (internal drag) or the OS onto this row
+        // [Manual: chansettings_sampler, "drag and drop the sample from the Browser ... onto Channel Rack"].
+        if pointer.is_some_and(|p| row_rect.contains(p)) {
+            if released && let Some(path) = &view.dragging_file {
+                actions.push(RackAction::DropSample {
+                    channel: Some(channel.id),
+                    path: path.clone(),
+                });
+                dropped_on_row = true;
+            }
+            for file in &os_drops {
+                actions.push(RackAction::DropSample {
+                    channel: Some(channel.id),
+                    path: file.path().to_path_buf(),
+                });
+                dropped_on_row = true;
+            }
+            if view.dragging_file.is_some() {
+                painter.rect_stroke(
+                    row_rect,
+                    0.0,
+                    Stroke::new(1.0, t.select_on),
+                    StrokeKind::Inside,
+                );
+            }
+        }
+
+        // Mute LED: click mutes; Ctrl/Alt+click or right-click solos
+        // [Manual: channelrack, "Solo/Unsolo - (Ctrl+Left-Click), (Alt+Left-Click) OR (Right-Click)"].
         let led_rect = Rect::from_center_size(
             pos2(x(LED_X), cy),
             vec2(LED_R * 2.0 + 4.0, LED_R * 2.0 + 4.0),
@@ -93,21 +237,25 @@ pub fn paint_channel_rack(
             led_rect,
             "toggle",
             true,
-            if channel.muted {
-                "Unmute channel"
-            } else {
-                "Mute channel"
-            },
+            "Mute: click. Solo: Ctrl+click or right-click",
         );
         paint.led(led_rect.center(), LED_R + 1.0, !channel.muted);
+        let modifiers = paint.ui.input(|i| i.modifiers);
         if response.clicked() {
-            actions.push(RackAction::SetMute {
-                channel: channel.id,
-                muted: !channel.muted,
-            });
+            if modifiers.ctrl || modifiers.alt {
+                actions.push(RackAction::Solo(channel.id));
+            } else {
+                actions.push(RackAction::SetMute {
+                    channel: channel.id,
+                    muted: !channel.muted,
+                });
+            }
+        }
+        if response.secondary_clicked() {
+            actions.push(RackAction::Solo(channel.id));
         }
 
-        // Pan and volume knobs show the model values (editing arrives with knob gestures).
+        // Pan and volume knobs: drag vertically [Manual: channelrack, "7 & 8. Pan & Volume"].
         let pan = (f32::from(channel.pan) + 1000.0) / 2000.0;
         let vol = f32::from(channel.volume) / 1000.0;
         for (id, cx, value, hint) in [
@@ -118,17 +266,50 @@ pub fn paint_channel_rack(
                 pos2(x(cx), cy),
                 vec2(KNOB_R * 2.0 + 2.0, KNOB_R * 2.0 + 2.0),
             );
-            let _ = paint.hit(
+            let readout = if id == "pan" {
+                match channel.pan {
+                    0 => "Centered".to_owned(),
+                    p if p < 0 => format!("{}% left", -p / 10),
+                    p => format!("{}% right", p / 10),
+                }
+            } else {
+                format!("{}%", channel.volume / 10)
+            };
+            let response = paint.hit(
                 &format!("channel-rack.{id}.{}", channel.id),
                 knob,
                 "knob",
-                false,
-                hint,
+                true,
+                &format!("{hint}: {readout}"),
             );
             paint.knob(knob.center(), KNOB_R, value);
+            if response.dragged() {
+                let dy = -response.drag_delta().y / KNOB_TRAVEL;
+                let next = (value + dy).clamp(0.0, 1.0);
+                if id == "pan" {
+                    let pan = (next * 2000.0 - 1000.0).round() as i16;
+                    if pan != channel.pan {
+                        actions.push(RackAction::SetPan {
+                            channel: channel.id,
+                            value: pan,
+                        });
+                    }
+                } else {
+                    let volume = (next * 1000.0).round() as u16;
+                    if volume != channel.volume {
+                        actions.push(RackAction::SetVolume {
+                            channel: channel.id,
+                            value: volume,
+                        });
+                    }
+                }
+            }
+            if response.drag_stopped() {
+                actions.push(RackAction::EndGesture);
+            }
         }
 
-        // Mixer track number box.
+        // Mixer track selector: drag vertically [Manual: channelrack, "14. Mixer Track Routing"].
         let mix = Rect::from_min_max(pos2(x(MIX_X0), cy - 9.0), pos2(x(MIX_X1), cy + 9.0));
         framed(&painter, mix, 2.0, t.mixbox, theme::shade(t.mixbox, 0.7));
         let target = if channel.mixer_target == 0 {
@@ -143,13 +324,37 @@ pub fn paint_channel_rack(
             theme::regular(13.0),
             t.mixbox_text,
         );
-        paint.probe.insert(
-            format!("channel-rack.mixer.{}", channel.id),
+        let response = paint.hit(
+            &format!("channel-rack.mixer.{}", channel.id),
             mix,
             "lcd",
-            false,
-            Some(channel.mixer_target.to_string()),
+            true,
+            &if channel.mixer_target == 0 {
+                "Mixer track: Master (drag to change)".to_owned()
+            } else {
+                format!("Mixer track: {} (drag to change)", channel.mixer_target)
+            },
         );
+        if response.dragged() {
+            let total = paint
+                .ui
+                .input(|i| i.pointer.press_origin().zip(i.pointer.hover_pos()));
+            if let Some((origin, now)) = total {
+                let steps = ((origin.y - now.y) / MIXER_STEP_PX).round() as i32;
+                let base = state_mixer_origin(paint, channel.id, channel.mixer_target);
+                let next = (i32::from(base) + steps).clamp(0, 500) as u16;
+                if next != channel.mixer_target {
+                    actions.push(RackAction::SetMixer {
+                        channel: channel.id,
+                        value: next,
+                    });
+                }
+            }
+        }
+        if response.drag_stopped() {
+            forget_mixer_origin(paint, channel.id);
+            actions.push(RackAction::EndGesture);
+        }
 
         // Channel name button.
         let selected = state.selected_channel == Some(channel.id);
@@ -161,7 +366,7 @@ pub fn paint_channel_rack(
             name_rect,
             "channel",
             true,
-            &format!("Channel: {}", channel.name),
+            &format!("Channel: {} (right-click for options)", channel.name),
         );
         let color = theme::model_color(channel.color, t.channel_default);
         vgradient(
@@ -176,16 +381,23 @@ pub fn paint_channel_rack(
             StrokeKind::Inside,
         );
         let name_painter = painter.with_clip_rect(name_rect.shrink(2.0).intersect(rect));
+        let renaming = state.rename.as_ref().filter(|(id, _)| *id == channel.id);
+        let label = renaming.map_or_else(|| channel.name.clone(), |(_, text)| format!("{text}|"));
         name_painter.text(
             pos2(name_rect.left() + 6.0, cy),
             Align2::LEFT_CENTER,
-            &channel.name,
+            label,
             theme::medium(14.0),
             t.channel_text,
         );
         if response.clicked() {
             state.selected_channel = Some(channel.id);
             actions.push(RackAction::SelectChannel(channel.id));
+        }
+        if response.secondary_clicked() {
+            state.selected_channel = Some(channel.id);
+            actions.push(RackAction::SelectChannel(channel.id));
+            state.menu = pointer.map(|p| (channel.id, p));
         }
 
         // Selection bracket.
@@ -202,7 +414,24 @@ pub fn paint_channel_rack(
             painter.rect_filled(select, 1.0, t.select_off);
         }
 
-        // Steps: groups of `steps_per_beat` alternate grey and red.
+        if !channel.notes.is_empty() {
+            if paint_piano_preview(
+                paint,
+                &painter,
+                view,
+                channel,
+                rect,
+                cy,
+                visible_steps,
+                state,
+            ) {
+                actions.push(RackAction::Menu(channel.id, RackMenu::PianoRoll));
+            }
+            continue;
+        }
+
+        // Steps: groups of `steps_per_beat` alternate grey and red. Left-click/drag paints
+        // on, right-click/drag paints off [Manual: channelrack, "Activating & deactivating steps"].
         for (step_index, on) in channel
             .steps
             .iter()
@@ -228,22 +457,45 @@ pub fn paint_channel_rack(
                 .probe
                 .insert(step_id.clone(), cell, "step", true, Some(on.to_string()));
             paint_step(&painter, &t, cell, *on, alt, response.hovered());
+            let set = |on: bool, gesture: bool| RackAction::SetStep {
+                pattern: view.pattern_id,
+                channel: channel.id,
+                index: step_index,
+                on,
+                gesture,
+            };
             if response.clicked() {
-                actions.push(RackAction::SetStep {
-                    pattern: view.pattern_id,
-                    channel: channel.id,
-                    index: step_index,
-                    on: true,
-                });
+                actions.push(set(true, false));
+            } else if response.secondary_clicked() {
+                actions.push(set(false, false));
+            } else if response.drag_started() {
+                let on = response.dragged_by(egui::PointerButton::Primary);
+                state.painting = Some(on);
+                actions.push(set(on, true));
             }
-            if response.secondary_clicked() {
-                actions.push(RackAction::SetStep {
-                    pattern: view.pattern_id,
-                    channel: channel.id,
-                    index: step_index,
-                    on: false,
-                });
+            if let Some(paint_on) = state.painting
+                && pointer.is_some_and(|p| cell.contains(p))
+                && *on != paint_on
+                && !response.drag_started()
+            {
+                actions.push(set(paint_on, true));
             }
+        }
+    }
+
+    // Drop on the empty rack area creates a Sampler channel holding the sample.
+    if !dropped_on_row && pointer.is_some_and(|p| rect.contains(p)) {
+        if released && let Some(path) = &view.dragging_file {
+            actions.push(RackAction::DropSample {
+                channel: None,
+                path: path.clone(),
+            });
+        }
+        for file in &os_drops {
+            actions.push(RackAction::DropSample {
+                channel: None,
+                path: file.path().to_path_buf(),
+            });
         }
     }
 
@@ -266,7 +518,153 @@ pub fn paint_channel_rack(
     {
         actions.push(RackAction::AddChannel);
     }
+
+    edit_name(paint, state, &mut actions);
+    paint_menu(paint, state, view, &mut actions);
     actions
+}
+
+fn mixer_origin_id(channel: u64) -> egui::Id {
+    egui::Id::new(("channel-rack.mixer-origin", channel))
+}
+
+/// Mixer target when the drag began, so the value follows the total drag distance.
+fn state_mixer_origin(paint: &PaintCtx<'_>, channel: u64, current: u16) -> u16 {
+    let id = mixer_origin_id(channel);
+    paint.ui.ctx().data_mut(|d| *d.get_temp_mut_or(id, current))
+}
+
+fn forget_mixer_origin(paint: &PaintCtx<'_>, channel: u64) {
+    paint
+        .ui
+        .ctx()
+        .data_mut(|d| d.remove::<u16>(mixer_origin_id(channel)));
+}
+
+fn edit_name(paint: &mut PaintCtx<'_>, state: &mut RackState, actions: &mut Vec<RackAction>) {
+    let Some((id, mut text)) = state.rename.take() else {
+        return;
+    };
+    let mut keep = true;
+    for event in paint.ui.input(|i| i.events.clone()) {
+        match event {
+            Event::Text(typed) => text.push_str(&typed),
+            Event::Key {
+                key: Key::Backspace,
+                pressed: true,
+                ..
+            } => {
+                text.pop();
+            }
+            Event::Key {
+                key: Key::Escape,
+                pressed: true,
+                ..
+            } => keep = false,
+            Event::Key {
+                key: Key::Enter,
+                pressed: true,
+                ..
+            } => {
+                if !text.trim().is_empty() {
+                    actions.push(RackAction::Rename(id, text.trim().to_owned()));
+                }
+                keep = false;
+            }
+            _ => {}
+        }
+    }
+    if keep {
+        state.rename = Some((id, text));
+    }
+}
+
+fn paint_menu(
+    paint: &mut PaintCtx<'_>,
+    state: &mut RackState,
+    view: &RackView,
+    actions: &mut Vec<RackAction>,
+) {
+    let Some((channel_id, origin)) = state.menu else {
+        return;
+    };
+    let Some(channel) = view.channels.iter().find(|c| c.id == channel_id) else {
+        state.menu = None;
+        return;
+    };
+    let entries = menu_items(channel);
+    let items: Vec<MenuItem<'_>> = entries
+        .iter()
+        .map(|(_, label, shortcut, enabled)| MenuItem {
+            label,
+            shortcut,
+            enabled: *enabled,
+        })
+        .collect();
+    match paint.popup_menu("channel-rack.menu", origin, &items) {
+        MenuResult::Open => {}
+        MenuResult::Dismissed => state.menu = None,
+        MenuResult::Chosen(index) => {
+            state.menu = None;
+            if let Some((choice, ..)) = entries.get(index) {
+                if *choice == RackMenu::Rename {
+                    state.rename = Some((channel.id, channel.name.clone()));
+                } else {
+                    actions.push(RackAction::Menu(channel.id, *choice));
+                }
+            }
+        }
+    }
+}
+
+/// Mini preview of the Piano roll score in place of the steps; "You can't edit notes in the
+/// mini-preview" [Manual: channelrack, "11. Piano roll Preview"]. Clicking it opens the Piano roll.
+#[allow(clippy::too_many_arguments)]
+fn paint_piano_preview(
+    paint: &mut PaintCtx<'_>,
+    painter: &egui::Painter,
+    view: &RackView,
+    channel: &ChannelView,
+    rect: Rect,
+    cy: f32,
+    visible_steps: usize,
+    state: &RackState,
+) -> bool {
+    let t = *paint.tokens;
+    let l = *paint.layout;
+    let left = rect.left() + STEPS_X;
+    let area = Rect::from_min_size(
+        pos2(left, cy - l.step_h / 2.0),
+        vec2(
+            visible_steps as f32 * l.step_pitch - (l.step_pitch - l.step_w),
+            l.step_h,
+        ),
+    );
+    painter.rect_filled(area, 2.0, t.step_off_bottom);
+    let ticks_per_px = view.step_ticks.max(1) as f32 / l.step_pitch;
+    let offset = state.step_scroll as f32 * l.step_pitch;
+    let (low, high) = channel
+        .notes
+        .iter()
+        .fold((u8::MAX, 0u8), |(lo, hi), n| (lo.min(n.2), hi.max(n.2)));
+    let span = f32::from(high.saturating_sub(low).max(1));
+    for &(start, length, key) in &channel.notes {
+        let x0 = area.left() + start as f32 / ticks_per_px - offset;
+        let w = (length.max(view.step_ticks / 4) as f32 / ticks_per_px).max(2.0);
+        let y = area.bottom() - 3.0 - (f32::from(key - low) / span) * (area.height() - 6.0);
+        let note = Rect::from_min_size(pos2(x0, y - 1.0), vec2(w, 2.0)).intersect(area);
+        if note.width() > 0.0 {
+            painter.rect_filled(note, 0.0, t.step_on);
+        }
+    }
+    let response = paint.hit(
+        &format!("channel-rack.preview.{}", channel.id),
+        area,
+        "preview",
+        true,
+        "Piano roll preview: click to open the Piano roll",
+    );
+    response.clicked()
 }
 
 fn paint_step(

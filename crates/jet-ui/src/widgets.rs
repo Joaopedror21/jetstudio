@@ -301,3 +301,97 @@ pub enum WindowGlyph {
     Maximize,
     Close,
 }
+
+/// One row of a painted popup menu.
+pub struct MenuItem<'a> {
+    pub label: &'a str,
+    pub shortcut: &'a str,
+    pub enabled: bool,
+}
+
+/// Outcome of a popup menu frame.
+pub enum MenuResult {
+    Open,
+    Chosen(usize),
+    Dismissed,
+}
+
+impl PaintCtx<'_> {
+    /// Painted popup menu on the foreground layer, styled like the main menus. Row height and
+    /// width are UNMEASURED (no open context menu has been captured yet).
+    pub fn popup_menu(&mut self, id: &str, origin: Pos2, items: &[MenuItem<'_>]) -> MenuResult {
+        let t = *self.tokens;
+        let row_h = 22.0;
+        let width = 240.0;
+        let screen = self.ui.ctx().content_rect();
+        let mut popup = Rect::from_min_size(origin, vec2(width, items.len() as f32 * row_h + 6.0));
+        if popup.bottom() > screen.bottom() {
+            popup = popup.translate(vec2(0.0, screen.bottom() - popup.bottom()));
+        }
+        if popup.right() > screen.right() {
+            popup = popup.translate(vec2(screen.right() - popup.right(), 0.0));
+        }
+        let painter = self.ui.painter().clone().with_layer_id(egui::LayerId::new(
+            egui::Order::Foreground,
+            Id::new(("popup", id)),
+        ));
+        framed(&painter, popup, 0.0, t.hint_panel, t.btn_outer);
+        let mut result = MenuResult::Open;
+        for (row, item) in items.iter().enumerate() {
+            let rect = Rect::from_min_size(
+                pos2(popup.left() + 3.0, popup.top() + 3.0 + row as f32 * row_h),
+                vec2(width - 6.0, row_h),
+            );
+            let response = self.ui.interact(
+                rect,
+                Id::new((id, "item", row)),
+                if item.enabled {
+                    Sense::click()
+                } else {
+                    Sense::hover()
+                },
+            );
+            self.probe.insert(
+                format!("{id}.item.{row}"),
+                rect,
+                "menu-item",
+                item.enabled,
+                Some(item.label.to_owned()),
+            );
+            if response.hovered() && item.enabled {
+                painter.rect_filled(rect, 0.0, crate::theme::shade(t.menu_panel, 1.15));
+            }
+            painter.text(
+                pos2(rect.left() + 22.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                item.label,
+                crate::theme::regular(15.0),
+                if item.enabled {
+                    t.menu_text
+                } else {
+                    t.disabled_glyph
+                },
+            );
+            painter.text(
+                pos2(rect.right() - 8.0, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                item.shortcut,
+                crate::theme::regular(13.0),
+                t.hint_text,
+            );
+            if response.clicked() {
+                result = MenuResult::Chosen(row);
+            }
+        }
+        let outside = self.ui.input(|i| {
+            i.pointer.any_pressed()
+                && i.pointer
+                    .interact_pos()
+                    .is_some_and(|pos| !popup.contains(pos))
+        });
+        if matches!(result, MenuResult::Open) && outside {
+            result = MenuResult::Dismissed;
+        }
+        result
+    }
+}

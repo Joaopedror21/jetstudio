@@ -1,14 +1,21 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use eframe::egui;
 use egui::{Id, Key, Rect, Sense, pos2, vec2};
-use jet_engine::{PlayMode, Session, TransportState};
-use jet_model::ClipSource;
+use jet_dsp::SampleData;
+use jet_engine::{PlanKey, PlayMode, Session, TransportState};
+use jet_model::{ChannelId, ChannelKind, ClipSource};
+use jet_playback::{AudioOutput, OutputRequest};
 use serde_json::{Value, json};
 
 use crate::browser::{BrowserState, paint_browser};
-use crate::channel_rack::{ChannelView, RackAction, RackState, RackView, paint_channel_rack};
+use crate::channel_rack::{
+    ChannelView, RackAction, RackMenu, RackState, RackView, paint_channel_rack,
+};
 use crate::icons;
+use crate::mixer::{MixerAction, MixerState, MixerTrackView, MixerView, paint_mixer};
+use crate::piano_roll::{NoteView, PianoAction, PianoRollState, PianoRollView, paint_piano_roll};
 use crate::playlist::{
     ClipView, PatternEntry, PlaylistAction, PlaylistState, PlaylistView, TrackView, paint_playlist,
     paint_title_tools,
@@ -19,8 +26,24 @@ use crate::toolbar::{ToolbarAction, ToolbarState, ToolbarView, paint_toolbar};
 use crate::widgets::{PaintCtx, WindowGlyph};
 use crate::workspace::{ResizeEdge, WindowKind, Workspace, WsAction};
 
+/// The audio device and what the UI thread keeps for it.
+struct AudioHost {
+    output: AudioOutput,
+    last_key: Option<PlanKey>,
+    /// Decoded audio the audio thread may still read; freed here once we hold the last
+    /// reference, so the audio thread never frees memory.
+    graveyard: Vec<Arc<SampleData>>,
+    preview_hold: Option<Arc<SampleData>>,
+    scope: Vec<f32>,
+    cpu: f32,
+}
+
 pub struct JetApp {
     session: Session,
+    audio: Option<AudioHost>,
+    audio_status: Option<String>,
+    piano: PianoRollState,
+    mixer: MixerState,
     workspace: Option<Workspace>,
     browser: BrowserState,
     rack: RackState,
@@ -33,13 +56,17 @@ pub struct JetApp {
     last_error: Option<String>,
     static_capture: bool,
     fonts_installed: bool,
-    pending_show: Option<WindowKind>,
+    pending_show: Vec<WindowKind>,
 }
 
 impl Default for JetApp {
     fn default() -> Self {
         Self {
             session: Session::new_default(),
+            audio: None,
+            audio_status: None,
+            piano: PianoRollState::default(),
+            mixer: MixerState::default(),
             workspace: None,
             browser: BrowserState::default(),
             rack: RackState::default(),
@@ -52,7 +79,7 @@ impl Default for JetApp {
             last_error: None,
             static_capture: false,
             fonts_installed: false,
-            pending_show: None,
+            pending_show: Vec::new(),
         }
     }
 }
@@ -62,9 +89,13 @@ enum UiAction {
     Workspace(WsAction),
     Rack(RackAction),
     Playlist(PlaylistAction),
+    Piano(PianoAction),
+    Mixer(MixerAction),
     OpenProject,
     SaveProject,
     SaveProjectAs,
+    ExportWav,
+    AddChannel(&'static str),
     Minimize,
     Maximize,
     Quit,
@@ -76,6 +107,412 @@ impl JetApp {
         Self {
             session,
             ..Self::default()
+        }
+    }
+
+    /// App with the default audio output device. Without a device the transport runs on the
+    /// system clock, silently, and the hint bar says why.
+    pub fn with_audio() -> Self {
+        let mut app = Self::default();
+        let session = &app.session;
+        match AudioOutput::open(OutputRequest::default(), |rate| session.build_plan(rate)) {
+            Ok(output) => {
+                app.session.set_clock(Box::new(output.clock()));
+                app.audio_status = Some(format!(
+                    "Audio: {} - {} Hz, {} channels",
+                    output.info().name,
+                    output.info().rate,
+                    output.info().channels
+                ));
+                app.audio = Some(AudioHost {
+                    output,
+                    last_key: None,
+                    graveyard: Vec::new(),
+                    preview_hold: None,
+                    scope: vec![0.0; 256],
+                    cpu: 0.0,
+                });
+            }
+            Err(error) => app.audio_status = Some(format!("Audio output unavailable: {error}")),
+        }
+        app
+    }
+
+    /// Mirror the session into the audio thread: plans, transport, panic, garbage.
+    fn pump_audio(&mut self) {
+        let Some(host) = &mut self.audio else {
+            return;
+        };
+        host.output.collect();
+        host.graveyard
+            .extend(self.session.samples_mut().take_retired());
+        host.graveyard.retain(|data| Arc::strong_count(data) > 1);
+        let key = self.session.plan_key();
+        let sync = self.session.transport_sync();
+        if host.last_key != Some(key) {
+            let plan = Box::new(self.session.build_plan(host.output.rate()));
+            if host.output.send_plan(plan, sync).is_ok() {
+                host.last_key = Some(key);
+            }
+        } else {
+            host.output.sync(sync);
+        }
+        if self.session.take_panic() {
+            host.output.panic();
+        }
+        let (load, _) = host.output.stats().take_load();
+        host.cpu = host.cpu * 0.8 + load * 0.2;
+        let meters = Arc::clone(host.output.meters());
+        meters.read_scope(&mut host.scope);
+    }
+
+    fn selected_channel_id(&self) -> Option<u64> {
+        self.rack
+            .selected_channel
+            .or(self.session.selected_channel().map(|c| c.0))
+            .filter(|id| self.session.project().channel(ChannelId(*id)).is_some())
+    }
+
+    fn preview_file(&mut self, path: &std::path::Path) {
+        let Some(host) = &mut self.audio else {
+            return;
+        };
+        match jet_media::decode_file(path) {
+            Ok(data) => {
+                let data = Arc::new(data);
+                host.output.preview(Arc::clone(&data));
+                if let Some(old) = host.preview_hold.replace(data) {
+                    host.graveyard.push(old);
+                }
+            }
+            Err(error) => self.last_error = Some(error.to_string()),
+        }
+    }
+
+    fn gesture(&mut self, key: &str, id: &str, params: Value) {
+        match self.session.execute_gesture(key, id, params) {
+            Ok(_) => self.last_error = None,
+            Err(error) => self.last_error = Some(error.to_string()),
+        }
+    }
+
+    fn run_rack(&mut self, action: RackAction) {
+        match action {
+            RackAction::AddChannel => {
+                self.execute("channel.add", json!({"name": "Sampler"}));
+                self.rack.selected_channel = self.session.selected_channel().map(|c| c.0);
+            }
+            RackAction::SetStep {
+                pattern,
+                channel,
+                index,
+                on,
+                gesture,
+            } => {
+                let params =
+                    json!({"pattern": pattern, "channel": channel, "index": index, "on": on});
+                if gesture {
+                    self.gesture(&format!("rack.paint.{channel}"), "step.set", params);
+                } else {
+                    self.execute("step.set", params);
+                }
+            }
+            RackAction::SelectChannel(id) => {
+                self.rack.selected_channel = Some(id);
+                self.execute("channel.select", json!({"id": id}));
+            }
+            RackAction::SetMute { channel, muted } => {
+                self.execute("channel.mute.set", json!({"id": channel, "mute": muted}));
+            }
+            RackAction::Solo(id) => self.execute("channel.solo", json!({"id": id})),
+            RackAction::SetVolume { channel, value } => self.gesture(
+                &format!("rack.volume.{channel}"),
+                "channel.volume.set",
+                json!({"id": channel, "value": value}),
+            ),
+            RackAction::SetPan { channel, value } => self.gesture(
+                &format!("rack.pan.{channel}"),
+                "channel.pan.set",
+                json!({"id": channel, "value": value}),
+            ),
+            RackAction::SetMixer { channel, value } => self.gesture(
+                &format!("rack.mixer.{channel}"),
+                "channel.mixer_target.set",
+                json!({"id": channel, "value": value}),
+            ),
+            RackAction::EndGesture => self.session.end_gesture(),
+            RackAction::Rename(id, name) => {
+                self.execute("channel.rename", json!({"id": id, "name": name}));
+            }
+            RackAction::DropSample { channel, path } => {
+                let id = match channel {
+                    Some(id) => Some(id),
+                    None => {
+                        let name = path.file_stem().map_or_else(
+                            || "Sampler".to_owned(),
+                            |s| s.to_string_lossy().into_owned(),
+                        );
+                        self.execute("channel.add", json!({"name": name}));
+                        self.session.selected_channel().map(|c| c.0)
+                    }
+                };
+                if let Some(id) = id {
+                    self.execute("channel.sample.load", json!({"id": id, "path": path}));
+                    self.rack.selected_channel = Some(id);
+                }
+            }
+            RackAction::Menu(id, item) => self.rack_menu(id, item),
+        }
+    }
+
+    fn rack_menu(&mut self, id: u64, item: RackMenu) {
+        let pattern = self.session.selected_pattern().0;
+        match item {
+            RackMenu::PianoRoll => {
+                self.rack.selected_channel = Some(id);
+                self.execute("channel.select", json!({"id": id}));
+                if let Some(ws) = &mut self.workspace
+                    && !ws.window(WindowKind::PianoRoll).is_some_and(|w| w.visible)
+                {
+                    self.pending_show.push(WindowKind::PianoRoll);
+                }
+            }
+            RackMenu::LoadSample => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Audio", &jet_media::SUPPORTED_EXTENSIONS)
+                    .pick_file()
+                {
+                    self.execute("channel.sample.load", json!({"id": id, "path": path}));
+                }
+            }
+            RackMenu::CutItself => {
+                let project = self.session.project();
+                let Some(channel) = project.channel(ChannelId(id)) else {
+                    return;
+                };
+                if channel.cut != 0 && channel.cut == channel.cut_by {
+                    self.execute("channel.cut.set", json!({"id": id, "cut": 0, "cut_by": 0}));
+                } else {
+                    // "setting the Cut/Cut By values to the same number" [Manual: chansettings_misc];
+                    // we pick the lowest group no other channel uses.
+                    let used: std::collections::BTreeSet<u8> = project
+                        .channels
+                        .iter()
+                        .filter(|c| c.id != ChannelId(id))
+                        .flat_map(|c| [c.cut, c.cut_by])
+                        .collect();
+                    if let Some(group) = (1..=u8::MAX).find(|g| !used.contains(g)) {
+                        self.execute(
+                            "channel.cut.set",
+                            json!({"id": id, "cut": group, "cut_by": group}),
+                        );
+                    }
+                }
+            }
+            RackMenu::Clone => self.execute("channel.clone", json!({"id": id})),
+            RackMenu::Delete => self.execute("channel.remove", json!({"id": id})),
+            RackMenu::Fill(every) => {
+                self.execute(
+                    "step.fill",
+                    json!({"pattern": pattern, "channel": id, "every": every}),
+                );
+            }
+            RackMenu::ClearSteps => {
+                self.execute("step.clear", json!({"pattern": pattern, "channel": id}));
+            }
+            RackMenu::FreeMixer => self.execute("channel.mixer_target.free", json!({"id": id})),
+            RackMenu::MakeSampler => {
+                self.execute("channel.kind.set", json!({"id": id, "kind": "sampler"}));
+            }
+            RackMenu::MakeSynth => {
+                self.execute("channel.kind.set", json!({"id": id, "kind": "synth"}));
+            }
+            RackMenu::Rename => {}
+        }
+    }
+
+    fn run_piano(&mut self, action: PianoAction) {
+        let Some(channel) = self.selected_channel_id() else {
+            return;
+        };
+        let pattern = self.session.selected_pattern().0;
+        let base = |extra: Value| {
+            let mut params = json!({"pattern": pattern, "channel": channel});
+            if let (Some(map), Value::Object(more)) = (params.as_object_mut(), extra) {
+                map.extend(more);
+            }
+            params
+        };
+        match action {
+            PianoAction::Add { start, length, key } => {
+                self.execute(
+                    "note.add",
+                    base(json!({"start": start, "length": length, "key": key})),
+                );
+            }
+            PianoAction::Delete(indices) => {
+                self.execute("note.delete", base(json!({"indices": indices})))
+            }
+            PianoAction::Move { indices, dt, dkey } => {
+                self.execute(
+                    "note.move",
+                    base(json!({"indices": indices, "dt": dt, "dkey": dkey})),
+                );
+            }
+            PianoAction::Resize { indices, delta } => {
+                self.execute(
+                    "note.length.set",
+                    base(json!({"indices": indices, "delta": delta})),
+                );
+            }
+            PianoAction::Velocity { indices, value } => {
+                self.execute(
+                    "note.props.set",
+                    base(json!({"indices": indices, "velocity": value})),
+                );
+            }
+            PianoAction::Mute { indices, muted } => {
+                self.execute(
+                    "note.props.set",
+                    base(json!({"indices": indices, "muted": muted})),
+                );
+            }
+            PianoAction::Transpose { indices, semitones } => {
+                self.execute(
+                    "note.transpose",
+                    base(json!({"indices": indices, "semitones": semitones})),
+                );
+            }
+            PianoAction::Quantize {
+                indices,
+                grid,
+                starts_only,
+            } => self.execute(
+                "note.quantize",
+                base(json!({"indices": indices, "grid": grid, "starts_only": starts_only})),
+            ),
+            PianoAction::Duplicate { indices, grid } => {
+                self.execute(
+                    "note.duplicate",
+                    base(json!({"indices": indices, "grid": grid})),
+                );
+            }
+            PianoAction::Chop { indices, grid } => {
+                self.execute("note.chop", base(json!({"indices": indices, "grid": grid})));
+            }
+            PianoAction::Glue(indices) => {
+                self.execute("note.glue", base(json!({"indices": indices})))
+            }
+            PianoAction::DiscardLengths { indices, grid } => {
+                self.execute(
+                    "note.discard_lengths",
+                    base(json!({"indices": indices, "grid": grid})),
+                );
+            }
+            PianoAction::KeyDown(key) => {
+                if let Some(host) = &mut self.audio {
+                    host.output
+                        .note_on(ChannelId(channel), key, jet_model::DEFAULT_VELOCITY);
+                }
+            }
+            PianoAction::KeyUp(key) => {
+                if let Some(host) = &mut self.audio {
+                    host.output.note_off(ChannelId(channel), key);
+                }
+            }
+        }
+    }
+
+    fn run_mixer(&mut self, action: MixerAction) {
+        match action {
+            MixerAction::Volume { track, value } => self.gesture(
+                &format!("mixer.volume.{track}"),
+                "mixer.track.volume.set",
+                json!({"track": track, "value": value}),
+            ),
+            MixerAction::Pan { track, value } => self.gesture(
+                &format!("mixer.pan.{track}"),
+                "mixer.track.pan.set",
+                json!({"track": track, "value": value}),
+            ),
+            MixerAction::Mute { track, value } => {
+                self.execute(
+                    "mixer.track.mute.set",
+                    json!({"track": track, "value": value}),
+                );
+            }
+            MixerAction::Solo(track) => self.execute("mixer.track.solo", json!({"track": track})),
+            MixerAction::ToggleSend { from, to, on } => {
+                if on {
+                    self.execute("mixer.send.set", json!({"from": from, "to": to}));
+                } else {
+                    self.execute("mixer.send.remove", json!({"from": from, "to": to}));
+                }
+            }
+            MixerAction::ToMaster { track, value } => {
+                self.execute(
+                    "mixer.track.to_master.set",
+                    json!({"track": track, "value": value}),
+                );
+            }
+            MixerAction::FxAdd { track, kind } => {
+                self.execute("mixer.fx.add", json!({"track": track, "kind": kind}));
+            }
+            MixerAction::FxRemove { track, slot } => {
+                self.execute("mixer.fx.remove", json!({"track": track, "slot": slot}));
+            }
+            MixerAction::FxMove { track, slot, delta } => {
+                self.execute(
+                    "mixer.fx.move",
+                    json!({"track": track, "slot": slot, "delta": delta}),
+                );
+            }
+            MixerAction::FxEnabled { track, slot, value } => self.execute(
+                "mixer.fx.enabled.set",
+                json!({"track": track, "slot": slot, "value": value}),
+            ),
+            MixerAction::FxMix { track, slot, value } => self.gesture(
+                &format!("mixer.fx-mix.{track}.{slot}"),
+                "mixer.fx.mix.set",
+                json!({"track": track, "slot": slot, "value": value}),
+            ),
+            MixerAction::FxSet { track, slot, kind } => self.gesture(
+                &format!("mixer.fx.{track}.{slot}"),
+                "mixer.fx.set",
+                json!({"track": track, "slot": slot, "kind": kind}),
+            ),
+            MixerAction::FxMaster { track, value } => self.execute(
+                "mixer.track.fx_enabled.set",
+                json!({"track": track, "value": value}),
+            ),
+            MixerAction::EndGesture => self.session.end_gesture(),
+        }
+    }
+
+    fn export_wav(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Wave file", &["wav"])
+            .set_file_name("Untitled.wav")
+            .save_file()
+        else {
+            return;
+        };
+        let mode = if self.session.transport_snapshot().mode == PlayMode::Song {
+            "song"
+        } else {
+            "pattern"
+        };
+        // "The output (Mixer) sample rate is set in the Audio Settings" [Manual: fformats_save_export].
+        let rate = self
+            .audio
+            .as_ref()
+            .map_or(44_100, |host| host.output.rate());
+        self.execute(
+            "file.export_wav",
+            json!({"path": path, "mode": mode, "bits": 16, "tail": "leave", "rate": rate}),
+        );
+        if self.last_error.is_none() {
+            self.audio_status = Some(format!("Exported {}", path.display()));
         }
     }
 
@@ -91,7 +528,7 @@ impl JetApp {
 
     /// Shows a window that a new project keeps closed (used by the screenshot tool).
     pub fn show_window_on_start(&mut self, kind: WindowKind) {
-        self.pending_show = Some(kind);
+        self.pending_show.push(kind);
     }
 
     /// Installs the measured fonts. Call before the first frame (eframe creation context).
@@ -114,27 +551,22 @@ impl JetApp {
                     self.last_error = Some(format!("Workspace: {error:?}"));
                 }
             }
-            UiAction::Rack(action) => match action {
-                RackAction::AddChannel => {
-                    let name = format!("Channel {}", self.session.project().ids.next_channel);
-                    self.execute("channel.add", json!({"name": name}));
+            UiAction::Rack(action) => self.run_rack(action),
+            UiAction::Piano(action) => self.run_piano(action),
+            UiAction::Mixer(action) => self.run_mixer(action),
+            UiAction::ExportWav => self.export_wav(),
+            UiAction::AddChannel(kind) => {
+                let name = if kind == "synth" { "Synth" } else { "Sampler" };
+                self.execute("channel.add", json!({"name": name, "kind": kind}));
+                self.rack.selected_channel = self.session.selected_channel().map(|c| c.0);
+                if let Some(ws) = &mut self.workspace
+                    && !ws
+                        .window(WindowKind::ChannelRack)
+                        .is_some_and(|w| w.visible)
+                {
+                    self.pending_show.push(WindowKind::ChannelRack);
                 }
-                RackAction::SetStep {
-                    pattern,
-                    channel,
-                    index,
-                    on,
-                } => {
-                    self.execute(
-                        "step.set",
-                        json!({"pattern": pattern, "channel": channel, "index": index, "on": on}),
-                    );
-                }
-                RackAction::SelectChannel(id) => self.rack.selected_channel = Some(id),
-                RackAction::SetMute { channel, muted } => {
-                    self.execute("channel.mute.set", json!({"id": channel, "mute": muted}));
-                }
-            },
+            }
             UiAction::Playlist(action) => match action {
                 PlaylistAction::AddTrack => self.add_track(),
                 PlaylistAction::SelectTrack(id) => self.playlist.selected_track = Some(id),
@@ -245,6 +677,12 @@ impl JetApp {
                 WindowKind::ChannelRack,
             )));
         }
+        if pressed(Key::F7) {
+            actions.push(UiAction::Workspace(WsAction::Toggle(WindowKind::PianoRoll)));
+        }
+        if pressed(Key::F9) {
+            actions.push(UiAction::Workspace(WsAction::Toggle(WindowKind::Mixer)));
+        }
         if pressed(Key::F8) && modifiers.alt {
             actions.push(UiAction::Workspace(WsAction::ToggleBrowser));
         }
@@ -257,8 +695,20 @@ impl JetApp {
         if pressed(Key::H) && modifiers.ctrl && modifiers.shift {
             actions.push(UiAction::Workspace(WsAction::ArrangeDefault));
         }
-        if self.toolbar.tempo_edit.is_some() {
+        if self.toolbar.tempo_edit.is_some() || self.rack.rename.is_some() {
             return actions;
+        }
+        if pressed(Key::R) && modifiers.ctrl {
+            actions.push(UiAction::ExportWav);
+        }
+        if pressed(Key::L)
+            && modifiers.ctrl
+            && let Some(id) = self.selected_channel_id()
+        {
+            actions.push(UiAction::Engine(
+                "channel.mixer_target.free",
+                json!({"id": id}),
+            ));
         }
         if pressed(Key::O) && modifiers.ctrl {
             actions.push(UiAction::OpenProject);
@@ -360,7 +810,96 @@ impl JetApp {
             pattern_name: self.pattern_name(),
             title,
             error: self.last_error.clone(),
+            status: self.audio_status.clone(),
+            cpu: self.audio.as_ref().map(|host| host.cpu),
+            voices: self
+                .audio
+                .as_ref()
+                .map(|host| host.output.meters().voices()),
+            scope: self
+                .audio
+                .as_ref()
+                .map_or_else(Vec::new, |host| host.scope.clone()),
         }
+    }
+
+    fn piano_view(&self) -> PianoRollView {
+        let project = self.session.project();
+        let channel = self
+            .selected_channel_id()
+            .and_then(|id| project.channel(ChannelId(id)))
+            .map(|c| (c.id.0, c.name.clone()));
+        let notes = channel
+            .as_ref()
+            .and_then(|(id, _)| {
+                self.selected_pattern()
+                    .and_then(|p| p.notes.get(&ChannelId(*id)))
+            })
+            .map(|notes| {
+                notes
+                    .iter()
+                    .map(|n| NoteView {
+                        start: n.start.0,
+                        length: n.length.0,
+                        key: n.key,
+                        velocity: n.velocity,
+                        muted: n.muted,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let snapshot = self.session.transport_snapshot();
+        PianoRollView {
+            channel,
+            notes,
+            step_ticks: project.settings.step_ticks().unwrap_or(24),
+            beat_ticks: project.settings.beat_ticks().unwrap_or(96),
+            bar_ticks: project.settings.bar_ticks().unwrap_or(384),
+            playhead: (snapshot.mode == PlayMode::Pattern
+                && snapshot.state != TransportState::Stopped)
+                .then_some(snapshot.position.0),
+        }
+    }
+
+    fn mixer_view(&self) -> MixerView {
+        let project = self.session.project();
+        let highest = project
+            .channels
+            .iter()
+            .map(|c| c.mixer_target)
+            .chain([project.mixer.inserts.len() as u16, self.mixer.selected])
+            .max()
+            .unwrap_or(0);
+        // Show the used inserts plus a few free ones, at least ten (our choice; FL shows all 125+).
+        let count = (highest + 4).clamp(10, jet_model::MAX_INSERTS as u16);
+        let meters = self
+            .audio
+            .as_ref()
+            .map(|host| Arc::clone(host.output.meters()));
+        let tracks = (0..=count)
+            .filter_map(|index| {
+                let track = project.mixer.track(index)?;
+                Some(MixerTrackView {
+                    index,
+                    name: track.name.clone(),
+                    volume: track.volume,
+                    pan: track.pan,
+                    mute: track.mute,
+                    to_master: track.to_master,
+                    sends: track.sends.iter().map(|s| (s.to, s.level)).collect(),
+                    fx: track
+                        .fx
+                        .iter()
+                        .map(|slot| (slot.kind.clone(), slot.enabled, slot.mix))
+                        .collect(),
+                    fx_enabled: track.fx_enabled,
+                    peak: meters
+                        .as_ref()
+                        .map_or((0.0, 0.0), |m| m.take(usize::from(index))),
+                })
+            })
+            .collect();
+        MixerView { tracks }
     }
 
     fn rack_view(&self) -> RackView {
@@ -382,6 +921,15 @@ impl JetApp {
                             .is_some_and(|step| step.on)
                     })
                     .collect();
+                let notes = pattern
+                    .and_then(|p| p.notes.get(&channel.id))
+                    .map(|notes| {
+                        notes
+                            .iter()
+                            .map(|n| (n.start.0, n.length.0, n.key))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 ChannelView {
                     id: channel.id.0,
                     name: channel.name.clone(),
@@ -391,13 +939,18 @@ impl JetApp {
                     pan: channel.pan,
                     mixer_target: channel.mixer_target,
                     steps,
+                    is_sampler: matches!(channel.kind, ChannelKind::Sampler { .. }),
+                    notes,
+                    cut_itself: channel.cut != 0 && channel.cut == channel.cut_by,
                 }
             })
             .collect();
         RackView {
             pattern_id: self.session.selected_pattern().0,
             steps_per_beat,
+            step_ticks: project.settings.step_ticks().unwrap_or(24),
             channels,
+            dragging_file: self.browser.dragging.clone(),
         }
     }
 
@@ -469,6 +1022,7 @@ impl JetApp {
             ctx.request_repaint();
             return;
         }
+        self.pump_audio();
         self.probe.begin_frame();
         self.hint.clear();
         // Paint edge to edge: the reference has no margin around the FL window.
@@ -490,11 +1044,7 @@ impl JetApp {
                 pos2(base_desktop.left() + side, base_desktop.top()),
                 base_desktop.max,
             );
-            let mut workspace = Workspace::new(initial, self.layout.browser_w);
-            if let Some(kind) = self.pending_show.take() {
-                let _ = workspace.apply(WsAction::Toggle(kind), initial, self.layout.snap_distance);
-            }
-            self.workspace = Some(workspace);
+            self.workspace = Some(Workspace::new(initial, self.layout.browser_w));
         }
         let browser_visible = self.workspace.as_ref().is_some_and(|ws| ws.browser_visible);
         let browser_rect = Rect::from_min_size(
@@ -508,9 +1058,16 @@ impl JetApp {
             ),
             base_desktop.max,
         );
+        for kind in std::mem::take(&mut self.pending_show) {
+            if let Some(workspace) = &mut self.workspace {
+                let _ = workspace.apply(WsAction::Toggle(kind), desktop, self.layout.snap_distance);
+            }
+        }
         let toolbar_view = self.toolbar_view();
         let rack_view = self.rack_view();
         let playlist_view = self.playlist_view();
+        let piano_view = self.piano_view();
+        let mixer_view = self.mixer_view();
         let windows = self
             .workspace
             .as_ref()
@@ -557,6 +1114,11 @@ impl JetApp {
                 rack_view: &rack_view,
                 playlist_state: &mut self.playlist,
                 playlist_view: &playlist_view,
+                piano_state: &mut self.piano,
+                piano_view: &piano_view,
+                mixer_state: &mut self.mixer,
+                mixer_view: &mixer_view,
+                focused,
             };
             for win in windows.iter().filter(|win| win.visible) {
                 paint_window(
@@ -576,10 +1138,34 @@ impl JetApp {
             }
         }
 
+        // A Browser drag paints its label at the pointer and ends when the button is released.
+        if let Some(path) = &self.browser.dragging {
+            if let Some(pos) = ctx.input(|i| i.pointer.hover_pos()) {
+                let painter = ctx.layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    Id::new("browser.drag"),
+                ));
+                painter.text(
+                    pos + vec2(14.0, 4.0),
+                    egui::Align2::LEFT_CENTER,
+                    path.file_name()
+                        .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+                    theme::regular(14.0),
+                    self.tokens.menu_text,
+                );
+            }
+            if !ctx.input(|i| i.pointer.any_down()) {
+                self.browser.dragging = None;
+            }
+        }
+        if let Some(path) = self.browser.preview.take() {
+            self.preview_file(&path);
+        }
         for action in actions {
             self.run_action(action, desktop, &ctx);
         }
-        if toolbar_view.playing && !self.static_capture {
+        self.pump_audio();
+        if (toolbar_view.playing || self.audio.is_some()) && !self.static_capture {
             ctx.request_repaint_after(Duration::from_millis(30));
         }
     }
@@ -599,6 +1185,8 @@ impl From<ToolbarAction> for UiAction {
             ToolbarAction::OpenProject => Self::OpenProject,
             ToolbarAction::SaveProject => Self::SaveProject,
             ToolbarAction::SaveProjectAs => Self::SaveProjectAs,
+            ToolbarAction::ExportWav => Self::ExportWav,
+            ToolbarAction::AddChannel(kind) => Self::AddChannel(kind),
             ToolbarAction::Minimize => Self::Minimize,
             ToolbarAction::Maximize => Self::Maximize,
             ToolbarAction::Quit => Self::Quit,
@@ -611,6 +1199,11 @@ struct Surfaces<'a> {
     rack_view: &'a RackView,
     playlist_state: &'a mut PlaylistState,
     playlist_view: &'a PlaylistView,
+    piano_state: &'a mut PianoRollState,
+    piano_view: &'a PianoRollView,
+    mixer_state: &'a mut MixerState,
+    mixer_view: &'a MixerView,
+    focused: Option<WindowKind>,
 }
 
 /// A maximized window always fills the current desktop (it follows the Browser being toggled).
@@ -653,7 +1246,7 @@ fn paint_window(
     // Drag area: the title bar minus the tool icons and the window buttons.
     let drag_left = match win.kind {
         WindowKind::Playlist => 250.0,
-        WindowKind::ChannelRack => 22.0,
+        WindowKind::ChannelRack | WindowKind::PianoRoll | WindowKind::Mixer => 22.0,
     };
     let title_drag = Rect::from_min_max(
         pos2(title.left() + drag_left, title.top()),
@@ -718,6 +1311,25 @@ fn paint_window(
                 t.title_text,
             );
         }
+        WindowKind::PianoRoll | WindowKind::Mixer => {
+            let label = if win.kind == WindowKind::PianoRoll {
+                let target = surfaces
+                    .piano_view
+                    .channel
+                    .as_ref()
+                    .map_or_else(String::new, |(_, name)| format!(" - {name}"));
+                format!("Piano roll{target}")
+            } else {
+                "Mixer".to_owned()
+            };
+            painter.text(
+                pos2(title.left() + 22.0, title.center().y),
+                egui::Align2::LEFT_CENTER,
+                label,
+                theme::regular(paint.layout.font_title),
+                t.title_text,
+            );
+        }
     }
 
     // Window buttons [W Playlist: minimize 1510-1520, restore 1528-1541, close 1545-1556].
@@ -768,6 +1380,29 @@ fn paint_window(
                 paint_playlist(paint, surfaces.playlist_state, surfaces.playlist_view, rect)
                     .into_iter()
                     .map(UiAction::Playlist),
+            );
+        }
+        WindowKind::PianoRoll => {
+            let content = Rect::from_min_max(pos2(rect.left(), title.bottom()), rect.max);
+            let focused = surfaces.focused == Some(WindowKind::PianoRoll);
+            actions.extend(
+                paint_piano_roll(
+                    paint,
+                    surfaces.piano_state,
+                    surfaces.piano_view,
+                    content,
+                    focused,
+                )
+                .into_iter()
+                .map(UiAction::Piano),
+            );
+        }
+        WindowKind::Mixer => {
+            let content = Rect::from_min_max(pos2(rect.left(), title.bottom()), rect.max);
+            actions.extend(
+                paint_mixer(paint, surfaces.mixer_state, surfaces.mixer_view, content)
+                    .into_iter()
+                    .map(UiAction::Mixer),
             );
         }
     }
@@ -830,6 +1465,7 @@ mod tests {
 
     use super::*;
     use egui::{Event, Modifiers, PointerButton, RawInput};
+    use jet_model::ChannelId;
 
     fn run_frame(app: &mut JetApp, ctx: &egui::Context, events: Vec<Event>) {
         if !app.fonts_installed {
@@ -1029,5 +1665,129 @@ mod tests {
             ],
         );
         assert_eq!(app.session.project().settings.tempo.0, 140_000);
+    }
+
+    fn drag(app: &mut JetApp, ctx: &egui::Context, from: egui::Pos2, to: egui::Pos2) {
+        run_frame(app, ctx, vec![Event::PointerMoved(from)]);
+        run_frame(
+            app,
+            ctx,
+            vec![Event::PointerButton {
+                pos: from,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::default(),
+            }],
+        );
+        for step in 1..=10 {
+            let t = step as f32 / 10.0;
+            run_frame(app, ctx, vec![Event::PointerMoved(from + (to - from) * t)]);
+        }
+        run_frame(
+            app,
+            ctx,
+            vec![Event::PointerButton {
+                pos: to,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::default(),
+            }],
+        );
+        run_frame(app, ctx, Vec::new());
+    }
+
+    fn toggle(app: &mut JetApp, ctx: &egui::Context, key_code: Key) {
+        run_frame(app, ctx, vec![key(key_code, true, Modifiers::default())]);
+        run_frame(app, ctx, vec![key(key_code, false, Modifiers::default())]);
+        run_frame(app, ctx, Vec::new());
+    }
+
+    #[test]
+    fn dragging_a_volume_knob_changes_volume_in_one_undo_step() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        open_rack(&mut app, &ctx);
+        let add = app.probe().entries()["channel-rack.add"].rect;
+        click(&mut app, &ctx, add);
+        run_frame(&mut app, &ctx, Vec::new());
+        let knob = app.probe().entries()["channel-rack.volume.1"].rect;
+        drag(
+            &mut app,
+            &ctx,
+            knob.center(),
+            knob.center() + vec2(0.0, 60.0),
+        );
+        let volume = app.session.project().channels[0].volume;
+        assert!(volume < jet_model::DEFAULT_CHANNEL_VOLUME, "{volume}");
+        app.execute("edit.undo_step", json!({}));
+        assert_eq!(
+            app.session.project().channels[0].volume,
+            jet_model::DEFAULT_CHANNEL_VOLUME,
+            "the whole drag is one undo step"
+        );
+    }
+
+    #[test]
+    fn context_menu_fill_each_four_steps_sets_real_steps() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        open_rack(&mut app, &ctx);
+        let add = app.probe().entries()["channel-rack.add"].rect;
+        click(&mut app, &ctx, add);
+        run_frame(&mut app, &ctx, Vec::new());
+        let name = app.probe().entries()["channel-rack.channel.1"].rect;
+        click_button(&mut app, &ctx, name, PointerButton::Secondary);
+        run_frame(&mut app, &ctx, Vec::new());
+        let item = app
+            .probe()
+            .entries()
+            .iter()
+            .find(|(id, e)| {
+                id.starts_with("channel-rack.menu.item")
+                    && e.value.as_deref() == Some("Fill each 4 steps")
+            })
+            .map(|(_, e)| e.rect)
+            .expect("menu item");
+        click(&mut app, &ctx, item);
+        let cells = &app.session.project().patterns[0].steps[&ChannelId(1)].cells;
+        let on: Vec<usize> = cells
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.on)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(on, vec![0, 4, 8, 12]);
+    }
+
+    #[test]
+    fn piano_roll_click_adds_a_note_and_mixer_fader_moves_the_master() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("channel.add", json!({"name": "Lead", "kind": "synth"}));
+        toggle(&mut app, &ctx, Key::F7);
+        let grid = app.probe().entries()["piano-roll.grid"].rect;
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(grid.left_top() + vec2(30.0, 40.0), vec2(2.0, 2.0)),
+        );
+        let notes = &app.session.project().patterns[0].notes[&ChannelId(1)];
+        assert_eq!(notes.len(), 1);
+        // 30 px at the default 0.5 px/tick is tick 60; Step snap (24 ticks) floors it to 48.
+        assert_eq!(notes[0].start.0, 48, "snapped to the step grid");
+
+        toggle(&mut app, &ctx, Key::F9);
+        let fader = app.probe().entries()["mixer.track.0.fader"].rect;
+        let before = app.session.project().mixer.master.volume;
+        drag(
+            &mut app,
+            &ctx,
+            fader.center(),
+            fader.center() + vec2(0.0, 40.0),
+        );
+        assert!(app.session.project().mixer.master.volume < before);
     }
 }

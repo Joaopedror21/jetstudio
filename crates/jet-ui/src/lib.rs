@@ -5,6 +5,8 @@ mod browser;
 mod channel_rack;
 pub mod demo;
 mod icons;
+mod mixer;
+mod piano_roll;
 mod playlist;
 mod probe;
 mod theme;

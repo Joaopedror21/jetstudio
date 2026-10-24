@@ -1,6 +1,6 @@
 //! Render the real JetStudio UI offscreen (wgpu, no window) and save a PNG.
 //!
-//! `cargo run -p jet-ui --example shot -- out.png [--size WxH] [--ppp N] [--demo]`
+//! `cargo run -p jet-ui --example shot -- out.png [--size WxH] [--ppp N] [--demo] [--show rack,piano,mixer]`
 //!
 //! The default is a new empty project at 1567x1029, the size and state of the Windows master
 //! reference capture W, so the output can be compared pixel for pixel with it
@@ -40,6 +40,20 @@ fn main() {
     } else {
         JetApp::default()
     };
+    // `--show rack,piano,mixer` opens extra windows (in that order, last in front).
+    if let Some(list) = value("--show") {
+        for name in list.split(',') {
+            let kind = match name {
+                "rack" => Some(jet_ui::WindowKind::ChannelRack),
+                "piano" => Some(jet_ui::WindowKind::PianoRoll),
+                "mixer" => Some(jet_ui::WindowKind::Mixer),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                app.show_window_on_start(kind);
+            }
+        }
+    }
     app.set_static_capture(true);
     let mut harness = Harness::builder()
         .with_size(egui::vec2(w, h))

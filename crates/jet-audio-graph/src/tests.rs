@@ -287,3 +287,35 @@ fn meters_report_master_peaks() {
     assert!(l > 0.3 && (l - r).abs() < 1e-6);
     assert_eq!(meters.take(0), (0.0, 0.0), "take resets");
 }
+
+#[test]
+fn live_notes_sound_until_note_off() {
+    let mut project = Project::new();
+    let id = project.ids.channel();
+    project.channels.push(Channel::synth(id, "Synth"));
+    let plan = build_plan(
+        &project,
+        Source::Pattern(project.patterns[0].id),
+        RATE,
+        true,
+        &|_: ResourceId| None,
+    );
+    let mut renderer = Renderer::new(
+        Box::new(plan),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(Meters::default()),
+    );
+    renderer.live_note_on(id, 60, 100);
+    let held = run(&mut renderer, 48_000, 512);
+    assert!(
+        held[2 * 40_000..].iter().any(|v| v.abs() > 0.01),
+        "sustains while held"
+    );
+    renderer.live_note_off(id, 60);
+    let after = run(&mut renderer, 48_000, 512);
+    assert!(
+        after[2 * 24_000..].iter().all(|v| v.abs() < 1e-4),
+        "released"
+    );
+    assert_eq!(renderer.active_voices(), 0);
+}

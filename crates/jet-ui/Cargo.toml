@@ -10,6 +10,11 @@ serde_json.workspace = true
 jet-engine = { path = "../jet-engine" }
 jet-model = { path = "../jet-model" }
 jet-time = { path = "../jet-time" }
+jet-media = { path = "../jet-media" }
+jet-playback = { path = "../jet-playback" }
+jet-dsp = { path = "../jet-dsp" }
+jet-audio-graph = { path = "../jet-audio-graph" }
+jet-seq = { path = "../jet-seq" }
 rfd = "=0.17.2"
 
 [dev-dependencies]

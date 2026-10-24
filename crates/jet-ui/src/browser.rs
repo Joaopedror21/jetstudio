@@ -24,6 +24,10 @@ pub struct BrowserState {
     pub expanded: BTreeSet<PathBuf>,
     pub selected: Option<PathBuf>,
     pub scroll_y: f32,
+    /// Audio file being dragged out of the Browser (dropped on the Channel rack).
+    pub dragging: Option<PathBuf>,
+    /// Audio file clicked for preview this frame [Manual: browser, sample preview].
+    pub preview: Option<PathBuf>,
 }
 
 impl BrowserState {
@@ -252,6 +256,12 @@ pub fn paint_browser(paint: &mut PaintCtx<'_>, state: &mut BrowserState, rect: R
             if row.is_dir && !state.expanded.insert(row.path.clone()) {
                 state.expanded.remove(&row.path);
             }
+            if !row.is_dir && jet_media::is_supported(&row.path) {
+                state.preview = Some(row.path.clone());
+            }
+        }
+        if response.drag_started() && !row.is_dir && jet_media::is_supported(&row.path) {
+            state.dragging = Some(row.path.clone());
         }
     }
     if max_scroll > 0.0 {

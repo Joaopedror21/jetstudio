@@ -66,7 +66,12 @@ pub fn demo_project() -> Project {
     }
     for (index, (name, color)) in CHANNELS.iter().enumerate() {
         let id = project.ids.channel();
-        let mut channel = Channel::sampler(id, *name);
+        // The last channel is our synth, so the Piano roll has a score to show.
+        let mut channel = if index == CHANNELS.len() - 1 {
+            Channel::synth(id, *name)
+        } else {
+            Channel::sampler(id, *name)
+        };
         channel.color = Some(*color);
         channel.mixer_target = [2, 4, 3, 20, 21, 15, 22, 23, 26, 24, 25, 27][index];
         project.channels.push(channel);
@@ -78,6 +83,40 @@ pub fn demo_project() -> Project {
                 first.steps.insert(id, seq);
             }
         }
+    }
+    // A four-chord progression (i-VI-III-VII in A minor) for the synth channel.
+    if let (Some(pad), Some(first)) = (
+        project.channels.last().map(|c| c.id),
+        project.patterns.first_mut(),
+    ) {
+        let chords: [[u8; 3]; 4] = [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]];
+        let mut notes = Vec::new();
+        for (bar_index, chord) in chords.iter().enumerate() {
+            for (voice, key) in chord.iter().enumerate() {
+                // One chord per beat, each a little shorter than the beat.
+                let mut note = jet_model::Note::new(
+                    Tick(bar_index as i64 * (bar / 4)),
+                    Tick(bar / 4 - 12),
+                    *key,
+                );
+                note.velocity = 90 + voice as u8 * 10;
+                notes.push(note);
+            }
+        }
+        first.steps.remove(&pad);
+        first.notes.insert(pad, notes);
+    }
+    for (index, name) in [(2u16, "Kick"), (3, "Hats"), (4, "Clap")] {
+        if let Some(track) = project.mixer.track_mut(index) {
+            track.name = name.to_owned();
+        }
+    }
+    if let Some(fx) = jet_model::FxKind::default_for("limiter") {
+        project.mixer.master.fx.push(jet_model::FxSlot {
+            kind: fx,
+            enabled: true,
+            mix: 1000,
+        });
     }
     if let Some(arrangement) = project.arrangements.first_mut() {
         let mut tracks = Vec::new();
@@ -139,5 +178,11 @@ pub fn demo_project() -> Project {
 }
 
 pub fn demo_session() -> Session {
-    Session::from_project(demo_project()).unwrap_or_else(|_| Session::new_default())
+    let mut session =
+        Session::from_project(demo_project()).unwrap_or_else(|_| Session::new_default());
+    let pad = session.project().channels.last().map(|c| c.id.0);
+    if let Some(id) = pad {
+        let _ = session.execute("channel.select", serde_json::json!({ "id": id }));
+    }
+    session
 }

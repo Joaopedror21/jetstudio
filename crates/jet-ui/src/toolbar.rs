@@ -25,6 +25,14 @@ pub struct ToolbarView {
     pub pattern_name: String,
     pub title: String,
     pub error: Option<String>,
+    /// Status line shown when nothing is hovered (audio device, last export).
+    pub status: Option<String>,
+    /// DSP load of the audio callback in percent; `None` without an audio device.
+    pub cpu: Option<f32>,
+    /// Sounding voices; `None` without an audio device.
+    pub voices: Option<u32>,
+    /// Recent Master output samples for the oscilloscope (empty without a device).
+    pub scope: Vec<f32>,
 }
 
 pub enum ToolbarAction {
@@ -33,6 +41,8 @@ pub enum ToolbarAction {
     OpenProject,
     SaveProject,
     SaveProjectAs,
+    ExportWav,
+    AddChannel(&'static str),
     Minimize,
     Maximize,
     Quit,
@@ -401,11 +411,30 @@ pub fn paint_toolbar(
         t.panel_darker,
         t.panel_edge,
     );
-    // Silence is drawn as a flat line, which is the true output of an engine without audio.
-    painter.line_segment(
-        [o + vec2(864.0, 20.0), o + vec2(948.0, 20.0)],
-        egui::Stroke::new(1.5, t.time_text),
-    );
+    // Oscilloscope of the Master output; silence (or no device) is a flat line.
+    let trace = r(o, 864.0, 6.0, 948.0, 35.0);
+    if view.scope.len() >= 2 {
+        let n = view.scope.len();
+        let points: Vec<egui::Pos2> = view
+            .scope
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let x = trace.left() + trace.width() * i as f32 / (n - 1) as f32;
+                let y = trace.center().y - v.clamp(-1.0, 1.0) * trace.height() * 0.5;
+                pos2(x, y)
+            })
+            .collect();
+        painter.add(egui::Shape::line(
+            points,
+            egui::Stroke::new(1.2, t.time_text),
+        ));
+    } else {
+        painter.line_segment(
+            [o + vec2(864.0, 20.0), o + vec2(948.0, 20.0)],
+            egui::Stroke::new(1.5, t.time_text),
+        );
+    }
     // Visibility toggle at the scope's lower right [W 1019, 31].
     painter.circle_stroke(
         o + vec2(1019.0, 31.0),
@@ -436,14 +465,30 @@ pub fn paint_toolbar(
             t.panel_edge,
         );
     }
-    painter.rect_filled(r(o, 1040.0, 8.0, 1042.0, 19.0), 0.0, t.time_text);
+    // CPU bar = audio callback time / buffer time; polyphony = sounding voices.
+    let cpu_frac = view.cpu.map_or(0.0, |c| (c / 100.0).clamp(0.0, 1.0));
+    painter.rect_filled(
+        r(o, 1040.0, 8.0, 1042.0 + 50.0 * cpu_frac, 19.0),
+        0.0,
+        t.time_text,
+    );
     painter.text(
         o + vec2(1117.0, 13.5),
         Align2::RIGHT_CENTER,
-        "0",
+        view.voices
+            .map_or_else(|| "0".to_owned(), |v| v.to_string()),
         theme::regular(15.0),
         t.time_text,
     );
+    if let Some(cpu) = view.cpu {
+        painter.text(
+            o + vec2(1117.0, 28.0),
+            Align2::RIGHT_CENTER,
+            format!("{cpu:.0}%"),
+            theme::regular(12.0),
+            t.time_text,
+        );
+    }
     paint.probe.insert("toolbar.cpu", cpu, "meter", false, None);
 
     // Window controls [W 1502-1560, 12-28].
@@ -482,10 +527,13 @@ pub fn paint_toolbar(
         theme::regular(14.0),
         t.hint_text,
     );
-    let hint_text = view
-        .error
-        .as_ref()
-        .map_or_else(|| paint.hint.clone(), |e| format!("Error: {e}"));
+    // Errors win; otherwise the hovered control's hint, then the engine status line.
+    let hint_text = match (&view.error, paint.hint.is_empty(), &view.status) {
+        (Some(e), _, _) => format!("Error: {e}"),
+        (None, false, _) => paint.hint.clone(),
+        (None, true, Some(status)) => status.clone(),
+        (None, true, None) => String::new(),
+    };
     painter.text(
         o + vec2(9.0, 70.0),
         Align2::LEFT_CENTER,
@@ -518,8 +566,8 @@ pub fn paint_toolbar(
         ),
         (
             "piano-roll",
-            None,
-            "Piano roll (F7) - arrives in M3",
+            Some(WsAction::Toggle(WindowKind::PianoRoll)),
+            "Piano roll (F7)",
             icons::piano_roll,
         ),
         (
@@ -528,7 +576,12 @@ pub fn paint_toolbar(
             "Playlist (F5)",
             icons::playlist,
         ),
-        ("mixer", None, "Mixer (F9) - arrives in M5", icons::mixer),
+        (
+            "mixer",
+            Some(WsAction::Toggle(WindowKind::Mixer)),
+            "Mixer (F9)",
+            icons::mixer,
+        ),
         (
             "plugin-picker",
             None,
@@ -771,6 +824,23 @@ fn paint_menu(
                 "Ctrl+Shift+S",
                 Some(ToolbarAction::SaveProjectAs),
             ),
+            (
+                "Export > Wave file...",
+                "Ctrl+R",
+                Some(ToolbarAction::ExportWav),
+            ),
+        ],
+        2 => &[
+            (
+                "Channel > Sampler",
+                "",
+                Some(ToolbarAction::AddChannel("sampler")),
+            ),
+            (
+                "Channel > Synth",
+                "",
+                Some(ToolbarAction::AddChannel("synth")),
+            ),
         ],
         1 => &[
             (
@@ -803,6 +873,20 @@ fn paint_menu(
                 "Browser",
                 "Alt+F8",
                 Some(ToolbarAction::Workspace(WsAction::ToggleBrowser)),
+            ),
+            (
+                "Piano roll",
+                "F7",
+                Some(ToolbarAction::Workspace(WsAction::Toggle(
+                    WindowKind::PianoRoll,
+                ))),
+            ),
+            (
+                "Mixer",
+                "F9",
+                Some(ToolbarAction::Workspace(WsAction::Toggle(
+                    WindowKind::Mixer,
+                ))),
             ),
         ],
         _ => &[("Not implemented yet", "", None)],
@@ -868,6 +952,8 @@ fn paint_menu(
                 ToolbarAction::OpenProject => ToolbarAction::OpenProject,
                 ToolbarAction::SaveProject => ToolbarAction::SaveProject,
                 ToolbarAction::SaveProjectAs => ToolbarAction::SaveProjectAs,
+                ToolbarAction::ExportWav => ToolbarAction::ExportWav,
+                ToolbarAction::AddChannel(kind) => ToolbarAction::AddChannel(kind),
                 ToolbarAction::Minimize => ToolbarAction::Minimize,
                 ToolbarAction::Maximize => ToolbarAction::Maximize,
                 ToolbarAction::Quit => ToolbarAction::Quit,

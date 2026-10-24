@@ -75,9 +75,14 @@ impl Stats {
 }
 
 enum Message {
-    Plan(Box<RenderPlan>),
+    /// A new plan and the transport state it must start with, applied together.
+    Plan(Box<RenderPlan>, TransportSync),
     Sync(TransportSync),
     Panic,
+    Preview(Arc<jet_dsp::SampleData>),
+    StopPreview,
+    NoteOn(jet_model::ChannelId, u8, u8),
+    NoteOff(jet_model::ChannelId, u8),
 }
 
 /// Description of the opened device.
@@ -125,14 +130,22 @@ impl Callback {
                 break;
             };
             match message {
-                Message::Plan(plan) => {
+                Message::Plan(plan, sync) => {
                     let old = self.renderer.swap_plan(plan);
+                    self.renderer.sync(sync);
                     if let Err(rtrb::PushError::Full(old)) = self.outbox.push(old) {
                         self.waiting = Some(old);
                     }
                 }
                 Message::Sync(sync) => self.renderer.sync(sync),
                 Message::Panic => self.renderer.panic(),
+                // The UI keeps its own reference, so dropping this Arc never frees audio here.
+                Message::Preview(sample) => self.renderer.preview(sample),
+                Message::StopPreview => self.renderer.stop_preview(),
+                Message::NoteOn(channel, key, velocity) => {
+                    self.renderer.live_note_on(channel, key, velocity);
+                }
+                Message::NoteOff(channel, key) => self.renderer.live_note_off(channel, key),
             }
         }
     }
@@ -287,13 +300,39 @@ impl AudioOutput {
         self.info.rate
     }
 
-    /// Queue a plan; returns it back if the queue is full so the caller can retry.
-    pub fn send_plan(&mut self, plan: Box<RenderPlan>) -> Result<(), Box<RenderPlan>> {
-        match self.to_audio.push(Message::Plan(plan)) {
-            Ok(()) => Ok(()),
-            Err(rtrb::PushError::Full(Message::Plan(plan))) => Err(plan),
+    /// Queue a plan with the transport state to apply alongside it; returns the plan if the
+    /// queue is full so the caller can retry.
+    pub fn send_plan(
+        &mut self,
+        plan: Box<RenderPlan>,
+        sync: TransportSync,
+    ) -> Result<(), Box<RenderPlan>> {
+        match self.to_audio.push(Message::Plan(plan, sync)) {
+            Ok(()) => {
+                self.last_sync = Some(sync);
+                Ok(())
+            }
+            Err(rtrb::PushError::Full(Message::Plan(plan, _))) => Err(plan),
             Err(rtrb::PushError::Full(_)) => Ok(()),
         }
+    }
+
+    /// Audition `sample`; the caller keeps a reference alive until it is replaced.
+    pub fn preview(&mut self, sample: Arc<jet_dsp::SampleData>) {
+        let _ = self.to_audio.push(Message::Preview(sample));
+    }
+
+    pub fn stop_preview(&mut self) {
+        let _ = self.to_audio.push(Message::StopPreview);
+    }
+
+    /// Live note for the preview keyboard and controllers.
+    pub fn note_on(&mut self, channel: jet_model::ChannelId, key: u8, velocity: u8) {
+        let _ = self.to_audio.push(Message::NoteOn(channel, key, velocity));
+    }
+
+    pub fn note_off(&mut self, channel: jet_model::ChannelId, key: u8) {
+        let _ = self.to_audio.push(Message::NoteOff(channel, key));
     }
 
     /// Mirror the engine transport; repeated identical syncs are not sent.

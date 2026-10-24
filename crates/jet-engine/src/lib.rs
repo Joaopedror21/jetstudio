@@ -74,6 +74,8 @@ pub struct Session {
     publisher: Box<dyn SnapshotPublisher>,
     samples: SamplePool,
     panic_requested: bool,
+    /// Gesture key of the command being executed, if it is part of a continuous gesture.
+    gesture: Option<String>,
 }
 
 impl Session {
@@ -99,6 +101,7 @@ impl Session {
             publisher: Box::new(NullPublisher),
             samples: SamplePool::default(),
             panic_requested: false,
+            gesture: None,
         }
     }
 
@@ -136,6 +139,9 @@ impl Session {
     }
     pub fn samples(&self) -> &SamplePool {
         &self.samples
+    }
+    pub fn samples_mut(&mut self) -> &mut SamplePool {
+        &mut self.samples
     }
 
     /// Material the transport plays now [Manual: toolbar_panels, "PAT/SONG"].
@@ -206,6 +212,24 @@ impl Session {
         self.publisher = publisher;
     }
 
+    /// Execute `id` as part of the continuous gesture `key` (a knob drag, a step paint):
+    /// consecutive edits with the same key undo as one step until [`Session::end_gesture`].
+    pub fn execute_gesture(
+        &mut self,
+        key: &str,
+        id: &str,
+        params: Value,
+    ) -> Result<Outcome, CmdError> {
+        self.gesture = Some(key.to_owned());
+        let result = self.execute(id, params);
+        self.gesture = None;
+        result
+    }
+
+    pub fn end_gesture(&mut self) {
+        self.history.end_gesture();
+    }
+
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Outcome, CmdError> {
         let old_project = Arc::clone(&self.project);
         let old_selection = self.selected_pattern;
@@ -258,7 +282,10 @@ impl Session {
         if next == *self.project {
             return Ok(false);
         }
-        self.history.record(Arc::clone(&self.project));
+        match self.gesture.as_deref() {
+            Some(key) => self.history.record_gesture(Arc::clone(&self.project), key),
+            None => self.history.record(Arc::clone(&self.project)),
+        }
         self.project = Arc::new(next);
         self.revision = self.revision.saturating_add(1);
         self.publisher

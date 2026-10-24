@@ -8,6 +8,7 @@ jet-engine = { path = "../jet-engine" }
 jet-audio-graph = { path = "../jet-audio-graph" }
 jet-model = { path = "../jet-model" }
 jet-seq = { path = "../jet-seq" }
+jet-dsp = { path = "../jet-dsp" }
 cpal = "=0.18.2"
 rtrb = "=0.4.0"
 thiserror = { workspace = true }

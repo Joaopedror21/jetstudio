@@ -1435,6 +1435,7 @@ dependencies = [
  "jet-engine",
  "jet-format",
  "jet-model",
+ "jet-playback",
  "serde_json",
 ]
 
@@ -1497,6 +1498,7 @@ version = "0.1.0"
 dependencies = [
  "cpal",
  "jet-audio-graph",
+ "jet-dsp",
  "jet-engine",
  "jet-model",
  "jet-seq",
@@ -1527,8 +1529,13 @@ dependencies = [
  "egui",
  "egui_kittest",
  "image",
+ "jet-audio-graph",
+ "jet-dsp",
  "jet-engine",
+ "jet-media",
  "jet-model",
+ "jet-playback",
+ "jet-seq",
  "jet-time",
  "rfd",
  "serde_json",

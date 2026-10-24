@@ -92,3 +92,29 @@ fn silent_transport_uses_injected_clock_and_pause_freezes_position() {
     clock.set_frames(48_000);
     assert_eq!(session.transport_snapshot().position, Tick(96));
 }
+
+#[test]
+fn a_continuous_gesture_undoes_as_one_step() {
+    let mut session = Session::new_default();
+    session
+        .execute("channel.add", json!({"name":"Kick"}))
+        .unwrap();
+    for value in [700, 600, 500, 400] {
+        session
+            .execute_gesture(
+                "knob.volume.1",
+                "channel.volume.set",
+                json!({"id":1,"value":value}),
+            )
+            .unwrap();
+    }
+    session.end_gesture();
+    assert_eq!(session.project().channels[0].volume, 400);
+    session.execute("edit.undo_step", json!({})).unwrap();
+    assert_eq!(
+        session.project().channels[0].volume,
+        jet_model::DEFAULT_CHANNEL_VOLUME
+    );
+    session.execute("edit.undo_step", json!({})).unwrap();
+    assert!(session.project().channels.is_empty());
+}

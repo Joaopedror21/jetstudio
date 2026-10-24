@@ -4,6 +4,8 @@ use egui::{Pos2, Rect, Vec2, pos2, vec2};
 pub enum WindowKind {
     ChannelRack,
     Playlist,
+    PianoRoll,
+    Mixer,
 }
 
 impl WindowKind {
@@ -11,6 +13,8 @@ impl WindowKind {
         match self {
             Self::ChannelRack => "Channel rack",
             Self::Playlist => "Playlist",
+            Self::PianoRoll => "Piano roll",
+            Self::Mixer => "Mixer",
         }
     }
 
@@ -18,6 +22,8 @@ impl WindowKind {
         match self {
             Self::ChannelRack => "channel-rack",
             Self::Playlist => "playlist",
+            Self::PianoRoll => "piano-roll",
+            Self::Mixer => "mixer",
         }
     }
 }
@@ -106,6 +112,33 @@ impl Workspace {
                 WinState {
                     kind: WindowKind::ChannelRack,
                     rect: channel_rect,
+                    visible: false,
+                    maximized: false,
+                    restore_rect: None,
+                },
+                // UNMEASURED: Piano roll and Mixer default rectangles (no restored capture).
+                WinState {
+                    kind: WindowKind::PianoRoll,
+                    rect: Rect::from_min_size(
+                        desktop.min + vec2(40.0, 60.0),
+                        vec2(
+                            (desktop.width() - 80.0).max(240.0),
+                            (desktop.height() - 100.0).max(160.0),
+                        ),
+                    ),
+                    visible: false,
+                    maximized: false,
+                    restore_rect: None,
+                },
+                WinState {
+                    kind: WindowKind::Mixer,
+                    rect: Rect::from_min_size(
+                        desktop.min + vec2(20.0, desktop.height() * 0.35),
+                        vec2(
+                            (desktop.width() - 40.0).max(240.0),
+                            (desktop.height() * 0.62).max(160.0),
+                        ),
+                    ),
                     visible: false,
                     maximized: false,
                     restore_rect: None,

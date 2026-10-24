@@ -7,7 +7,7 @@ fn main() -> eframe::Result<()> {
         "JetStudio",
         options,
         Box::new(|creation_context| {
-            let mut app = jet_ui::JetApp::default();
+            let mut app = jet_ui::JetApp::with_audio();
             app.install_fonts(&creation_context.egui_ctx);
             Ok(Box::new(app))
         }),

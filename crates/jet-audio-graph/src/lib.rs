@@ -12,14 +12,21 @@ pub use plan::{ChannelPlan, Instrument, RenderPlan, TRACK_COUNT, build_plan};
 pub use render::{MAX_VOICES, Renderer, TransportSync};
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// Largest block processed at once; longer device buffers are split.
 pub const MAX_BLOCK: usize = 1024;
 
-/// Peak meters per mixer track, written by the audio thread and drained by the UI.
+/// Samples kept for the oscilloscope (mono sum of the Master output).
+pub const SCOPE_LEN: usize = 2048;
+
+/// Peak meters per mixer track, the Master oscilloscope and the voice count, written by the
+/// audio thread and read by the UI.
 pub struct Meters {
     peaks: Vec<[AtomicU32; 2]>,
+    scope: Vec<AtomicU32>,
+    scope_pos: AtomicUsize,
+    voices: AtomicU32,
 }
 
 impl Default for Meters {
@@ -28,11 +35,45 @@ impl Default for Meters {
             peaks: (0..TRACK_COUNT)
                 .map(|_| [AtomicU32::new(0), AtomicU32::new(0)])
                 .collect(),
+            scope: (0..SCOPE_LEN).map(|_| AtomicU32::new(0)).collect(),
+            scope_pos: AtomicUsize::new(0),
+            voices: AtomicU32::new(0),
         }
     }
 }
 
 impl Meters {
+    pub fn record_scope(&self, interleaved: &[f32]) {
+        let mut pos = self.scope_pos.load(Ordering::Relaxed);
+        for frame in interleaved.as_chunks::<2>().0 {
+            let mono = (frame[0] + frame[1]) * 0.5;
+            if let Some(slot) = self.scope.get(pos % SCOPE_LEN) {
+                slot.store(mono.to_bits(), Ordering::Relaxed);
+            }
+            pos = pos.wrapping_add(1);
+        }
+        self.scope_pos.store(pos, Ordering::Release);
+    }
+
+    /// The most recent `out.len()` scope samples, oldest first.
+    pub fn read_scope(&self, out: &mut [f32]) {
+        let end = self.scope_pos.load(Ordering::Acquire);
+        let n = out.len().min(SCOPE_LEN);
+        for (i, value) in out.iter_mut().take(n).enumerate() {
+            let index = end.wrapping_sub(n).wrapping_add(i) % SCOPE_LEN;
+            *value = f32::from_bits(self.scope[index].load(Ordering::Relaxed));
+        }
+    }
+
+    pub fn set_voices(&self, voices: u32) {
+        self.voices.store(voices, Ordering::Relaxed);
+    }
+
+    /// Voices sounding at the end of the last block (the toolbar polyphony readout).
+    pub fn voices(&self) -> u32 {
+        self.voices.load(Ordering::Relaxed)
+    }
+
     /// Raise the stored peaks; non-negative f32 bit patterns order like their values.
     pub fn record(&self, track: usize, left: &[f32], right: &[f32]) {
         let Some(slot) = self.peaks.get(track) else {

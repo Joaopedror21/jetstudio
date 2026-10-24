@@ -11,6 +11,8 @@ use std::sync::Arc;
 pub struct SamplePool {
     data: HashMap<ResourceId, Arc<SampleData>>,
     generation: u64,
+    /// Audio dropped from the pool, freed by the host once nothing else holds it.
+    retired: Vec<Arc<SampleData>>,
 }
 
 impl SamplePool {
@@ -19,7 +21,9 @@ impl SamplePool {
     }
 
     pub fn insert(&mut self, id: ResourceId, data: Arc<SampleData>) {
-        self.data.insert(id, data);
+        if let Some(old) = self.data.insert(id, data) {
+            self.retired.push(old);
+        }
         self.generation = self.generation.wrapping_add(1);
     }
 
@@ -29,8 +33,14 @@ impl SamplePool {
     }
 
     pub fn clear(&mut self) {
-        self.data.clear();
+        self.retired.extend(self.data.drain().map(|(_, data)| data));
         self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Audio removed from the pool. Voices may still read it, so the host keeps these until
+    /// it holds the last reference: the audio thread must never free memory.
+    pub fn take_retired(&mut self) -> Vec<Arc<SampleData>> {
+        std::mem::take(&mut self.retired)
     }
 
     /// Decode every resource of `project`; returns the ids that could not be loaded.

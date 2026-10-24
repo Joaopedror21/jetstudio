@@ -33,6 +33,9 @@ enum VoiceKind {
 struct Voice {
     kind: VoiceKind,
     channel: ChannelId,
+    key: u8,
+    /// Started by a live note-on rather than the sequence.
+    live: bool,
     pan: i16,
     velocity: f32,
     /// Absolute frame where the voice starts sounding.
@@ -62,6 +65,7 @@ pub struct Renderer {
     meters: Arc<Meters>,
     seed: u32,
     stop_events_after: Option<i64>,
+    preview: SamplerVoice,
 }
 
 impl Renderer {
@@ -81,6 +85,7 @@ impl Renderer {
             meters,
             seed: 0x9E37_79B9,
             stop_events_after: None,
+            preview: SamplerVoice::default(),
         }
     }
 
@@ -151,6 +156,17 @@ impl Renderer {
         }
     }
 
+    /// Audition a sample straight to the Master at its recorded level (Browser preview).
+    /// Hypothesis H-BR-1: the preview level is not documented; we use unity gain.
+    pub fn preview(&mut self, sample: Arc<jet_dsp::SampleData>) {
+        let rate = self.plan.rate;
+        self.preview.start(sample, 1.0, rate);
+    }
+
+    pub fn stop_preview(&mut self) {
+        self.preview.cut();
+    }
+
     pub fn active_voices(&self) -> usize {
         self.voices.iter().filter(|v| v.active()).count()
     }
@@ -213,12 +229,46 @@ impl Renderer {
     }
 
     fn note_on(&mut self, event: &NoteEvent, absolute_tick: i64) {
-        let Some(channel) = self.plan.channel(event.channel) else {
-            return;
-        };
         let start_frame = self.frame_of_tick(absolute_tick).max(self.frame);
         let gate = self.plan.sequence.gate_for(event);
         let release_frame = start_frame + self.ticks_to_frames(gate).max(1);
+        self.start_voice(event, start_frame, release_frame, false);
+    }
+
+    /// Play a note outside the sequence (preview keyboard, typing keyboard, MIDI input).
+    /// It sounds until [`Renderer::live_note_off`].
+    pub fn live_note_on(&mut self, channel: ChannelId, key: u8, velocity: u8) {
+        let event = NoteEvent {
+            tick: 0,
+            length: 0,
+            channel,
+            key,
+            velocity,
+            pan: 0,
+            fine_pitch: 0,
+            release: 0,
+            mod_x: 0,
+            mod_y: 0,
+            slide: false,
+            porta: false,
+        };
+        let frame = self.frame;
+        self.start_voice(&event, frame, u64::MAX, true);
+    }
+
+    pub fn live_note_off(&mut self, channel: ChannelId, key: u8) {
+        let frame = self.frame;
+        for voice in &mut self.voices {
+            if voice.live && voice.channel == channel && voice.key == key && !voice.released {
+                voice.release_frame = frame;
+            }
+        }
+    }
+
+    fn start_voice(&mut self, event: &NoteEvent, start_frame: u64, release_frame: u64, live: bool) {
+        let Some(channel) = self.plan.channel(event.channel) else {
+            return;
+        };
         let rate = self.plan.rate;
         let kind = match &channel.instrument {
             Instrument::Sampler(None) => return,
@@ -278,6 +328,8 @@ impl Renderer {
         self.voices[slot] = Voice {
             kind,
             channel: event.channel,
+            key: event.key,
+            live,
             pan: event.pan,
             velocity: velocity_gain(event.velocity) as f32,
             start_frame,
@@ -312,7 +364,19 @@ impl Renderer {
             self.next_tick = to.max(from);
         }
         self.render_voices(block_start, frames);
+        if self.preview.is_active() {
+            let master = &mut self.plan.tracks[self.plan.master_slot];
+            self.preview.render(
+                &mut master.left[..frames],
+                &mut master.right[..frames],
+                1.0,
+                1.0,
+            );
+        }
         self.mix(frames, out);
+        self.meters.record_scope(&out[..frames * 2]);
+        self.meters
+            .set_voices(self.voices.iter().filter(|v| v.active()).count() as u32);
         self.frame = block_end;
         self.frame_counter.store(block_end, Ordering::Release);
     }
