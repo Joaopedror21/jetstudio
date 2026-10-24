@@ -7,6 +7,7 @@ pub enum WindowKind {
     PianoRoll,
     Mixer,
     ChannelSettings,
+    AudioSettings,
 }
 
 impl WindowKind {
@@ -17,6 +18,7 @@ impl WindowKind {
             Self::PianoRoll => "Piano roll",
             Self::Mixer => "Mixer",
             Self::ChannelSettings => "Channel settings",
+            Self::AudioSettings => "Audio settings",
         }
     }
 
@@ -27,6 +29,7 @@ impl WindowKind {
             Self::PianoRoll => "piano-roll",
             Self::Mixer => "mixer",
             Self::ChannelSettings => "channel-settings",
+            Self::AudioSettings => "audio-settings",
         }
     }
 }
@@ -143,6 +146,25 @@ impl Workspace {
                         );
                         let x = (desktop.right() - size.x - 20.0).max(desktop.left());
                         Rect::from_min_size(pos2(x, desktop.top() + 40.0), size)
+                    },
+                    visible: false,
+                    maximized: false,
+                    restore_rect: None,
+                },
+                WinState {
+                    kind: WindowKind::AudioSettings,
+                    rect: {
+                        let size = vec2(
+                            760.0_f32.min(desktop.width() - 40.0).max(240.0),
+                            (desktop.height() - 80.0).clamp(160.0, 640.0),
+                        );
+                        Rect::from_min_size(
+                            pos2(
+                                (desktop.center().x - size.x / 2.0).max(desktop.left()),
+                                desktop.top() + 30.0,
+                            ),
+                            size,
+                        )
                     },
                     visible: false,
                     maximized: false,

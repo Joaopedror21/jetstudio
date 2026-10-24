@@ -922,6 +922,13 @@ fn paint_menu(
         ],
         5 => &[
             (
+                "Audio settings",
+                "F10",
+                Some(ToolbarAction::Workspace(WsAction::Toggle(
+                    WindowKind::AudioSettings,
+                ))),
+            ),
+            (
                 "Typing keyboard to piano",
                 "Ctrl+T",
                 Some(ToolbarAction::ToggleTyping),

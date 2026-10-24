@@ -1,0 +1,651 @@
+{
+  "format_version": 1,
+  "app_version": "0.1.0",
+  "project": {
+    "settings": {
+      "ppq": 96,
+      "tempo": 130000,
+      "time_sig": {
+        "num": 4,
+        "den": 4
+      },
+      "steps_per_beat": 4,
+      "swing": 0,
+      "main_volume": 1000,
+      "main_pitch": 0,
+      "pan_law": "Circular"
+    },
+    "channels": [
+      {
+        "id": 1,
+        "name": "synths_1",
+        "color": null,
+        "kind": {
+          "AudioClip": {
+            "sample": 1
+          }
+        },
+        "mute": false,
+        "volume": 1000,
+        "pan": 0,
+        "mixer_target": 0,
+        "group": null,
+        "pitch": 0,
+        "root_key": 60,
+        "swing_mix": 1000,
+        "cut": 0,
+        "cut_by": 0,
+        "sampler": {
+          "start": 0,
+          "looping": "Off",
+          "loop_start": 0,
+          "loop_end": 1000,
+          "reverse": false,
+          "envelope": null
+        },
+        "polyphony": {
+          "max": 0,
+          "mono": false
+        }
+      },
+      {
+        "id": 2,
+        "name": "Sampler",
+        "color": null,
+        "kind": {
+          "Sampler": {
+            "sample": null
+          }
+        },
+        "mute": false,
+        "volume": 781,
+        "pan": 0,
+        "mixer_target": 0,
+        "group": null,
+        "pitch": 0,
+        "root_key": 60,
+        "swing_mix": 1000,
+        "cut": 0,
+        "cut_by": 0,
+        "sampler": {
+          "start": 0,
+          "looping": "Off",
+          "loop_start": 0,
+          "loop_end": 1000,
+          "reverse": false,
+          "envelope": null
+        },
+        "polyphony": {
+          "max": 0,
+          "mono": false
+        }
+      },
+      {
+        "id": 3,
+        "name": "Sampler",
+        "color": null,
+        "kind": {
+          "Sampler": {
+            "sample": null
+          }
+        },
+        "mute": false,
+        "volume": 781,
+        "pan": 0,
+        "mixer_target": 0,
+        "group": null,
+        "pitch": 0,
+        "root_key": 60,
+        "swing_mix": 1000,
+        "cut": 0,
+        "cut_by": 0,
+        "sampler": {
+          "start": 0,
+          "looping": "Off",
+          "loop_start": 0,
+          "loop_end": 1000,
+          "reverse": false,
+          "envelope": null
+        },
+        "polyphony": {
+          "max": 0,
+          "mono": false
+        }
+      }
+    ],
+    "patterns": [
+      {
+        "id": 1,
+        "name": "Pattern 1",
+        "color": null,
+        "length": "Auto",
+        "steps": {
+          "2": {
+            "cells": [
+              {
+                "on": false,
+                "props": {
+                  "velocity": 100,
+                  "pan": 0,
+                  "release": 0,
+                  "pitch": 0,
+                  "mod_x": 0,
+                  "mod_y": 0,
+                  "shift": 0,
+                  "note": 60
+                }
+              },
+              {
+                "on": false,
+                "props": {
+                  "velocity": 100,
+                  "pan": 0,
+                  "release": 0,
+                  "pitch": 0,
+                  "mod_x": 0,
+                  "mod_y": 0,
+                  "shift": 0,
+                  "note": 60
+                }
+              },
+              {
+                "on": false,
+                "props": {
+                  "velocity": 100,
+                  "pan": 0,
+                  "release": 0,
+                  "pitch": 0,
+                  "mod_x": 0,
+                  "mod_y": 0,
+                  "shift": 0,
+                  "note": 60
+                }
+              },
+              {
+                "on": false,
+                "props": {
+                  "velocity": 100,
+                  "pan": 0,
+                  "release": 0,
+                  "pitch": 0,
+                  "mod_x": 0,
+                  "mod_y": 0,
+                  "shift": 0,
+                  "note": 60
+                }
+              },
+              {
+                "on": false,
+                "props": {
+                  "velocity": 100,
+                  "pan": 0,
+                  "release": 0,
+                  "pitch": 0,
+                  "mod_x": 0,
+                  "mod_y": 0,
+                  "shift": 0,
+                  "note": 60
+                }
+              },
+              {
+                "on": true,
+                "props": {
+                  "velocity": 100,
+                  "pan": 0,
+                  "release": 0,
+                  "pitch": 0,
+                  "mod_x": 0,
+                  "mod_y": 0,
+                  "shift": 0,
+                  "note": 60
+                }
+              },
+              {
+                "on": true,
+                "props": {
+                  "velocity": 100,
+                  "pan": 0,
+                  "release": 0,
+                  "pitch": 0,
+                  "mod_x": 0,
+                  "mod_y": 0,
+                  "shift": 0,
+                  "note": 60
+                }
+              },
+              {
+                "on": false,
+                "props": {
+                  "velocity": 100,
+                  "pan": 0,
+                  "release": 0,
+                  "pitch": 0,
+                  "mod_x": 0,
+                  "mod_y": 0,
+                  "shift": 0,
+                  "note": 60
+                }
+              },
+              {
+                "on": true,
+                "props": {
+                  "velocity": 100,
+                  "pan": 0,
+                  "release": 0,
+                  "pitch": 0,
+                  "mod_x": 0,
+                  "mod_y": 0,
+                  "shift": 0,
+                  "note": 60
+                }
+              },
+              {
+                "on": false,
+                "props": {
+                  "velocity": 100,
+                  "pan": 0,
+                  "release": 0,
+                  "pitch": 0,
+                  "mod_x": 0,
+                  "mod_y": 0,
+                  "shift": 0,
+                  "note": 60
+                }
+              },
+              {
+                "on": false,
+                "props": {
+                  "velocity": 100,
+                  "pan": 0,
+                  "release": 0,
+                  "pitch": 0,
+                  "mod_x": 0,
+                  "mod_y": 0,
+                  "shift": 0,
+                  "note": 60
+                }
+              },
+              {
+                "on": false,
+                "props": {
+                  "velocity": 100,
+                  "pan": 0,
+                  "release": 0,
+                  "pitch": 0,
+                  "mod_x": 0,
+                  "mod_y": 0,
+                  "shift": 0,
+                  "note": 60
+                }
+              },
+              {
+                "on": false,
+                "props": {
+                  "velocity": 100,
+                  "pan": 0,
+                  "release": 0,
+                  "pitch": 0,
+                  "mod_x": 0,
+                  "mod_y": 0,
+                  "shift": 0,
+                  "note": 60
+                }
+              },
+              {
+                "on": true,
+                "props": {
+                  "velocity": 100,
+                  "pan": 0,
+                  "release": 0,
+                  "pitch": 0,
+                  "mod_x": 0,
+                  "mod_y": 0,
+                  "shift": 0,
+                  "note": 60
+                }
+              }
+            ]
+          }
+        },
+        "notes": {
+          "3": [
+            {
+              "start": 0,
+              "length": 24,
+              "key": 36,
+              "velocity": 100,
+              "pan": 0,
+              "release": 0,
+              "fine_pitch": 0,
+              "mod_x": 0,
+              "mod_y": 0,
+              "muted": false,
+              "slide": false,
+              "porta": false,
+              "color": 0
+            },
+            {
+              "start": 24,
+              "length": 24,
+              "key": 36,
+              "velocity": 100,
+              "pan": 0,
+              "release": 0,
+              "fine_pitch": 0,
+              "mod_x": 0,
+              "mod_y": 0,
+              "muted": false,
+              "slide": false,
+              "porta": false,
+              "color": 0
+            },
+            {
+              "start": 24,
+              "length": 24,
+              "key": 101,
+              "velocity": 100,
+              "pan": 0,
+              "release": 0,
+              "fine_pitch": 0,
+              "mod_x": 0,
+              "mod_y": 0,
+              "muted": false,
+              "slide": false,
+              "porta": false,
+              "color": 0
+            },
+            {
+              "start": 48,
+              "length": 24,
+              "key": 36,
+              "velocity": 100,
+              "pan": 0,
+              "release": 0,
+              "fine_pitch": 0,
+              "mod_x": 0,
+              "mod_y": 0,
+              "muted": false,
+              "slide": false,
+              "porta": false,
+              "color": 0
+            },
+            {
+              "start": 72,
+              "length": 24,
+              "key": 36,
+              "velocity": 100,
+              "pan": 0,
+              "release": 0,
+              "fine_pitch": 0,
+              "mod_x": 0,
+              "mod_y": 0,
+              "muted": false,
+              "slide": false,
+              "porta": false,
+              "color": 0
+            },
+            {
+              "start": 72,
+              "length": 24,
+              "key": 99,
+              "velocity": 100,
+              "pan": 0,
+              "release": 0,
+              "fine_pitch": 0,
+              "mod_x": 0,
+              "mod_y": 0,
+              "muted": false,
+              "slide": false,
+              "porta": false,
+              "color": 0
+            },
+            {
+              "start": 144,
+              "length": 24,
+              "key": 90,
+              "velocity": 100,
+              "pan": 0,
+              "release": 0,
+              "fine_pitch": 0,
+              "mod_x": 0,
+              "mod_y": 0,
+              "muted": false,
+              "slide": false,
+              "porta": false,
+              "color": 0
+            },
+            {
+              "start": 144,
+              "length": 24,
+              "key": 93,
+              "velocity": 100,
+              "pan": 0,
+              "release": 0,
+              "fine_pitch": 0,
+              "mod_x": 0,
+              "mod_y": 0,
+              "muted": false,
+              "slide": false,
+              "porta": false,
+              "color": 0
+            },
+            {
+              "start": 144,
+              "length": 24,
+              "key": 98,
+              "velocity": 100,
+              "pan": 0,
+              "release": 0,
+              "fine_pitch": 0,
+              "mod_x": 0,
+              "mod_y": 0,
+              "muted": false,
+              "slide": false,
+              "porta": false,
+              "color": 0
+            },
+            {
+              "start": 168,
+              "length": 24,
+              "key": 97,
+              "velocity": 100,
+              "pan": 0,
+              "release": 0,
+              "fine_pitch": 0,
+              "mod_x": 0,
+              "mod_y": 0,
+              "muted": false,
+              "slide": false,
+              "porta": false,
+              "color": 0
+            }
+          ]
+        }
+      }
+    ],
+    "arrangements": [
+      {
+        "id": 1,
+        "name": "Arrangement",
+        "tracks": [
+          {
+            "id": 1,
+            "name": "Track 1",
+            "color": null,
+            "height": 1,
+            "mute": false
+          },
+          {
+            "id": 2,
+            "name": "Track 2",
+            "color": null,
+            "height": 1,
+            "mute": false
+          },
+          {
+            "id": 3,
+            "name": "Track 3",
+            "color": null,
+            "height": 1,
+            "mute": false
+          },
+          {
+            "id": 4,
+            "name": "Track 4",
+            "color": null,
+            "height": 1,
+            "mute": false
+          },
+          {
+            "id": 5,
+            "name": "Track 5",
+            "color": null,
+            "height": 1,
+            "mute": false
+          },
+          {
+            "id": 6,
+            "name": "Track 6",
+            "color": null,
+            "height": 1,
+            "mute": false
+          },
+          {
+            "id": 7,
+            "name": "Track 7",
+            "color": null,
+            "height": 1,
+            "mute": false
+          },
+          {
+            "id": 8,
+            "name": "Track 8",
+            "color": null,
+            "height": 1,
+            "mute": false
+          },
+          {
+            "id": 9,
+            "name": "Track 9",
+            "color": null,
+            "height": 1,
+            "mute": false
+          },
+          {
+            "id": 10,
+            "name": "Track 10",
+            "color": null,
+            "height": 1,
+            "mute": false
+          },
+          {
+            "id": 11,
+            "name": "Track 11",
+            "color": null,
+            "height": 1,
+            "mute": false
+          },
+          {
+            "id": 12,
+            "name": "Track 12",
+            "color": null,
+            "height": 1,
+            "mute": false
+          },
+          {
+            "id": 13,
+            "name": "Track 13",
+            "color": null,
+            "height": 1,
+            "mute": false
+          }
+        ],
+        "clips": [
+          {
+            "id": 1,
+            "track": 1,
+            "start": 0,
+            "length": 879,
+            "offset": 0,
+            "source": {
+              "Audio": 1
+            },
+            "muted": false
+          },
+          {
+            "id": 2,
+            "track": 13,
+            "start": 0,
+            "length": 384,
+            "offset": 0,
+            "source": {
+              "Pattern": 1
+            },
+            "muted": false
+          },
+          {
+            "id": 3,
+            "track": 10,
+            "start": 2304,
+            "length": 384,
+            "offset": 0,
+            "source": {
+              "Pattern": 1
+            },
+            "muted": false
+          }
+        ],
+        "markers": []
+      }
+    ],
+    "active_arrangement": 1,
+    "mixer": {
+      "master": {
+        "name": "Master",
+        "volume": 800,
+        "pan": 0,
+        "mute": false,
+        "stereo_sep": 0,
+        "invert_phase": false,
+        "swap_lr": false,
+        "to_master": true,
+        "sends": [],
+        "fx": [],
+        "fx_enabled": true
+      },
+      "current": {
+        "name": "Current",
+        "volume": 800,
+        "pan": 0,
+        "mute": false,
+        "stereo_sep": 0,
+        "invert_phase": false,
+        "swap_lr": false,
+        "to_master": true,
+        "sends": [],
+        "fx": [],
+        "fx_enabled": true
+      },
+      "inserts": []
+    },
+    "resources": [
+      {
+        "id": 1,
+        "path_rel": "C:\\Users\\joaop\\Downloads\\synths_1.ogg",
+        "path_abs_hint": "C:\\Users\\joaop\\Downloads\\synths_1.ogg",
+        "hash": null,
+        "status": "Available"
+      }
+    ],
+    "ids": {
+      "next_channel": 4,
+      "next_pattern": 2,
+      "next_arrangement": 2,
+      "next_track": 14,
+      "next_clip": 4,
+      "next_resource": 2,
+      "next_automation": 1
+    },
+    "automations": []
+  }
+}

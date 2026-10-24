@@ -80,7 +80,7 @@
 | GLB-018 | Gerenciamento de janelas | [Manual: basics_windows] | Janelas flutuantes que encaixam umas nas outras (Alt desliga), maximizar, F5/F6/F7/F9, F12 fecha todas | — | M | P0 | Testado (Playlist, Channel rack, Piano roll, Mixer) | `workspace::tests::*` |
 | GLB-019 | Detach de janelas | [Manual: basics_windows] | Janela vira janela do sistema operacional | GLB-018 | M | P3 | Pesquisado | — |
 | GLB-020 | Atalhos globais | [Manual: basics_shortcuts] | F5, F6, F7, F9, Alt+F8, Ctrl+S/O, Space, L, F4, +/−, Ctrl+Z, Ctrl+L, Ctrl+R | — | S | P1 | Implementado (lista ao lado) | `app::tests::*` |
-| GLB-021 | Configurações (F10) | [Manual: envsettings_*] | Áudio, MIDI, general, arquivos | AE | L | P1 | Pesquisado (o dispositivo de áudio é o padrão do sistema; falta a janela) | — |
+| GLB-021 | Configurações (F10) | [Manual: envsettings_*] "press F10 to open the settings panel" | Áudio, MIDI, general, arquivos | AE | L | P1 | Parcialmente compatível: aba Audio (dispositivo, taxa, buffer com latência, status, callbacks atrasados), guardada em `Documentos/JetStudio/settings.json`; faltam MIDI, General, File | `f10_opens_audio_settings_and_apply_keeps_the_choice` |
 | GLB-022 | Personalização do toolbar | [Manual: toolbar_panels] | Painéis configuráveis | — | M | P3 | Pesquisado | — |
 | GLB-023 | Main volume / main pitch | [Manual: toolbar_panels] | Knobs globais | AE | S | P2 | Pesquisado (campos no modelo, sem efeito no áudio) | — |
 
@@ -230,7 +230,7 @@
 | AE-001 | Saída em tempo real | [Manual: envsettings_audio] | Dispositivo padrão (WASAPI via cpal 0.18.2) | cpal | M | P0 | Testado (medido: 48 kHz, buffer de 480, 0 overruns) | `jet-cli play` (manual) |
 | AE-002 | Callback sem alocar e sem lock | [ARQ §1.5] | — | — | M | P0 | Testado | `processing_a_busy_project_does_not_allocate` (o detector foi conferido com um `vec!` inserido de propósito) |
 | AE-003 | Sequenciamento exato por amostra | — | O evento soa no 1º frame com tick ≥ T, igual à fórmula do transporte | jet-seq | M | P0 | Testado | `steps_start_on_their_exact_frame`, `rendering_is_independent_of_block_size` |
-| AE-004 | Sample rate e buffer configuráveis | "Sample Rate", "Buffer Length" | — | AE-001 | S | P1 | Parcialmente compatível (`OutputRequest`; sem UI) | — |
+| AE-004 | Sample rate e buffer configuráveis | "Sample Rate", "Buffer Length" | Pedido recusado volta ao padrão do dispositivo | AE-001 | S | P1 | Testado no hardware (`jet-cli play --rate/--buffer/--device`: 22 050 Hz/256 aceitos; 1 MHz cai para 48 kHz com aviso; dispositivo por nome) e na UI | `f10_opens_audio_settings...` |
 | AE-005 | Render offline idêntico ao playback | [ARQ M2] | — | — | M | P0 | Testado | `offline_render_leaves_the_remainder_and_matches_live_playback` |
 | AE-006 | Export WAV 16/24/32 float | [Manual: fformats_save_export] | Modo Song/Pattern, Tail leave/cut/wrap, taxa 22–192 kHz | AE-005 | M | P0 | Testado | `wav_round_trips...`, testes de `jet-engine/tests/audio.rs` |
 | AE-007 | Export MP3/OGG/FLAC | idem | Licenças do encoder | — | M | P2 | Pesquisado (requer encoder de licença compatível; LAME é LGPL e é proibido pela ADR) | — |

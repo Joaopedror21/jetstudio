@@ -41,6 +41,7 @@ fn run_commands(args: &[String], play: bool) -> Result<(), String> {
     let mut project_path: Option<PathBuf> = None;
     let mut save_path: Option<PathBuf> = None;
     let mut seconds = 2.0_f64;
+    let mut request = jet_playback::OutputRequest::default();
     let mut commands = Vec::new();
     let mut index = 0;
     while index < args.len() {
@@ -53,6 +54,21 @@ fn run_commands(args: &[String], play: bool) -> Result<(), String> {
             "--project" => project_path = Some(PathBuf::from(value)),
             "--save" => save_path = Some(PathBuf::from(value)),
             "--cmd" => commands.push(value.clone()),
+            "--device" if play => request.device = Some(value.clone()),
+            "--rate" if play => {
+                request.rate = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("invalid --rate {value}"))?,
+                );
+            }
+            "--buffer" if play => {
+                request.buffer_frames = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("invalid --buffer {value}"))?,
+                );
+            }
             "--seconds" if play => {
                 seconds = value
                     .parse::<f64>()
@@ -84,7 +100,7 @@ fn run_commands(args: &[String], play: bool) -> Result<(), String> {
         jet_format::save_atomic(&path, session.project()).map_err(|e| e.to_string())?;
     }
     if play {
-        return play_session(session, seconds);
+        return play_session(session, seconds, request);
     }
     print_json(
         &json!({ "outcomes": outcomes, "project": session.project(), "transport": session.transport_snapshot() }),
@@ -92,12 +108,16 @@ fn run_commands(args: &[String], play: bool) -> Result<(), String> {
 }
 
 /// Play the session on the default output device and report what the callback measured.
-fn play_session(mut session: Session, seconds: f64) -> Result<(), String> {
-    use jet_playback::{AudioOutput, OutputRequest};
+fn play_session(
+    mut session: Session,
+    seconds: f64,
+    request: jet_playback::OutputRequest,
+) -> Result<(), String> {
+    use jet_playback::AudioOutput;
     use std::sync::atomic::Ordering;
     let output = {
         let session = &session;
-        AudioOutput::open(OutputRequest::default(), |rate| session.build_plan(rate))
+        AudioOutput::open(request, |rate| session.build_plan(rate))
     };
     let mut output = output.map_err(|e| e.to_string())?;
     session.set_clock(Box::new(output.clock()));
@@ -133,6 +153,9 @@ fn play_session(mut session: Session, seconds: f64) -> Result<(), String> {
         "rate": info.rate,
         "channels": info.channels,
         "format": info.format,
+        "buffer_requested_or_default": info.buffer,
+        "fell_back_to_default": info.fallback,
+        "devices": jet_playback::output_devices(),
         "callbacks": stats.callbacks.load(Ordering::Relaxed),
         "last_buffer_frames": stats.last_buffer_frames.load(Ordering::Relaxed),
         "overruns": stats.overruns.load(Ordering::Relaxed),

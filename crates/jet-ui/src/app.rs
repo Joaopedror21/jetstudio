@@ -9,6 +9,7 @@ use jet_model::{ChannelId, ChannelKind, ClipSource};
 use jet_playback::{AudioOutput, OutputRequest};
 use serde_json::{Value, json};
 
+use crate::audio_settings::{AudioSettingsAction, AudioSettingsView, paint_audio_settings};
 use crate::browser::{BrowserState, paint_browser};
 use crate::channel_rack::{
     ChannelView, RackAction, RackMenu, RackState, RackView, paint_channel_rack,
@@ -77,6 +78,15 @@ const TYPING_KEYS: [(Key, u8); 29] = [
 
 pub struct JetApp {
     session: Session,
+    /// Device settings in use and the ones being edited in the F10 window.
+    audio_request: OutputRequest,
+    audio_pending: OutputRequest,
+    device_list: Vec<String>,
+    audio_error: Option<String>,
+    /// Where the audio settings are kept (`None` in tests and screenshots).
+    settings_file: Option<std::path::PathBuf>,
+    /// True when the app may open audio hardware (never in tests or screenshots).
+    hardware_audio: bool,
     /// Waveform columns per decoded resource, computed once (drawing only).
     waveforms: std::collections::HashMap<jet_model::ResourceId, Vec<(f32, f32)>>,
     audio: Option<AudioHost>,
@@ -109,6 +119,12 @@ impl Default for JetApp {
     fn default() -> Self {
         Self {
             session: Session::new_default(),
+            audio_request: OutputRequest::default(),
+            audio_pending: OutputRequest::default(),
+            device_list: Vec::new(),
+            audio_error: None,
+            settings_file: None,
+            hardware_audio: false,
             waveforms: std::collections::HashMap::new(),
             audio: None,
             audio_status: None,
@@ -144,6 +160,7 @@ enum UiAction {
     Piano(PianoAction),
     Mixer(MixerAction),
     Settings(SettingsAction),
+    AudioSettings(AudioSettingsAction),
     ToggleTyping,
     OpenProject,
     SaveProject,
@@ -173,35 +190,148 @@ impl JetApp {
         let documents = std::env::var_os("USERPROFILE")
             .or_else(|| std::env::var_os("HOME"))
             .map(|home| std::path::PathBuf::from(home).join("Documents"));
-        app.session
-            .set_backup_dir(documents.map(|d| d.join("JetStudio").join("Backup")));
-        let session = &app.session;
-        match AudioOutput::open(OutputRequest::default(), |rate| session.build_plan(rate)) {
-            Ok(output) => {
-                app.session.set_clock(Box::new(output.clock()));
-                app.audio_status = Some(format!(
-                    "{} Hz - {}",
-                    output.info().rate,
-                    output.info().name
-                ));
-                let mut output = output;
+        app.session.set_backup_dir(
+            documents
+                .as_ref()
+                .map(|d| d.join("JetStudio").join("Backup")),
+        );
+        app.settings_file = documents.map(|d| d.join("JetStudio").join("settings.json"));
+        app.audio_request = app.load_audio_settings();
+        app.audio_pending = app.audio_request.clone();
+        app.hardware_audio = true;
+        app.open_audio();
+        app
+    }
+
+    fn load_audio_settings(&self) -> OutputRequest {
+        let Some(value) = self
+            .settings_file
+            .as_ref()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        else {
+            return OutputRequest::default();
+        };
+        let audio = &value["audio"];
+        OutputRequest {
+            device: audio["device"].as_str().map(str::to_owned),
+            rate: audio["rate"].as_u64().map(|r| r as u32),
+            buffer_frames: audio["buffer_frames"].as_u64().map(|f| f as u32),
+        }
+    }
+
+    fn save_audio_settings(&mut self) {
+        let Some(path) = &self.settings_file else {
+            return;
+        };
+        let value = json!({ "audio": {
+            "device": self.audio_request.device,
+            "rate": self.audio_request.rate,
+            "buffer_frames": self.audio_request.buffer_frames,
+        }});
+        let written = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(path, value.to_string()));
+        if let Err(error) = written {
+            self.last_error = Some(format!("Could not save the audio settings: {error}"));
+        }
+    }
+
+    /// (Re)open the output device with `audio_request`. Audio the old stream may still hold
+    /// moves to the new host's graveyard; the musical position carries over.
+    fn open_audio(&mut self) {
+        if !self.hardware_audio {
+            return;
+        }
+        let graveyard = self
+            .audio
+            .take()
+            .map(|host| {
+                let mut graveyard = host.graveyard;
+                graveyard.extend(host.preview_hold);
+                // Dropping `host` stops its stream before the new one starts.
+                graveyard
+            })
+            .unwrap_or_default();
+        let session = &self.session;
+        match AudioOutput::open(self.audio_request.clone(), |rate| session.build_plan(rate)) {
+            Ok(mut output) => {
+                self.session.set_clock(Box::new(output.clock()));
+                let info = output.info().clone();
                 let midi = output.open_midi_inputs().ok();
-                if let (Some(midi), Some(status)) = (&midi, &mut app.audio_status) {
-                    *status = format!("MIDI in: {} - {status}", midi.names.len());
-                }
-                app.audio = Some(AudioHost {
+                self.audio_status = Some(format!(
+                    "MIDI in: {} - {} Hz - {}",
+                    midi.as_ref().map_or(0, |m| m.names.len()),
+                    info.rate,
+                    info.name
+                ));
+                self.audio_error = None;
+                self.audio = Some(AudioHost {
                     output,
                     last_key: None,
-                    graveyard: Vec::new(),
+                    graveyard,
                     preview_hold: None,
                     scope: vec![0.0; 256],
                     cpu: 0.0,
                     midi,
                 });
             }
-            Err(error) => app.audio_status = Some(format!("Audio output unavailable: {error}")),
+            Err(error) => {
+                self.session
+                    .set_clock(Box::new(jet_engine::WallClock::default()));
+                self.audio_status = Some(format!("Audio output unavailable: {error}"));
+                self.audio_error = Some(error.to_string());
+            }
         }
-        app
+    }
+
+    fn audio_settings_view(&self) -> AudioSettingsView {
+        AudioSettingsView {
+            devices: self.device_list.clone(),
+            pending: (
+                self.audio_pending.device.clone(),
+                self.audio_pending.rate,
+                self.audio_pending.buffer_frames,
+            ),
+            running: match &self.audio {
+                Some(host) => Ok(host.output.info().clone()),
+                None => Err(self
+                    .audio_error
+                    .clone()
+                    .unwrap_or_else(|| "not opened".to_owned())),
+            },
+            callbacks: self.audio.as_ref().map_or(0, |h| {
+                h.output
+                    .stats()
+                    .callbacks
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            }),
+            late: self.audio.as_ref().map_or(0, |h| {
+                h.output
+                    .stats()
+                    .overruns
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            }),
+            load: self.audio.as_ref().map_or(0.0, |h| h.cpu),
+        }
+    }
+
+    fn run_audio_settings(&mut self, action: AudioSettingsAction) {
+        match action {
+            AudioSettingsAction::Device(device) => self.audio_pending.device = device,
+            AudioSettingsAction::Rate(rate) => self.audio_pending.rate = rate,
+            AudioSettingsAction::Buffer(frames) => self.audio_pending.buffer_frames = frames,
+            AudioSettingsAction::Refresh if self.hardware_audio => {
+                self.device_list = jet_playback::output_devices();
+            }
+            AudioSettingsAction::Refresh => {}
+            AudioSettingsAction::Apply => {
+                self.audio_request = self.audio_pending.clone();
+                self.open_audio();
+                self.save_audio_settings();
+            }
+        }
     }
 
     /// Mirror the session into the audio thread: plans, transport, panic, garbage.
@@ -777,6 +907,7 @@ impl JetApp {
             UiAction::Rack(action) => self.run_rack(action),
             UiAction::Piano(action) => self.run_piano(action),
             UiAction::Mixer(action) => self.run_mixer(action),
+            UiAction::AudioSettings(action) => self.run_audio_settings(action),
             UiAction::Settings(action) => match action {
                 SettingsAction::Engine {
                     id,
@@ -1013,6 +1144,15 @@ impl JetApp {
         }
         if pressed(Key::F9) {
             actions.push(UiAction::Workspace(WsAction::Toggle(WindowKind::Mixer)));
+        }
+        // F10 opens the settings [Manual: envsettings_audio, "press F10 to open the settings panel"].
+        if pressed(Key::F10) {
+            if self.device_list.is_empty() && self.hardware_audio {
+                self.device_list = jet_playback::output_devices();
+            }
+            actions.push(UiAction::Workspace(WsAction::Toggle(
+                WindowKind::AudioSettings,
+            )));
         }
         if pressed(Key::F8) && modifiers.alt {
             actions.push(UiAction::Workspace(WsAction::ToggleBrowser));
@@ -1536,6 +1676,7 @@ impl JetApp {
         }
         self.cache_waveforms();
         let settings_view = self.settings_view();
+        let audio_settings_view = self.audio_settings_view();
         let toolbar_view = self.toolbar_view();
         let rack_view = self.rack_view();
         let playlist_view = self.playlist_view();
@@ -1592,6 +1733,7 @@ impl JetApp {
                 mixer_state: &mut self.mixer,
                 mixer_view: &mixer_view,
                 settings_view: settings_view.as_ref(),
+                audio_settings_view: &audio_settings_view,
                 focused,
             };
             for win in windows.iter().filter(|win| win.visible) {
@@ -1690,6 +1832,7 @@ struct Surfaces<'a> {
     mixer_state: &'a mut MixerState,
     mixer_view: &'a MixerView,
     settings_view: Option<&'a ChannelSettingsData>,
+    audio_settings_view: &'a AudioSettingsView,
     focused: Option<WindowKind>,
 }
 
@@ -1736,7 +1879,8 @@ fn paint_window(
         WindowKind::ChannelRack
         | WindowKind::PianoRoll
         | WindowKind::Mixer
-        | WindowKind::ChannelSettings => 22.0,
+        | WindowKind::ChannelSettings
+        | WindowKind::AudioSettings => 22.0,
     };
     let title_drag = Rect::from_min_max(
         pos2(title.left() + drag_left, title.top()),
@@ -1806,8 +1950,13 @@ fn paint_window(
                     .map(UiAction::Rack),
             );
         }
-        WindowKind::PianoRoll | WindowKind::Mixer | WindowKind::ChannelSettings => {
-            let label = if win.kind == WindowKind::ChannelSettings {
+        WindowKind::PianoRoll
+        | WindowKind::Mixer
+        | WindowKind::ChannelSettings
+        | WindowKind::AudioSettings => {
+            let label = if win.kind == WindowKind::AudioSettings {
+                "Settings - Audio".to_owned()
+            } else if win.kind == WindowKind::ChannelSettings {
                 surfaces
                     .settings_view
                     .map_or_else(|| "Channel settings".to_owned(), |c| c.name.clone())
@@ -1902,6 +2051,14 @@ fn paint_window(
                 paint_mixer(paint, surfaces.mixer_state, surfaces.mixer_view, content)
                     .into_iter()
                     .map(UiAction::Mixer),
+            );
+        }
+        WindowKind::AudioSettings => {
+            let content = Rect::from_min_max(pos2(rect.left(), title.bottom()), rect.max);
+            actions.extend(
+                paint_audio_settings(paint, surfaces.audio_settings_view, content)
+                    .into_iter()
+                    .map(UiAction::AudioSettings),
             );
         }
         WindowKind::ChannelSettings => {
@@ -2531,5 +2688,26 @@ mod tests {
         assert_eq!(clips[0].start.0 % 96, 0, "snapped to a beat");
         assert!(app.browser.dragging.is_none());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn f10_opens_audio_settings_and_apply_keeps_the_choice() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        toggle(&mut app, &ctx, Key::F10);
+        assert!(app.probe().entries().contains_key("audio-settings.window"));
+        // Rate choice index 2 is 48 000 Hz (0 = device default).
+        let rate = app.probe().entries()["audio-settings.rate.2"].rect;
+        click(&mut app, &ctx, rate);
+        let buffer = app.probe().entries()["audio-settings.buffer.3"].rect;
+        click(&mut app, &ctx, buffer);
+        assert_eq!(app.audio_pending.rate, Some(48_000));
+        assert_eq!(app.audio_pending.buffer_frames, Some(512));
+        assert_eq!(app.audio_request.rate, None, "nothing changes before Apply");
+        let apply = app.probe().entries()["audio-settings.apply"].rect;
+        click(&mut app, &ctx, apply);
+        assert_eq!(app.audio_request.rate, Some(48_000));
+        assert!(app.audio.is_none(), "tests never open audio hardware");
     }
 }

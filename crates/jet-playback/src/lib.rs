@@ -96,6 +96,8 @@ pub struct DeviceInfo {
     pub channels: u16,
     pub format: String,
     pub buffer: Option<u32>,
+    /// The requested rate/buffer was refused and the device default is in use.
+    pub fallback: bool,
 }
 
 pub struct AudioOutput {
@@ -218,38 +220,78 @@ impl Callback {
     }
 }
 
-/// Requested device settings [Manual: envsettings_audio, sample rate and buffer length].
-#[derive(Clone, Copy, Debug, Default)]
+/// Requested device settings [Manual: envsettings_audio, "Device", "Sample Rate",
+/// "Buffer Length"]. `None` fields use the device defaults.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OutputRequest {
+    /// Output device name as listed by [`output_devices`].
+    pub device: Option<String>,
     pub rate: Option<u32>,
     pub buffer_frames: Option<u32>,
 }
 
+fn device_name(device: &cpal::Device) -> String {
+    device
+        .description()
+        .map(|d| d.name().to_owned())
+        .unwrap_or_else(|_| "Audio output".to_owned())
+}
+
+/// Names of the output devices of the default host (WASAPI on Windows).
+pub fn output_devices() -> Vec<String> {
+    cpal::default_host()
+        .output_devices()
+        .map(|devices| devices.map(|d| device_name(&d)).collect())
+        .unwrap_or_default()
+}
+
 impl AudioOutput {
-    /// Open the default output device. `initial` is the first plan to play.
+    /// Open an output device. If the requested rate or buffer is refused (shared-mode devices
+    /// only run at their own rate), the device's default configuration is used and
+    /// [`DeviceInfo::fallback`] says so. `initial` builds the first plan for a sample rate.
     pub fn open(
         request: OutputRequest,
-        initial: impl FnOnce(u32) -> RenderPlan,
+        initial: impl Fn(u32) -> RenderPlan,
     ) -> Result<Self, PlaybackError> {
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or(PlaybackError::NoDevice)?;
-        let name = device
-            .description()
-            .map(|d| d.name().to_owned())
-            .unwrap_or_else(|_| "Default output".to_owned());
+        let device = match &request.device {
+            Some(wanted) => host
+                .output_devices()
+                .ok()
+                .and_then(|mut devices| devices.find(|d| device_name(d) == *wanted))
+                .or_else(|| host.default_output_device()),
+            None => host.default_output_device(),
+        }
+        .ok_or(PlaybackError::NoDevice)?;
         let supported = device
             .default_output_config()
             .map_err(|e| PlaybackError::Config(e.to_string()))?;
         let format = supported.sample_format();
-        let mut config: StreamConfig = supported.config();
+        let default_config: StreamConfig = supported.config();
+        let mut config = default_config;
         if let Some(rate) = request.rate {
             config.sample_rate = rate;
         }
         if let Some(frames) = request.buffer_frames {
             config.buffer_size = BufferSize::Fixed(frames);
         }
+        match Self::start(&device, config, format, &initial) {
+            Ok(output) => Ok(output),
+            Err(_) if config != default_config => {
+                let mut output = Self::start(&device, default_config, format, &initial)?;
+                output.info.fallback = true;
+                Ok(output)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn start(
+        device: &cpal::Device,
+        config: StreamConfig,
+        format: SampleFormat,
+        initial: &dyn Fn(u32) -> RenderPlan,
+    ) -> Result<Self, PlaybackError> {
         let rate = config.sample_rate;
         let channels = config.channels;
         let frames = Arc::new(AtomicU64::new(0));
@@ -277,7 +319,7 @@ impl AudioOutput {
         let on_error = move |_error: cpal::Error| {
             error_stats.failed.store(true, Ordering::Relaxed);
         };
-        let stream = build(&device, config, format, callback, on_error)?;
+        let stream = build(device, config, format, callback, on_error)?;
         stream
             .play()
             .map_err(|e| PlaybackError::Stream(e.to_string()))?;
@@ -289,7 +331,7 @@ impl AudioOutput {
             meters,
             stats,
             info: DeviceInfo {
-                name,
+                name: device_name(device),
                 rate,
                 channels,
                 format: format!("{format:?}"),
@@ -297,6 +339,7 @@ impl AudioOutput {
                     BufferSize::Fixed(frames) => Some(frames),
                     BufferSize::Default => None,
                 },
+                fallback: false,
             },
             last_sync: None,
             midi_sink: Some(midi_sink),

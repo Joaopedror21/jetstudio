@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod audio_settings;
 mod browser;
 mod channel_rack;
 mod channel_settings;
