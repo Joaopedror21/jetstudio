@@ -1,4 +1,5 @@
 //! Stable command identifiers shared by CLI, UI and future control clients.
+mod arrangement;
 mod automation;
 mod channel;
 mod edit;
@@ -854,6 +855,63 @@ static SPECS: &[CommandSpec] = &[
         Step
     ),
     spec!(
+        "arrangement.add",
+        "Add one",
+        "",
+        None,
+        "{name?:string}",
+        Step
+    ),
+    spec!("arrangement.clone", "Clone", "", None, "{}", Step),
+    spec!(
+        "arrangement.select",
+        "Select arrangement",
+        "",
+        None,
+        "{id:uint}",
+        Step
+    ),
+    spec!(
+        "arrangement.rename",
+        "Rename arrangement",
+        "",
+        None,
+        "{id:uint,name:string}",
+        Step
+    ),
+    spec!(
+        "arrangement.delete",
+        "Delete arrangement",
+        "",
+        None,
+        "{id:uint}",
+        Step
+    ),
+    spec!(
+        "marker.add",
+        "Add time marker",
+        "",
+        Some("Alt+T"),
+        "{at:int,name?:string}",
+        Step
+    ),
+    spec!(
+        "marker.delete",
+        "Delete time marker",
+        "",
+        None,
+        "{index:uint}",
+        Step
+    ),
+    spec!(
+        "marker.rename",
+        "Rename time marker",
+        "",
+        None,
+        "{index:uint,name:string}",
+        Step
+    ),
+    spec!(
         "automation.create",
         "Create automation clip",
         "",
@@ -954,6 +1012,7 @@ pub(super) fn dispatch(session: &mut Session, id: &str, params: Value) -> Result
         Some("note") => note::run(session, id, params),
         Some("mixer") => mixer::run(session, id, params),
         Some("automation") => automation::run(session, id, params),
+        Some("arrangement") | Some("marker") => arrangement::run(session, id, params),
         _ => Err(CmdError::UnknownCommand(id.to_owned())),
     }
 }

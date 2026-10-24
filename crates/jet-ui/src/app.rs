@@ -1155,6 +1155,21 @@ impl JetApp {
                 PlaylistAction::SoloTrack(id) => {
                     self.execute("playlist.track.solo", json!({"id": id}))
                 }
+                PlaylistAction::SelectArrangement(id) => {
+                    self.execute("arrangement.select", json!({"id": id}));
+                }
+                PlaylistAction::AddArrangement => self.execute("arrangement.add", json!({})),
+                PlaylistAction::CloneArrangement => self.execute("arrangement.clone", json!({})),
+                PlaylistAction::DeleteArrangement(id) => {
+                    self.execute("arrangement.delete", json!({"id": id}));
+                }
+                PlaylistAction::AddMarker => {
+                    let at = self.session.transport_snapshot().position.0;
+                    self.execute("marker.add", json!({"at": at}));
+                }
+                PlaylistAction::DeleteMarker(index) => {
+                    self.execute("marker.delete", json!({"index": index}));
+                }
                 PlaylistAction::DropAudio { row, start, path } => {
                     while self.track_count() <= row {
                         let before = self.track_count();
@@ -1788,6 +1803,15 @@ impl JetApp {
                 })
                 .collect(),
             dragging_file: self.browser.dragging.clone(),
+            arrangements: project
+                .arrangements
+                .iter()
+                .map(|a| (a.id.0, a.name.clone()))
+                .collect(),
+            arrangement_id: project.active_arrangement.0,
+            markers: arrangement.map_or_else(Vec::new, |a| {
+                a.markers.iter().map(|m| (m.at.0, m.name.clone())).collect()
+            }),
         }
     }
 }
@@ -2096,7 +2120,12 @@ fn paint_window(
     }
 
     match win.kind {
-        WindowKind::Playlist => paint_title_tools(paint, title, surfaces.playlist_view),
+        WindowKind::Playlist => paint_title_tools(
+            paint,
+            surfaces.playlist_state,
+            title,
+            surfaces.playlist_view,
+        ),
         WindowKind::ChannelRack => {
             icons::chevron_right(
                 &painter,
@@ -2915,5 +2944,40 @@ mod tests {
         assert_eq!(clips[0].start.0, 384);
         assert!(matches!(clips[0].source, ClipSource::Audio(_)));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn arrangement_menu_adds_arrangements_and_alt_t_adds_a_marker() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        let title = app.probe().entries()["playlist.arrangements"].rect;
+        click(&mut app, &ctx, title);
+        run_frame(&mut app, &ctx, Vec::new());
+        // Items: the one arrangement, then Add one, Clone, Delete.
+        let add = app.probe().entries()["playlist.arrangement-menu.item.1"].rect;
+        click(&mut app, &ctx, add);
+        assert_eq!(app.session.project().arrangements.len(), 2);
+        assert_eq!(app.session.project().active_arrangement.0, 2);
+        let grid = app.probe().entries()["playlist.grid"].rect;
+        run_frame(&mut app, &ctx, vec![Event::PointerMoved(grid.center())]);
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(alt), key(Key::T, true, alt)],
+        );
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(Modifiers::default())],
+        );
+        assert_eq!(
+            app.session.project().active().map(|a| a.markers.len()),
+            Some(1)
+        );
     }
 }

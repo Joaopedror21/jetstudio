@@ -18,6 +18,11 @@ pub struct PlaylistView {
     pub patterns: Vec<PatternEntry>,
     /// A Browser file being dragged, if any (dropped on the grid it becomes an Audio Clip).
     pub dragging_file: Option<std::path::PathBuf>,
+    /// (id, name) of every arrangement; the active one is `arrangement_id`.
+    pub arrangements: Vec<(u64, String)>,
+    pub arrangement_id: u64,
+    /// Time markers of the active arrangement: (tick, name).
+    pub markers: Vec<(i64, String)>,
 }
 
 pub struct TrackView {
@@ -97,6 +102,8 @@ pub struct PlaylistState {
     point_drag: Option<(u64, usize, i64, u16)>,
     /// Control point menu: (automation id, point index, where it opened).
     point_menu: Option<(u64, usize, egui::Pos2)>,
+    /// Arrangements menu opened from the title bar.
+    arrangement_menu: Option<egui::Pos2>,
     /// Horizontal zoom as a multiple of the measured default bar width.
     pub zoom: f32,
     pub scroll_bars: f32,
@@ -111,6 +118,7 @@ impl Default for PlaylistState {
             drag: None,
             point_drag: None,
             point_menu: None,
+            arrangement_menu: None,
             zoom: 1.0,
             scroll_bars: 0.0,
             scroll_tracks: 0.0,
@@ -156,6 +164,12 @@ pub enum PlaylistAction {
         start: i64,
         path: std::path::PathBuf,
     },
+    SelectArrangement(u64),
+    AddArrangement,
+    CloneArrangement,
+    DeleteArrangement(u64),
+    AddMarker,
+    DeleteMarker(usize),
     AutoAddPoint {
         id: u64,
         at: i64,
@@ -183,7 +197,12 @@ pub enum PlaylistAction {
 // zoom; we use a fixed beat.
 
 /// Title-bar tool icons [W x 510-740 relative to 500].
-pub fn paint_title_tools(paint: &mut PaintCtx<'_>, title: Rect, view: &PlaylistView) {
+pub fn paint_title_tools(
+    paint: &mut PaintCtx<'_>,
+    state: &mut PlaylistState,
+    title: Rect,
+    view: &PlaylistView,
+) {
     let t = *paint.tokens;
     let painter = paint.painter();
     type IconFn = fn(&egui::Painter, Rect, egui::Color32);
@@ -247,10 +266,13 @@ pub fn paint_title_tools(paint: &mut PaintCtx<'_>, title: Rect, view: &PlaylistV
     // "Playlist - <arrangement> ▸ (none) ▸" with small triangles as separators [W 782-985].
     let font = theme::regular(paint.layout.font_title);
     let mut x = title.left() + 282.0;
-    for part in [
+    for (index, part) in [
         format!("Playlist - {}", view.arrangement_name),
         "(none)".to_owned(),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let end = painter.text(
             pos2(x, title.center().y),
             Align2::LEFT_CENTER,
@@ -258,6 +280,20 @@ pub fn paint_title_tools(paint: &mut PaintCtx<'_>, title: Rect, view: &PlaylistV
             font.clone(),
             t.title_text,
         );
+        // The arrangement name opens the Arrangements menu [Manual: playlist, "Arrangements"].
+        if index == 0
+            && paint
+                .hit(
+                    "playlist.arrangements",
+                    end.expand2(vec2(2.0, 3.0)),
+                    "menu",
+                    true,
+                    "Arrangements: switch, add, clone or delete",
+                )
+                .clicked()
+        {
+            state.arrangement_menu = Some(pos2(end.left(), title.bottom()));
+        }
         icons::chevron_right(
             &painter,
             Rect::from_center_size(
@@ -908,7 +944,45 @@ pub fn paint_playlist(
         }
     }
 
-    paint_point_menu(paint, state, &mut actions);
+    // Time markers on the ruler: click seeks, right-click deletes; Alt+T adds one at the
+    // playhead [Manual: playlist, "Time Markers"].
+    for (index, (tick, name)) in view.markers.iter().enumerate() {
+        let x = bar_x(*tick as f32 / tpb as f32);
+        if x < ruler.left() || x > ruler.right() {
+            continue;
+        }
+        let flag = Rect::from_min_size(pos2(x, ruler.top()), vec2(8.0, ruler.height()));
+        painter
+            .with_clip_rect(ruler)
+            .rect_filled(flag, 0.0, t.playhead);
+        painter.with_clip_rect(grid.union(ruler)).text(
+            pos2(x + 10.0, ruler.center().y),
+            Align2::LEFT_CENTER,
+            name,
+            theme::regular(12.0),
+            t.ruler_text,
+        );
+        let response = paint.hit(
+            &format!("playlist.marker.{index}"),
+            flag.expand2(vec2(2.0, 0.0)),
+            "marker",
+            true,
+            &format!("Marker {name}: click to jump, right-click to delete"),
+        );
+        if response.clicked() {
+            actions.push(PlaylistAction::Seek(*tick));
+        }
+        if response.secondary_clicked() {
+            actions.push(PlaylistAction::DeleteMarker(index));
+        }
+    }
+    if paint
+        .ui
+        .input(|i| i.key_pressed(egui::Key::T) && i.modifiers.alt && !i.modifiers.ctrl)
+        && paint.ui.rect_contains_pointer(rect)
+    {
+        actions.push(PlaylistAction::AddMarker);
+    }
 
     // Audio files dropped on the grid become Audio Clips at the beat under the pointer.
     let (pointer, released) = paint
@@ -981,6 +1055,9 @@ pub fn paint_playlist(
     paint
         .probe
         .insert("playlist.grid", grid, "timeline", true, None);
+    // Last, so the popups' items sit above every other control of the window.
+    paint_point_menu(paint, state, &mut actions);
+    paint_arrangement_menu(paint, state, view, &mut actions);
     actions
 }
 
@@ -1150,6 +1227,59 @@ fn paint_point_menu(
                     index,
                     shape: *shape,
                 });
+            }
+        }
+    }
+}
+
+fn paint_arrangement_menu(
+    paint: &mut PaintCtx<'_>,
+    state: &mut PlaylistState,
+    view: &PlaylistView,
+    actions: &mut Vec<PlaylistAction>,
+) {
+    let Some(origin) = state.arrangement_menu else {
+        return;
+    };
+    let labels: Vec<String> = view
+        .arrangements
+        .iter()
+        .map(|(id, name)| {
+            if *id == view.arrangement_id {
+                format!("> {name}")
+            } else {
+                name.clone()
+            }
+        })
+        .chain([
+            "Add one".to_owned(),
+            "Clone".to_owned(),
+            "Delete".to_owned(),
+        ])
+        .collect();
+    let count = view.arrangements.len();
+    let items: Vec<crate::widgets::MenuItem<'_>> = labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| crate::widgets::MenuItem {
+            label,
+            shortcut: "",
+            enabled: !(i == count + 2 && count <= 1),
+        })
+        .collect();
+    match paint.popup_menu("playlist.arrangement-menu", origin, &items) {
+        crate::widgets::MenuResult::Open => {}
+        crate::widgets::MenuResult::Dismissed => state.arrangement_menu = None,
+        crate::widgets::MenuResult::Chosen(i) => {
+            state.arrangement_menu = None;
+            if let Some((id, _)) = view.arrangements.get(i) {
+                actions.push(PlaylistAction::SelectArrangement(*id));
+            } else if i == count {
+                actions.push(PlaylistAction::AddArrangement);
+            } else if i == count + 1 {
+                actions.push(PlaylistAction::CloneArrangement);
+            } else {
+                actions.push(PlaylistAction::DeleteArrangement(view.arrangement_id));
             }
         }
     }

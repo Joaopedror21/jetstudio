@@ -872,3 +872,59 @@ fn mixer_phase_swap_and_stereo_separation_change_the_output() {
         "fully narrowed = mono"
     );
 }
+
+#[test]
+fn arrangements_share_channels_and_play_their_own_clips() {
+    let mut session = session_120();
+    let id = add_sampler_with_click(&mut session);
+    session
+        .execute(
+            "step.set",
+            json!({"pattern":1,"channel":id,"index":0,"on":true}),
+        )
+        .unwrap();
+    session
+        .execute("playlist.track.add", json!({"name": "Track 1"}))
+        .unwrap();
+    session
+        .execute(
+            "playlist.clip.add",
+            json!({"track":1,"pattern":1,"start":0,"length":384}),
+        )
+        .unwrap();
+    session.execute("arrangement.clone", json!({})).unwrap();
+    session
+        .execute(
+            "playlist.clip.move",
+            json!({"id": 2, "track": 2, "start": 384}),
+        )
+        .unwrap();
+    let (left, _) = export(&mut session, "song");
+    assert_eq!(
+        onsets(&left),
+        vec![96_000],
+        "the clone plays its own moved clip"
+    );
+    session
+        .execute("arrangement.select", json!({"id": 1}))
+        .unwrap();
+    let (left, _) = export(&mut session, "song");
+    assert_eq!(onsets(&left), vec![0], "the original is untouched");
+    session.execute("arrangement.add", json!({})).unwrap();
+    assert_eq!(session.project().arrangements.len(), 3);
+    assert!(session.project().active().unwrap().clips.is_empty());
+    session
+        .execute("arrangement.delete", json!({"id": 3}))
+        .unwrap();
+    assert_eq!(
+        session.project().active_arrangement,
+        jet_model::ArrangementId(1)
+    );
+    session.execute("marker.add", json!({"at": 768})).unwrap();
+    session
+        .execute("marker.add", json!({"at": 0, "name": "Intro"}))
+        .unwrap();
+    let markers = &session.project().active().unwrap().markers;
+    assert_eq!(markers[0].name, "Intro");
+    assert_eq!(markers[1].at.0, 768);
+}
