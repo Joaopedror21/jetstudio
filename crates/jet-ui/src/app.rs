@@ -707,6 +707,47 @@ impl JetApp {
                     self.execute("note.export_mid", base(json!({"path": path})));
                 }
             }
+            PianoAction::Tool { name, indices } => {
+                let beat = self.session.project().settings.beat_ticks().unwrap_or(96);
+                let step = self.session.project().settings.step_ticks().unwrap_or(24);
+                let (id, extra) = match name {
+                    "flip-h" => ("note.flip", json!({"horizontal": true})),
+                    "flip-v" => ("note.flip", json!({"vertical": true})),
+                    // Our preset: a quarter-step strum, velocity falling by 6 per note.
+                    "strum" => ("note.strum", json!({"time": step / 4, "velocity": 6})),
+                    "arp-up" => (
+                        "note.arpeggiate",
+                        json!({"step": beat / 2, "direction": "up"}),
+                    ),
+                    "arp-down" => (
+                        "note.arpeggiate",
+                        json!({"step": beat / 2, "direction": "down"}),
+                    ),
+                    _ => ("note.limit", json!({"low": 48, "high": 71})),
+                };
+                let mut params = base(json!({"indices": indices}));
+                if let (Some(map), Value::Object(more)) = (params.as_object_mut(), extra) {
+                    map.extend(more);
+                }
+                self.execute(id, params);
+            }
+            PianoAction::SnapScale {
+                indices,
+                root,
+                scale,
+            } => self.execute(
+                "note.snap_scale",
+                base(json!({"indices": indices, "root": root, "scale": scale})),
+            ),
+            PianoAction::Stamp {
+                start,
+                length,
+                root,
+                chord,
+            } => self.execute(
+                "note.stamp",
+                base(json!({"start": start, "length": length, "root": root, "chord": chord})),
+            ),
             PianoAction::KeyDown(key) => {
                 if let Some(host) = &mut self.audio {
                     host.output
@@ -2979,5 +3020,45 @@ mod tests {
             app.session.project().active().map(|a| a.markers.len()),
             Some(1)
         );
+    }
+
+    #[test]
+    fn chord_stamp_and_tools_menu_edit_the_score() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("channel.add", json!({"name": "Keys", "kind": "synth"}));
+        toggle(&mut app, &ctx, Key::F7);
+        let stamp = app.probe().entries()["piano-roll.stamp"].rect;
+        click(&mut app, &ctx, stamp);
+        assert_eq!(
+            app.piano.stamp,
+            Some(0),
+            "first click selects a major chord"
+        );
+        let grid = app.probe().entries()["piano-roll.grid"].rect;
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(grid.left_top() + vec2(30.0, 40.0), vec2(2.0, 2.0)),
+        );
+        let notes = &app.session.project().patterns[0].notes[&ChannelId(1)];
+        assert_eq!(notes.len(), 3, "the stamp placed a triad");
+        let tools = app.probe().entries()["piano-roll.tools"].rect;
+        click(&mut app, &ctx, tools);
+        run_frame(&mut app, &ctx, Vec::new());
+        // Item 1 is "Flip vertically".
+        let flip = app.probe().entries()["piano-roll.tools-menu.item.1"].rect;
+        let before: Vec<u8> = app.session.project().patterns[0].notes[&ChannelId(1)]
+            .iter()
+            .map(|n| n.key)
+            .collect();
+        click(&mut app, &ctx, flip);
+        let after: Vec<u8> = app.session.project().patterns[0].notes[&ChannelId(1)]
+            .iter()
+            .map(|n| n.key)
+            .collect();
+        assert_ne!(before, after, "a major triad flipped becomes minor-shaped");
+        assert_eq!(after[0], before[0]);
     }
 }

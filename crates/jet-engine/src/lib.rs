@@ -7,6 +7,7 @@ mod history;
 mod samples;
 mod transport;
 
+pub use cmd::note_tools::{CHORDS, SCALES};
 pub use cmd::{CommandSpec, DisabledReason, command_specs};
 pub use history::History;
 pub use samples::SamplePool;

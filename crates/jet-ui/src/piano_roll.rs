@@ -9,7 +9,9 @@ use egui::{Align2, Event, Key, Modifiers, Pos2, Rect, Stroke, StrokeKind, pos2, 
 use crate::theme;
 use crate::widgets::{PaintCtx, framed};
 
-const TOOLBAR_H: f32 = 28.0;
+/// Two rows: edit tools and snap on top; file, tools menu, scale and stamp below.
+const TOOLBAR_H: f32 = 54.0;
+const ROW_H: f32 = 27.0;
 const RULER_H: f32 = 18.0;
 const KEYS_W: f32 = 64.0;
 const LANE_H: f32 = 72.0;
@@ -111,6 +113,29 @@ pub struct PianoRollState {
     shown_channel: Option<u64>,
     /// MIDI file button clicked: `Some(true)` import, `Some(false)` export.
     file_request: Option<bool>,
+    /// Snap to scale: (root 0..11, index into `SCALES`) [Manual: pianoroll, "Snap to scale"].
+    pub scale: Option<(u8, usize)>,
+    /// Chord stamp shape (index into `CHORDS`) [Manual: pianoroll, "Chord Stamp"].
+    pub stamp: Option<usize>,
+    tools_menu: Option<egui::Pos2>,
+}
+
+fn in_scale(key: u8, scale: Option<(u8, usize)>) -> bool {
+    match scale {
+        Some((root, index)) => jet_engine::SCALES
+            .get(index)
+            .is_some_and(|(_, set)| set.contains(&((key + 12 - root % 12) % 12))),
+        None => true,
+    }
+}
+
+/// Nearest in-scale key (ties go down), for notes added while Snap to scale is on.
+fn snap_key(key: u8, scale: Option<(u8, usize)>) -> u8 {
+    (0..=6u8)
+        .flat_map(|d| [key.checked_sub(d), key.checked_add(d)])
+        .flatten()
+        .find(|k| *k <= 131 && in_scale(*k, scale))
+        .unwrap_or(key)
 }
 
 impl Default for PianoRollState {
@@ -129,6 +154,9 @@ impl Default for PianoRollState {
             held_key: None,
             shown_channel: None,
             file_request: None,
+            scale: None,
+            stamp: None,
+            tools_menu: None,
         }
     }
 }
@@ -207,6 +235,22 @@ pub enum PianoAction {
     },
     ImportMidi,
     ExportMidi,
+    /// A tool from the Tools menu applied to the selection (or all notes).
+    Tool {
+        name: &'static str,
+        indices: Vec<usize>,
+    },
+    SnapScale {
+        indices: Vec<usize>,
+        root: u8,
+        scale: &'static str,
+    },
+    Stamp {
+        start: i64,
+        length: i64,
+        root: u8,
+        chord: &'static str,
+    },
     KeyDown(u8),
     KeyUp(u8),
 }
@@ -530,8 +574,21 @@ pub fn paint_piano_roll(
                         } else {
                             view.step_ticks.max(1)
                         };
-                        actions.push(PianoAction::Add { start, length, key });
-                        state.reselect = vec![(start, key, length)];
+                        let key = snap_key(key, state.scale);
+                        if let Some(chord) = state
+                            .stamp
+                            .and_then(|i| jet_engine::CHORDS.get(i).map(|(name, _)| name))
+                        {
+                            actions.push(PianoAction::Stamp {
+                                start,
+                                length,
+                                root: key,
+                                chord,
+                            });
+                        } else {
+                            actions.push(PianoAction::Add { start, length, key });
+                            state.reselect = vec![(start, key, length)];
+                        }
                         actions.push(PianoAction::KeyDown(key));
                         actions.push(PianoAction::KeyUp(key));
                         if state.tool == Tool::Paint && grid_response.drag_started() {
@@ -661,7 +718,57 @@ pub fn paint_piano_roll(
         Some(false) => actions.push(PianoAction::ExportMidi),
         None => {}
     }
+    paint_tools_menu(paint, state, &mut actions);
     actions
+}
+
+fn paint_tools_menu(
+    paint: &mut PaintCtx<'_>,
+    state: &mut PianoRollState,
+    actions: &mut Vec<PianoAction>,
+) {
+    let Some(origin) = state.tools_menu else {
+        return;
+    };
+    let entries: [(&str, &'static str); 7] = [
+        ("Flip horizontally", "flip-h"),
+        ("Flip vertically", "flip-v"),
+        ("Strum (down)", "strum"),
+        ("Arpeggiate up (1/2 beat)", "arp-up"),
+        ("Arpeggiate down (1/2 beat)", "arp-down"),
+        ("Limit to C4 - B5", "limit"),
+        ("Snap notes to scale", "snap-scale"),
+    ];
+    let items: Vec<crate::widgets::MenuItem<'_>> = entries
+        .iter()
+        .map(|(label, name)| crate::widgets::MenuItem {
+            label,
+            shortcut: "",
+            enabled: *name != "snap-scale" || state.scale.is_some(),
+        })
+        .collect();
+    match paint.popup_menu("piano-roll.tools-menu", origin, &items) {
+        crate::widgets::MenuResult::Open => {}
+        crate::widgets::MenuResult::Dismissed => state.tools_menu = None,
+        crate::widgets::MenuResult::Chosen(i) => {
+            state.tools_menu = None;
+            let indices = targets(state);
+            let Some((_, name)) = entries.get(i) else {
+                return;
+            };
+            if *name == "snap-scale" {
+                if let Some((root, scale)) = state.scale {
+                    actions.push(PianoAction::SnapScale {
+                        indices,
+                        root,
+                        scale: jet_engine::SCALES[scale].0,
+                    });
+                }
+            } else {
+                actions.push(PianoAction::Tool { name, indices });
+            }
+        }
+    }
 }
 
 fn note_rect(geo: &Geometry, state: &PianoRollState, note: &NoteView) -> Rect {
@@ -682,10 +789,7 @@ fn paint_toolbar(
     painter.rect_filled(toolbar, 0.0, t.toolbar);
     let mut x = toolbar.left() + 6.0;
     for (tool, label, hint, _) in Tool::ALL {
-        let r = Rect::from_min_size(
-            pos2(x, toolbar.top() + 4.0),
-            vec2(52.0, toolbar.height() - 8.0),
-        );
+        let r = Rect::from_min_size(pos2(x, toolbar.top() + 4.0), vec2(52.0, ROW_H - 6.0));
         let response = paint.hit(&format!("piano-roll.tool.{label}"), r, "tool", true, hint);
         if state.tool == tool {
             crate::widgets::lit_face(painter, r, &t);
@@ -708,10 +812,7 @@ fn paint_toolbar(
         }
         x += 56.0;
     }
-    let snap = Rect::from_min_size(
-        pos2(x + 8.0, toolbar.top() + 4.0),
-        vec2(90.0, toolbar.height() - 8.0),
-    );
+    let snap = Rect::from_min_size(pos2(x + 8.0, toolbar.top() + 4.0), vec2(90.0, ROW_H - 6.0));
     framed(painter, snap, 2.0, t.lcd_bg, t.lcd_edge);
     painter.text(
         snap.center(),
@@ -732,28 +833,105 @@ fn paint_toolbar(
     {
         state.snap = state.snap.next();
     }
-    // MIDI file import/export [Manual: pianoroll_menu, "File"].
-    let mut bx = snap.right() + 8.0;
+    // Second row: MIDI file import/export [Manual: pianoroll_menu, "File"].
+    let row2 = toolbar.top() + ROW_H;
+    let mut bx = toolbar.left() + 6.0;
     for (key, label, hint) in [
         ("import", "Import MIDI", "Import MIDI file... (adds notes)"),
         ("export", "Export MIDI", "Export as MIDI file..."),
     ] {
-        let b = Rect::from_min_size(
-            pos2(bx, toolbar.top() + 4.0),
-            vec2(84.0, toolbar.height() - 8.0),
-        );
+        let b = Rect::from_min_size(pos2(bx, row2 + 3.0), vec2(84.0, ROW_H - 6.0));
         if paint.toggle(&format!("piano-roll.{key}"), b, label, false, hint) {
             state.file_request = Some(key == "import");
         }
         bx += 88.0;
     }
-    let snap = Rect::from_min_max(snap.min, pos2(bx - 8.0, snap.max.y));
+    // Tools menu, Snap to scale and Chord stamp selectors [Manual: pianoroll, "Toolbar icons"].
+    let tools = Rect::from_min_size(pos2(bx, row2 + 3.0), vec2(60.0, ROW_H - 6.0));
+    if paint.toggle(
+        "piano-roll.tools",
+        tools,
+        "Tools",
+        false,
+        "Piano roll tools (flip, strum, arpeggiate, limit, snap to scale)",
+    ) {
+        state.tools_menu = Some(pos2(tools.left(), tools.bottom()));
+    }
+    bx += 64.0;
+    const ROOTS: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let scale_label = state.scale.map_or_else(
+        || "Scale: off".to_owned(),
+        |(root, i)| {
+            format!(
+                "{} {}",
+                ROOTS[usize::from(root % 12)],
+                jet_engine::SCALES[i].0
+            )
+        },
+    );
+    let scale_button = Rect::from_min_size(pos2(bx, row2 + 3.0), vec2(150.0, ROW_H - 6.0));
+    let scale_response = paint.hit(
+        "piano-roll.scale",
+        scale_button,
+        "toggle",
+        true,
+        "Snap to scale: click to change the scale, right-click to change the root",
+    );
+    if state.scale.is_some() {
+        crate::widgets::lit_face(painter, scale_button, &t);
+    } else {
+        crate::widgets::button_face(painter, scale_button, &t, scale_response.hovered(), false);
+    }
+    painter.text(
+        scale_button.center(),
+        Align2::CENTER_CENTER,
+        &scale_label,
+        theme::regular(12.0),
+        if state.scale.is_some() {
+            theme::shade(t.lit_edge, 0.5)
+        } else {
+            t.menu_text
+        },
+    );
+    if scale_response.clicked() {
+        state.scale = match state.scale {
+            None => Some((0, 0)),
+            Some((_, i)) if i + 1 >= jet_engine::SCALES.len() => None,
+            Some((root, i)) => Some((root, i + 1)),
+        };
+    }
+    if scale_response.secondary_clicked()
+        && let Some((root, i)) = state.scale
+    {
+        state.scale = Some(((root + 1) % 12, i));
+    }
+    bx += 154.0;
+    let stamp_label = state
+        .stamp
+        .and_then(|i| jet_engine::CHORDS.get(i).map(|(name, _)| name))
+        .map_or_else(|| "Stamp: off".to_owned(), |c| format!("Stamp: {c}"));
+    let stamp_button = Rect::from_min_size(pos2(bx, row2 + 3.0), vec2(130.0, ROW_H - 6.0));
+    if paint.toggle(
+        "piano-roll.stamp",
+        stamp_button,
+        &stamp_label,
+        state.stamp.is_some(),
+        "Chord stamp: clicking the grid places this chord",
+    ) {
+        state.stamp = match state.stamp {
+            None => Some(0),
+            Some(i) if i + 1 >= jet_engine::CHORDS.len() => None,
+            Some(i) => Some(i + 1),
+        };
+    }
     let channel = view
         .channel
         .as_ref()
         .map_or_else(|| "(none)".to_owned(), |(_, name)| name.clone());
     painter.text(
-        pos2(snap.right() + 12.0, toolbar.center().y),
+        pos2(snap.right() + 12.0, toolbar.top() + ROW_H / 2.0),
         Align2::LEFT_CENTER,
         format!("Target: {channel}"),
         theme::regular(14.0),
@@ -776,15 +954,19 @@ fn paint_grid(
     for key in first..=last {
         let y = geo.y_of(state, key as u8);
         let row = Rect::from_min_max(pos2(grid.left(), y), pos2(grid.right(), y + state.key_h));
-        gp.rect_filled(
-            row,
-            0.0,
-            if is_black(key as u8) {
-                t.grid_b
-            } else {
-                t.grid_a
-            },
-        );
+        // With Snap to scale on, in-scale rows are highlighted [Manual: pianoroll, "the background
+        // grid of the Piano roll will show notes of that scale highlighted in a lighter color"].
+        let base = if is_black(key as u8) {
+            t.grid_b
+        } else {
+            t.grid_a
+        };
+        let fill = if state.scale.is_some() && in_scale(key as u8, state.scale) {
+            theme::shade(base, 1.18)
+        } else {
+            base
+        };
+        gp.rect_filled(row, 0.0, fill);
         if key % 12 == 0 {
             gp.line_segment(
                 [

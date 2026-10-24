@@ -55,6 +55,7 @@
 | H-AUT-3 | Taxa de controle | Uma avaliação por bloco (até 1024 frames) | Não documentado | `jet-audio-graph/src/render.rs` |
 | H-KB-1 | Mapa do teclado de digitação | Duas fileiras: Z…M + teclas pretas em S, D, G, H, J (oitava inferior); Q…P + 2, 3, 5, 6, 7, 9 (superior); Z = C4 | O manual menciona "Standard keyboard layouts" sem mostrar o mapa | `jet-ui/src/app.rs` |
 | H-REC-1 | Início da take | A take começa na posição do transporte no primeiro quadro de UI depois do Play (granularidade de ~30 ms) | O FL usa os relógios do driver | `jet-ui/src/app.rs` |
+| H-PR-3 | Arpeggiate | Cada acorde vira uma sequência de notas de `step` sobre sua duração (up, down, updown) | A página do Arpeggiator do manual responde 404 | `jet-engine/src/cmd/note_tools.rs` |
 | H-UI-1 | Sensibilidade dos knobs e faders | 200 px por curso de knob; 150 px por curso de fader; 6 px por insert | Não medido | `jet-ui` |
 
 ## 3. Interface e controles globais (GLB)
@@ -168,9 +169,9 @@
 | PR-014 | Zoom e scroll | Ctrl+roda, Shift+roda | — | — | S | P1 | Implementado | — |
 | PR-015 | Slide e portamento | "Understanding Slides & Portamento" | Só em instrumentos nativos | INS | L | P2 | Especificado (flags no modelo; o áudio ainda não desliza) | — |
 | PR-016 | Ghost notes | "Ghost Notes" | Notas de outros canais | — | M | P2 | Pesquisado | — |
-| PR-017 | Chord stamp | "Chord Stamp" | Acordes por clique | PR-002 | M | P2 | Pesquisado | — |
-| PR-018 | Snap to scale / realce de escala | "Snap to scale", "Root note" | — | — | M | P2 | Pesquisado | — |
-| PR-019 | Arpeggiate, Strum, Flam, Limit, Flip, Randomize, Scale levels, Articulate | [Manual: pianoroll_menu] Alt+A/S/F/K/Y/R/X/L | Ferramentas | PR-001 | L | P2 | Pesquisado | — |
+| PR-017 | Chord stamp | "Chord Stamp" | Acordes por clique | PR-002 | M | P2 | Parcialmente compatível: 10 formas (maior, menor, dim, aum, sus2, sus4, maj7, m7, 7, power) colocadas pelo clique do Draw; faltam acordes automáticos e escalas como stamp | `chord_stamp_and_tools_menu_edit_the_score`, `piano_roll_tools_...` |
+| PR-018 | Snap to scale / realce de escala | "Snap to scale", "Root note"; linhas da escala mais claras | — | — | M | P2 | Parcialmente compatível: 12 escalas e tônica, realce das linhas, notas novas encaixam na escala, ferramenta para encaixar a seleção (empate vai para baixo); notas movidas ainda não encaixam | `piano_roll_tools_flip_strum_limit_stamp_arpeggiate_and_snap` |
+| PR-019 | Arpeggiate, Strum, Flam, Limit, Flip, Randomize, Scale levels, Articulate | [Manual: pianoroll_menu, pianoroll_strum, pianoroll_flip, pianoroll_limit] | Ferramentas | PR-001 | L | P2 | Parcialmente compatível: Flip (H/V), Strum (tempo, velocity, preserve end), Limit (por oitavas), Arpeggiate (H-PR-3) no menu Tools com presets próprios; faltam diálogos com parâmetros, Flam, Randomize, Scale levels, Articulate | `piano_roll_tools_...`, `chord_stamp_and_tools_menu_edit_the_score` |
 | PR-020 | Copy/Cut/Paste | Ctrl+C/X/V; "Notes are pasted starting from the leftmost bar that is visible" | Clipboard | — | S | P1 | Testado (a posição dentro do compasso é mantida) | `midi_export_import_and_note_clipboard` |
 | PR-021 | Delete space, Insert space | [Manual: pianoroll_menu] | — | — | S | P2 | Pesquisado | — |
 | PR-022 | Grupos de notas (Shift+G) | "Group notes" | — | — | M | P3 | Pesquisado | — |

@@ -7,6 +7,7 @@ mod file;
 mod midi_file;
 mod mixer;
 mod note;
+pub(crate) mod note_tools;
 mod pattern;
 mod playlist;
 mod project;
@@ -855,6 +856,54 @@ static SPECS: &[CommandSpec] = &[
         Step
     ),
     spec!(
+        "note.flip",
+        "Flip",
+        "",
+        Some("Alt+Y"),
+        "{pattern:uint,channel:uint,indices?:[uint],horizontal?:bool,vertical?:bool}",
+        Step
+    ),
+    spec!(
+        "note.strum",
+        "Strum",
+        "",
+        Some("Alt+S"),
+        "{pattern:uint,channel:uint,indices?:[uint],time:int,velocity?:int,preserve_end?:bool}",
+        Step
+    ),
+    spec!(
+        "note.limit",
+        "Limit",
+        "",
+        Some("Alt+K"),
+        "{pattern:uint,channel:uint,indices?:[uint],low:uint,high:uint}",
+        Step
+    ),
+    spec!(
+        "note.stamp",
+        "Chord stamp",
+        "",
+        None,
+        "{pattern:uint,channel:uint,start:int,length:int,root:uint,chord:string}",
+        Step
+    ),
+    spec!(
+        "note.arpeggiate",
+        "Arpeggiate",
+        "",
+        Some("Alt+A"),
+        "{pattern:uint,channel:uint,indices?:[uint],step:int,direction:up|down|updown}",
+        Step
+    ),
+    spec!(
+        "note.snap_scale",
+        "Snap to scale",
+        "",
+        None,
+        "{pattern:uint,channel:uint,indices?:[uint],root:uint,scale:string}",
+        Step
+    ),
+    spec!(
         "arrangement.add",
         "Add one",
         "",
@@ -1008,6 +1057,19 @@ pub(super) fn dispatch(session: &mut Session, id: &str, params: Value) -> Result
             ) =>
         {
             midi_file::run(session, id, params)
+        }
+        Some("note")
+            if matches!(
+                id,
+                "note.flip"
+                    | "note.strum"
+                    | "note.limit"
+                    | "note.stamp"
+                    | "note.arpeggiate"
+                    | "note.snap_scale"
+            ) =>
+        {
+            note_tools::run(session, id, params)
         }
         Some("note") => note::run(session, id, params),
         Some("mixer") => mixer::run(session, id, params),

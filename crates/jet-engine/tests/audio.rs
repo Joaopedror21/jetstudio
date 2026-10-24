@@ -928,3 +928,77 @@ fn arrangements_share_channels_and_play_their_own_clips() {
     assert_eq!(markers[0].name, "Intro");
     assert_eq!(markers[1].at.0, 768);
 }
+
+#[test]
+fn piano_roll_tools_flip_strum_limit_stamp_arpeggiate_and_snap() {
+    let mut session = session_120();
+    session
+        .execute("channel.add", json!({"name": "Keys", "kind": "synth"}))
+        .unwrap();
+    let notes = |s: &Session| s.project().patterns[0].notes[&ChannelId(1)].clone();
+    // Chord stamp: C major at C5.
+    session
+        .execute(
+            "note.stamp",
+            json!({"pattern":1,"channel":1,"start":0,"length":96,"root":60,"chord":"major"}),
+        )
+        .unwrap();
+    let keys: Vec<u8> = notes(&session).iter().map(|n| n.key).collect();
+    assert_eq!(keys, vec![60, 64, 67]);
+    // Strum: 6 ticks per note from low to high, velocity falling by 10.
+    session
+        .execute(
+            "note.strum",
+            json!({"pattern":1,"channel":1,"time":6,"velocity":10}),
+        )
+        .unwrap();
+    let strummed: Vec<(i64, u8, u8)> = notes(&session)
+        .iter()
+        .map(|n| (n.start.0, n.key, n.velocity))
+        .collect();
+    assert_eq!(strummed, vec![(0, 60, 100), (6, 64, 90), (12, 67, 80)]);
+    session.execute("edit.undo_step", json!({})).unwrap();
+    // Flip vertically around the chord's range.
+    session
+        .execute(
+            "note.flip",
+            json!({"pattern":1,"channel":1,"vertical":true}),
+        )
+        .unwrap();
+    let keys: Vec<u8> = notes(&session).iter().map(|n| n.key).collect();
+    assert_eq!(keys, vec![60, 63, 67]);
+    session.execute("edit.undo_step", json!({})).unwrap();
+    // Limit to C6..B6 moves everything up an octave.
+    session
+        .execute(
+            "note.limit",
+            json!({"pattern":1,"channel":1,"low":72,"high":83}),
+        )
+        .unwrap();
+    let keys: Vec<u8> = notes(&session).iter().map(|n| n.key).collect();
+    assert_eq!(keys, vec![72, 76, 79]);
+    session.execute("edit.undo_step", json!({})).unwrap();
+    // Arpeggiate the chord in 24-tick steps: C E G C over one beat.
+    session
+        .execute(
+            "note.arpeggiate",
+            json!({"pattern":1,"channel":1,"step":24,"direction":"up"}),
+        )
+        .unwrap();
+    let arp: Vec<(i64, u8)> = notes(&session).iter().map(|n| (n.start.0, n.key)).collect();
+    assert_eq!(arp, vec![(0, 60), (24, 64), (48, 67), (72, 60)]);
+    // Snap to A minor: C# (61) goes down to C (60).
+    session
+        .execute(
+            "note.add",
+            json!({"pattern":1,"channel":1,"start":200,"length":24,"key":61}),
+        )
+        .unwrap();
+    session
+        .execute(
+            "note.snap_scale",
+            json!({"pattern":1,"channel":1,"root":9,"scale":"minor"}),
+        )
+        .unwrap();
+    assert!(notes(&session).iter().all(|n| n.key != 61));
+}
