@@ -185,7 +185,7 @@
 | PR-020 | Copy/Cut/Paste | Ctrl+C/X/V; "Notes are pasted starting from the leftmost bar that is visible" | Clipboard | — | S | P1 | Testado (a posição dentro do compasso é mantida) | `midi_export_import_and_note_clipboard` |
 | PR-021 | Delete space, Insert space | [Manual: pianoroll_menu] | — | — | S | P2 | Pesquisado | — |
 | PR-022 | Grupos de notas (Shift+G) | "Group notes" | — | — | M | P3 | Pesquisado | — |
-| PR-023 | Gravação MIDI | [Manual: recording] | — | MIDI | L | P2 | Pesquisado | — |
+| PR-023 | Gravação MIDI | [Manual: recording_scores] | — | MIDI | L | P2 | Parcialmente compatível: o mesmo recurso de REC-002 (notas MIDI e do teclado de digitação gravadas no pattern selecionado, que aparecem no Piano roll) | `armed_play_records_typed_notes_into_the_pattern` |
 | PR-024 | Import/Export MIDI | [Manual: pianoroll_menu "File"]: "Importing MIDI from the Piano roll only adds Notes" | Arquivos .mid (SMF tipo 0/1, running status) | FILE | M | P2 | Testado (botões no Piano roll; reescala PPQ) | `midi_export_import_and_note_clipboard`, `smf::tests::*` |
 | PR-025 | Fórmula de compasso por pattern | "Time Signatures" | Só visual | GLB-007 | M | P3 | Pesquisado | — |
 | PR-026 | Riff machine, Chord progression | [Manual: pianoroll_riff, pianoroll_chordprogression] | Geradores | — | L | P3 | Pesquisado | — |
