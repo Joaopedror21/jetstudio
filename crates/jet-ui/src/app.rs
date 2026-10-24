@@ -1698,7 +1698,17 @@ impl JetApp {
         if pressed(Key::H) && modifiers.ctrl && modifiers.shift {
             actions.push(UiAction::Workspace(WsAction::ArrangeDefault));
         }
-        if self.toolbar.tempo_edit.is_some() || self.rack.rename.is_some() {
+        // "Search (Ctrl+F) - Search all folders for files" [Manual: browser].
+        if pressed(Key::F) && modifiers.ctrl && !modifiers.shift {
+            self.browser.search_focus = true;
+            if !self.workspace.as_ref().is_some_and(|ws| ws.browser_visible) {
+                actions.push(UiAction::Workspace(WsAction::ToggleBrowser));
+            }
+        }
+        if self.toolbar.tempo_edit.is_some()
+            || self.rack.rename.is_some()
+            || self.browser.search_focus
+        {
             return actions;
         }
         if pressed(Key::T) && modifiers.ctrl {
@@ -2303,7 +2313,12 @@ impl JetApp {
             .as_ref()
             .map_or_else(Vec::new, |ws| ws.windows.clone());
         let mut actions = self.key_actions(&ctx);
-        let focused = self.workspace.as_ref().and_then(|ws| ws.focused);
+        // While the Browser search field has the keyboard, no window takes key shortcuts.
+        let focused = self
+            .workspace
+            .as_ref()
+            .and_then(|ws| ws.focused)
+            .filter(|_| !self.browser.search_focus);
 
         {
             ui.painter()
@@ -3934,6 +3949,69 @@ mod tests {
         let item = app.probe().entries()["toolbar.stop-menu.item.0"].rect;
         click(&mut app, &ctx, item);
         assert!(app.session.remember_seek());
+    }
+
+    #[test]
+    fn browser_search_filters_steps_through_matches_and_cancels() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        let base = std::env::temp_dir().join(format!("jet-ui-search-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("Kicks")).unwrap();
+        for name in ["Kicks/kick a.wav", "Kicks/kick b.wav", "hat.wav"] {
+            std::fs::write(base.join(name), b"").unwrap();
+        }
+        app.browser.add_root(base.clone());
+        run_frame(&mut app, &ctx, Vec::new());
+        let ctrl = Modifiers {
+            ctrl: true,
+            command: true,
+            ..Modifiers::default()
+        };
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(ctrl), key(Key::F, true, ctrl)],
+        );
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(Modifiers::default())],
+        );
+        assert!(app.browser.search_focus);
+        // Typing goes to the field, not to shortcuts (Space would start playback).
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![
+                Event::Text("KICK".to_owned()),
+                key(Key::Space, true, Modifiers::default()),
+                Event::Text(" ".to_owned()),
+            ],
+        );
+        assert_eq!(app.browser.search, "KICK ");
+        assert_eq!(
+            app.session.transport_snapshot().state,
+            TransportState::Stopped
+        );
+        run_frame(&mut app, &ctx, Vec::new());
+        // Root, Kicks (matches "kick"), and both kick files; hat.wav is hidden.
+        let rows = (0..10)
+            .filter(|i| {
+                app.probe()
+                    .entries()
+                    .contains_key(&format!("browser.row.{i}"))
+            })
+            .count();
+        assert_eq!(rows, 4);
+        toggle(&mut app, &ctx, Key::F3);
+        let first = app.browser.selected.clone().unwrap();
+        toggle(&mut app, &ctx, Key::F3);
+        let second = app.browser.selected.clone().unwrap();
+        assert_ne!(first, second, "F3 moves to the next match");
+        toggle(&mut app, &ctx, Key::Escape);
+        assert!(app.browser.search.is_empty() && !app.browser.search_focus);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

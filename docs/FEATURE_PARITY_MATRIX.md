@@ -18,9 +18,9 @@ Legenda: ✅ disponível e testado · 🟡 parcial (o que falta está ao lado) �
 | Motor de áudio (AE) | 15 | 9 | 2 | 4 | 0 |
 | Efeitos (FX) | 14 | 9 | 1 | 4 | 0 |
 | Plugins externos (PLG) | 4 | 0 | 0 | 4 | 0 |
-| Browser e arquivos (BR/FILE) | 12 | 2 | 4 | 5 | 1 |
+| Browser e arquivos (BR/FILE) | 12 | 2 | 5 | 4 | 1 |
 | Automação, MIDI, gravação (AUT/MIDI/REC) | 10 | 0 | 4 | 6 | 0 |
-| **Total** | **192** | **72** | **57** | **61** | **2** |
+| **Total** | **192** | **72** | **58** | **60** | **2** |
 
 As contagens foram geradas por script a partir da coluna Estado do inventário: ✅ = Testado; 🟡 = Implementado ou Parcialmente compatível; ⬜ = Pesquisado ou Especificado; ⛔ = Bloqueado. 
 
@@ -69,7 +69,7 @@ As contagens foram geradas por script a partir da coluna Estado do inventário: 
 | Export MP3/OGG/FLAC | — | ⬜ | AE-007 (encoder com licença compatível) |
 | Render == playback | mesmo renderizador | ✅ | `offline_render_..._matches_live_playback` |
 | Callback sem alocação | assert_no_alloc | ✅ | `processing_a_busy_project_does_not_allocate` |
-| Browser: pastas, preview, arrastar | sim | 🟡 | busca, favoritos, abas |
+| Browser: pastas, preview, arrastar, busca | sim | 🟡 | BR-004 busca (Ctrl+F, F3, Esc); faltam favoritos, tags e abas |
 | Projeto: salvar/abrir com samples relativos | sim | ✅ | `save_and_load_keep_samples_and_render_identically` |
 | Autosave/backups | a cada 5 min e ao salvar; revert | 🟡 | FILE-003: faltam os outros modos |
 | Entrada MIDI e typing keyboard | todas as portas, Ctrl+T | 🟡 | MIDI-001: faltam escolha de dispositivo e CC |

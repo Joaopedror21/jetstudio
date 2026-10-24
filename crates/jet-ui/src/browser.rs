@@ -28,6 +28,14 @@ pub struct BrowserState {
     pub dragging: Option<PathBuf>,
     /// Audio file clicked for preview this frame [Manual: browser, sample preview].
     pub preview: Option<PathBuf>,
+    /// Search text [Manual: browser, "Search (Ctrl+F) - Search all folders for files"].
+    pub search: String,
+    /// The search field has keyboard focus.
+    pub search_focus: bool,
+    /// Rows found for `search` (the query they were found for, and the rows).
+    found: Option<(String, Vec<BrowserRow>)>,
+    /// Index of the current match for F3 (next match).
+    current: Option<usize>,
 }
 
 impl BrowserState {
@@ -39,7 +47,20 @@ impl BrowserState {
         }
     }
 
-    fn visible_rows(&self) -> Vec<BrowserRow> {
+    fn visible_rows(&mut self) -> Vec<BrowserRow> {
+        let query = self.search.trim().to_lowercase();
+        if !query.is_empty() {
+            if self.found.as_ref().is_none_or(|(q, _)| *q != query) {
+                let rows = search_rows(&self.roots, &query, SEARCH_LIMIT);
+                self.found = Some((query, rows));
+                self.current = None;
+            }
+            return self
+                .found
+                .as_ref()
+                .map_or_else(Vec::new, |(_, rows)| rows.clone());
+        }
+        self.found = None;
         let mut rows = Vec::new();
         for root in &self.roots {
             self.append_rows(root, 0, &mut rows);
@@ -56,6 +77,7 @@ impl BrowserState {
             path: path.to_path_buf(),
             depth,
             is_dir,
+            matched: false,
         });
         if !is_dir || !self.expanded.contains(path) {
             return;
@@ -80,10 +102,72 @@ impl BrowserState {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct BrowserRow {
     path: PathBuf,
     depth: usize,
     is_dir: bool,
+    /// A search match (rows shown only as the parents of matches are not).
+    matched: bool,
+}
+
+/// Entries visited at most per search, so a huge folder cannot stall the UI frame.
+const SEARCH_LIMIT: usize = 50_000;
+
+/// Files and folders under `roots` whose names contain `query` (lower case), each shown under its
+/// parent folders: "Searches for files and folders using non-case sensitive searching";
+/// "Searches include sub-folders"; "Show parent folders in search results" [Manual: browser].
+fn search_rows(roots: &[PathBuf], query: &str, limit: usize) -> Vec<BrowserRow> {
+    fn walk(
+        path: &Path,
+        depth: usize,
+        query: &str,
+        budget: &mut usize,
+        out: &mut Vec<BrowserRow>,
+    ) -> bool {
+        if *budget == 0 || depth > 16 {
+            return false;
+        }
+        *budget -= 1;
+        let is_dir = path.is_dir();
+        let matched = depth > 0
+            && path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().to_lowercase().contains(query));
+        let at = out.len();
+        out.push(BrowserRow {
+            path: path.to_path_buf(),
+            depth,
+            is_dir,
+            matched,
+        });
+        let mut any = matched;
+        if is_dir && let Ok(entries) = fs::read_dir(path) {
+            let mut children: Vec<PathBuf> =
+                entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+            children.sort_by(|a, b| {
+                b.is_dir()
+                    .cmp(&a.is_dir())
+                    .then_with(|| a.file_name().cmp(&b.file_name()))
+            });
+            for child in children {
+                any |= walk(&child, depth + 1, query, budget, out);
+            }
+        }
+        if !any && depth > 0 {
+            out.truncate(at); // nothing found here: drop this row and its subtree
+        }
+        any
+    }
+    let mut out = Vec::new();
+    let mut budget = limit;
+    for root in roots {
+        let at = out.len();
+        if !walk(root, 0, query, &mut budget, &mut out) {
+            out.truncate(at);
+        }
+    }
+    out
 }
 
 /// `rect` spans W x 0-489, from the desktop top (W y 84) to the bottom.
@@ -174,7 +258,79 @@ pub fn paint_browser(paint: &mut PaintCtx<'_>, state: &mut BrowserState, rect: R
     }
     icons::gear(&painter, add, t.browser_title_text);
 
-    let content = Rect::from_min_max(o + vec2(0.0, 88.0), rect.max);
+    // Search bar at the bottom [Manual: browser, "The search tools are located at the bottom of
+    // the Browser by default"]. Geometry is ours (UNMEASURED).
+    let bar = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 30.0), rect.max);
+    painter.rect_filled(bar, 0.0, t.browser_tabs);
+    let field = bar.shrink2(vec2(8.0, 4.0));
+    let field_response = paint.hit(
+        "browser.search",
+        field,
+        "text-field",
+        true,
+        "Search (Ctrl+F): type to find files and folders; F3 jumps to the next match, Esc cancels",
+    );
+    if field_response.clicked() {
+        state.search_focus = true;
+    } else if paint.ui.input(|i| i.pointer.any_pressed()) && !field_response.hovered() {
+        state.search_focus = false;
+    }
+    crate::widgets::framed(
+        &painter,
+        field,
+        2.0,
+        t.field_dark,
+        if state.search_focus {
+            t.browser_tab_selected
+        } else {
+            t.field_dark_edge
+        },
+    );
+    let shown = if state.search.is_empty() && !state.search_focus {
+        "Search".to_owned()
+    } else if state.search_focus {
+        format!("{}|", state.search)
+    } else {
+        state.search.clone()
+    };
+    painter.with_clip_rect(field).text(
+        pos2(field.left() + 6.0, field.center().y),
+        Align2::LEFT_CENTER,
+        shown,
+        theme::regular(14.0),
+        if state.search.is_empty() {
+            theme::shade(t.field_text, 0.6)
+        } else {
+            t.field_text
+        },
+    );
+    if state.search_focus {
+        for event in paint.ui.input(|i| i.events.clone()) {
+            match event {
+                egui::Event::Text(typed) => state.search.push_str(&typed),
+                egui::Event::Key {
+                    key: egui::Key::Backspace,
+                    pressed: true,
+                    ..
+                } => {
+                    state.search.pop();
+                }
+                // "To cancel a search, press Esc."
+                egui::Event::Key {
+                    key: egui::Key::Escape,
+                    pressed: true,
+                    ..
+                } => {
+                    state.search.clear();
+                    state.search_focus = false;
+                }
+                _ => {}
+            }
+        }
+    }
+    let f3 = paint.ui.input(|i| i.key_pressed(egui::Key::F3));
+
+    let content = Rect::from_min_max(o + vec2(0.0, 88.0), pos2(rect.right(), bar.top()));
     if paint.ui.rect_contains_pointer(content) {
         let delta = paint.ui.input(|i| i.smooth_scroll_delta.y);
         state.scroll_y = (state.scroll_y - delta).max(0.0);
@@ -185,6 +341,30 @@ pub fn paint_browser(paint: &mut PaintCtx<'_>, state: &mut BrowserState, rect: R
     }
     let rows = state.visible_rows();
     let row_h = paint.layout.browser_row_h;
+    // "Use (F3) to skip to the next matching item": select it and scroll it into view.
+    if f3 && !state.search.trim().is_empty() {
+        let matches: Vec<usize> = (0..rows.len()).filter(|i| rows[*i].matched).collect();
+        if !matches.is_empty() {
+            let next = state
+                .current
+                .and_then(|c| matches.iter().position(|m| *m == c))
+                .map_or(0, |p| (p + 1) % matches.len());
+            let row = matches[next];
+            state.current = Some(row);
+            state.selected = Some(rows[row].path.clone());
+            state.scroll_y = (row as f32 * row_h - content.height() / 2.0).max(0.0);
+        }
+    }
+    if rows.is_empty() && !state.search.trim().is_empty() {
+        painter.text(
+            content.left_top() + vec2(14.0, 14.0),
+            Align2::LEFT_TOP,
+            "Nothing found.",
+            theme::regular(14.0),
+            theme::shade(t.browser_text, 0.7),
+        );
+        return;
+    }
     if rows.is_empty() {
         painter.text(
             content.left_top() + vec2(14.0, 14.0),
@@ -249,7 +429,11 @@ pub fn paint_browser(paint: &mut PaintCtx<'_>, state: &mut BrowserState, rect: R
             Align2::LEFT_CENTER,
             name,
             theme::regular(15.0),
-            t.browser_text,
+            if row.matched {
+                t.browser_tab_selected
+            } else {
+                t.browser_text
+            },
         );
         if response.clicked() {
             state.selected = Some(row.path.clone());
@@ -274,5 +458,51 @@ pub fn paint_browser(paint: &mut PaintCtx<'_>, state: &mut BrowserState, rect: R
             1.0,
             t.splitter,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn search_finds_names_in_sub_folders_case_insensitively_with_their_parents() {
+        let base = std::env::temp_dir().join(format!("jet-browser-search-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("Drums").join("Kicks")).unwrap();
+        fs::create_dir_all(base.join("Synths")).unwrap();
+        fs::write(
+            base.join("Drums").join("Kicks").join("Big KICK 01.wav"),
+            b"",
+        )
+        .unwrap();
+        fs::write(base.join("Drums").join("snare.wav"), b"").unwrap();
+        fs::write(base.join("Synths").join("pad.wav"), b"").unwrap();
+
+        let rows = search_rows(std::slice::from_ref(&base), "kick", 1000);
+        let names: Vec<(String, bool)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.path.file_name().unwrap().to_string_lossy().into_owned(),
+                    r.matched,
+                )
+            })
+            .collect();
+        let root_name = base.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            names,
+            vec![
+                (root_name, false),
+                ("Drums".to_owned(), false),
+                ("Kicks".to_owned(), true),
+                ("Big KICK 01.wav".to_owned(), true),
+            ],
+            "parents shown, unrelated files and folders hidden"
+        );
+        assert!(search_rows(std::slice::from_ref(&base), "zzz", 1000).is_empty());
+        let _ = fs::remove_dir_all(&base);
     }
 }

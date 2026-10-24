@@ -286,7 +286,7 @@
 | BR-001 | Pastas e navegação | [Manual: browser] | Árvore, adicionar pasta (engrenagem ou arrastar) | S | P0 | Implementado | `root_frame_registers_the_main_surfaces` |
 | BR-002 | Preview de áudio ao clicar | [Manual: browser] | — | S | P1 | Implementado | — |
 | BR-003 | Arrastar sample para o Channel Rack | — | — | S | P0 | Implementado | — |
-| BR-004 | Busca | "Search" | — | S | P1 | Pesquisado |
+| BR-004 | Busca | [Manual: browser] "Search (Ctrl+F) - Search all folders for files. Use (F3) to skip to the next matching item"; "non-case sensitive"; "Searches include sub-folders"; "To cancel a search, press Esc" | — | S | P1 | Parcialmente compatível: campo na base do Browser, Ctrl+F foca (e mostra o Browser), busca sem diferenciar maiúsculas em arquivos e pastas das subpastas, com as pastas-pai dos resultados; F3 seleciona e rola até o próximo resultado; Esc cancela; enquanto digita, os atalhos ficam desligados; faltam filtro por tipo, tags, Find (Alt+F), indexação e salvar a busca como aba | `search_finds_names_in_sub_folders_case_insensitively_with_their_parents`, `browser_search_filters_steps_through_matches_and_cancels` 
 | BR-005 | Abas PROJECT/PLUGINS/PRESETS/SOUNDS/STARRED | [W] | SOUNDS é FL Cloud | M | P2 | Pesquisado (abas desabilitadas, com motivo); SOUNDS: Bloqueado (on-line) |
 | BR-006 | Favoritos e histórico | — | — | S | P2 | Pesquisado |
 | FILE-001 | Formato próprio .jetproj (JSON versionado, save atômico) | ARQ §6 | — | S | P0 | Testado | `save_load_and_replace_existing_file`, `save_and_load_keep_samples_and_render_identically` |
