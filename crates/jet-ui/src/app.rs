@@ -266,6 +266,11 @@ enum UiAction {
     ToggleRecordAudio,
     ToggleRecordNotes,
     SetGlobalSnap(crate::snap::SnapValue),
+    PatternClone,
+    PatternDelete,
+    BrowserFind,
+    SelectUnusedChannels,
+    About,
     OpenProject,
     SaveProject,
     SaveProjectAs,
@@ -1668,6 +1673,47 @@ impl JetApp {
                 self.audio_status = Some(self.record_filter_status());
             }
             UiAction::SetGlobalSnap(snap) => self.global_snap = snap,
+            UiAction::PatternClone => {
+                let id = self.session.selected_pattern().0;
+                self.execute("pattern.clone", json!({"id": id}));
+            }
+            UiAction::PatternDelete => {
+                let id = self.session.selected_pattern().0;
+                self.execute("pattern.delete", json!({"id": id}));
+            }
+            UiAction::BrowserFind => {
+                self.browser.search_focus = true;
+                if let Some(ws) = &mut self.workspace
+                    && !ws.browser_visible
+                {
+                    let _ = ws.apply(WsAction::ToggleBrowser, desktop, self.layout.snap_distance);
+                }
+            }
+            // "Select unused channels - Selects all channels that do not contain any notes
+            // (neither in the Step Sequencer or Piano roll)" [Manual: menu_tools].
+            UiAction::SelectUnusedChannels => {
+                let project = self.session.project();
+                self.rack.selection = project
+                    .channels
+                    .iter()
+                    .filter(|c| {
+                        !project.patterns.iter().any(|p| {
+                            p.notes.get(&c.id).is_some_and(|n| !n.is_empty())
+                                || p.steps
+                                    .get(&c.id)
+                                    .is_some_and(|s| s.cells.iter().any(|cell| cell.on))
+                        })
+                    })
+                    .map(|c| c.id.0)
+                    .collect();
+                self.rack.selected_channel = self.rack.selection.iter().next().copied();
+            }
+            UiAction::About => {
+                self.audio_status = Some(format!(
+                    "JetStudio {} - an independent music studio; not affiliated with Image-Line",
+                    env!("CARGO_PKG_VERSION")
+                ));
+            }
             UiAction::ToggleRecordNotes => {
                 self.record_notes = !self.record_notes;
                 self.audio_status = Some(self.record_filter_status());
@@ -2017,6 +2063,10 @@ impl JetApp {
         }
         if pressed(Key::T) && modifiers.ctrl {
             actions.push(UiAction::ToggleTyping);
+        }
+        // "Stop sound (Ctrl+H)" [Manual: menu_tools].
+        if pressed(Key::H) && modifiers.ctrl && !modifiers.shift {
+            actions.push(UiAction::Engine("transport.panic", json!({})));
         }
         if pressed(Key::M) && modifiers.ctrl {
             actions.push(UiAction::Engine("transport.metronome.toggle", json!({})));
@@ -2795,6 +2845,11 @@ impl From<ToolbarAction> for UiAction {
             ToolbarAction::ToggleRecordAudio => Self::ToggleRecordAudio,
             ToolbarAction::ToggleRecordNotes => Self::ToggleRecordNotes,
             ToolbarAction::SetGlobalSnap(snap) => Self::SetGlobalSnap(snap),
+            ToolbarAction::PatternClone => Self::PatternClone,
+            ToolbarAction::PatternDelete => Self::PatternDelete,
+            ToolbarAction::BrowserFind => Self::BrowserFind,
+            ToolbarAction::SelectUnusedChannels => Self::SelectUnusedChannels,
+            ToolbarAction::About => Self::About,
             ToolbarAction::ToggleRecord => Self::ToggleRecord,
             ToolbarAction::Minimize => Self::Minimize,
             ToolbarAction::Maximize => Self::Maximize,
@@ -4946,6 +5001,45 @@ mod tests {
         click(&mut app, &ctx, midi);
         assert_eq!(app.settings_tab, SettingsTab::Midi);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn patterns_tools_and_help_menus_run_real_commands() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        let menu_item = |app: &mut JetApp, menu: &str, index: usize, row: usize| {
+            let top = app.probe().entries()[&format!("toolbar.menu.{menu}")].rect;
+            click(app, &ctx, top);
+            run_frame(app, &ctx, Vec::new());
+            let item = app.probe().entries()[&format!("toolbar.menu-item.{index}.{row}")].rect;
+            click(app, &ctx, item);
+        };
+        // PATTERNS > Clone, then Delete.
+        menu_item(&mut app, "PATTERNS", 3, 1);
+        assert_eq!(app.session.project().patterns.len(), 2);
+        menu_item(&mut app, "PATTERNS", 3, 2);
+        assert_eq!(app.session.project().patterns.len(), 1);
+        // TOOLS > Select unused channels: only the channel without steps or notes.
+        app.execute("channel.add", json!({"name": "Kick"}));
+        app.execute("channel.add", json!({"name": "Spare"}));
+        app.execute(
+            "step.set",
+            json!({"pattern": app.session.selected_pattern().0, "channel": 1, "index": 0, "on": true}),
+        );
+        menu_item(&mut app, "TOOLS", 6, 2);
+        assert_eq!(app.rack.selection, [2].into());
+        // TOOLS > Browser find focuses the search field.
+        menu_item(&mut app, "TOOLS", 6, 0);
+        assert!(app.browser.search_focus);
+        app.browser.search_focus = false;
+        // HELP > About.
+        menu_item(&mut app, "HELP", 7, 0);
+        assert!(
+            app.audio_status
+                .as_deref()
+                .is_some_and(|s| s.contains("JetStudio"))
+        );
     }
 
     #[test]

@@ -60,6 +60,11 @@ pub enum ToolbarAction {
     ToggleRecordAudio,
     ToggleRecordNotes,
     SetGlobalSnap(crate::snap::SnapValue),
+    PatternClone,
+    PatternDelete,
+    BrowserFind,
+    SelectUnusedChannels,
+    About,
     ToggleRecord,
     Minimize,
     Maximize,
@@ -984,7 +989,37 @@ fn paint_menu(
                 "Ctrl+Alt+Z",
                 Some(ToolbarAction::Engine("edit.undo_step", json!({}))),
             ),
+            (
+                "Redo step",
+                "",
+                Some(ToolbarAction::Engine("edit.redo_step", json!({}))),
+            ),
         ],
+        // [Manual: menu_patterns].
+        3 => &[
+            (
+                "Find next empty",
+                "F4",
+                Some(ToolbarAction::Engine("pattern.next_empty", json!({}))),
+            ),
+            ("Clone", "", Some(ToolbarAction::PatternClone)),
+            ("Delete", "", Some(ToolbarAction::PatternDelete)),
+        ],
+        // [Manual: menu_tools].
+        6 => &[
+            ("Browser find", "Ctrl+F", Some(ToolbarAction::BrowserFind)),
+            (
+                "Stop sound",
+                "Ctrl+H",
+                Some(ToolbarAction::Engine("transport.panic", json!({}))),
+            ),
+            (
+                "Select unused channels",
+                "",
+                Some(ToolbarAction::SelectUnusedChannels),
+            ),
+        ],
+        7 => &[("About JetStudio", "", Some(ToolbarAction::About))],
         4 => &[
             (
                 "Playlist",
@@ -1017,6 +1052,13 @@ fn paint_menu(
                 "F9",
                 Some(ToolbarAction::Workspace(WsAction::Toggle(
                     WindowKind::Mixer,
+                ))),
+            ),
+            (
+                "Graph editor",
+                "Ctrl+K",
+                Some(ToolbarAction::Workspace(WsAction::Toggle(
+                    WindowKind::GraphEditor,
                 ))),
             ),
         ],
@@ -1122,6 +1164,11 @@ fn paint_menu(
                 ToolbarAction::ToggleRecordAudio => ToolbarAction::ToggleRecordAudio,
                 ToolbarAction::ToggleRecordNotes => ToolbarAction::ToggleRecordNotes,
                 ToolbarAction::SetGlobalSnap(snap) => ToolbarAction::SetGlobalSnap(*snap),
+                ToolbarAction::PatternClone => ToolbarAction::PatternClone,
+                ToolbarAction::PatternDelete => ToolbarAction::PatternDelete,
+                ToolbarAction::BrowserFind => ToolbarAction::BrowserFind,
+                ToolbarAction::SelectUnusedChannels => ToolbarAction::SelectUnusedChannels,
+                ToolbarAction::About => ToolbarAction::About,
                 ToolbarAction::ToggleRecord => ToolbarAction::ToggleRecord,
                 ToolbarAction::Minimize => ToolbarAction::Minimize,
                 ToolbarAction::Maximize => ToolbarAction::Maximize,

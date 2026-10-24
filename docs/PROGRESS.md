@@ -45,6 +45,11 @@
 | `1fa7f04` | Playlist: zoom no cursor, Page Up/Down, Shift+1..5 |
 | `bab37c3` | Sampler: página INS (filtro, envelopes e LFOs de Pan/Volume/Mod X/Mod Y/Pitch) |
 | `bd29c10` | Automação: janela de settings da clip (Min, Max, Time, LFO, Flip, Normalize) |
+| `92ff8a9` | Channel rack: seletores de canal; Ctrl+L / Ctrl+Shift+L e menu de roteamento no Mixer |
+| `4da59c7` | Canal: seção Time (Gate, Shift, Full porta) |
+| `9a51c4f` | Channel rack: botões vermelhos para samples ausentes; religar pelas pastas do Browser |
+| `08dc7a9` | Settings: abas MIDI (Enable por dispositivo) e File (modos de autosave) |
+| (este) | Menus PATTERNS, TOOLS, HELP e itens novos em EDIT/VIEW; Ctrl+H |
 
 ## 1. Funcionalidades pesquisadas
 
@@ -60,7 +65,7 @@ O corpus de texto do manual fica na scratchpad da sessão (`flman/*.txt`). Ele n
 - **Playback** (`jet-playback`): cpal 0.18.2, filas rtrb, relógio do dispositivo, plano e transporte aplicados juntos, estatísticas de carga e overruns.
 - **Engine** (`jet-engine`): cerca de 80 comandos (lista: `jet-cli commands`); pool de samples fora do histórico e liberado só na thread de UI; undo de gestos contínuos; posição do transporte que volta ao início no fim do material.
 - **UI** (`jet-ui`): Channel rack (knobs, seletor de mixer, mute/solo, pintura de steps, renomear, menu de contexto, arrastar samples, swing e comprimento do pattern), Piano roll (ferramentas, snap, mover/redimensionar, velocity, teclado, atalhos, clipboard, MIDI import/export, menu Tools, snap to scale, chord stamp), Mixer (faders, pan, mute/solo, meters, sends, FX e parâmetros, invert, swap, stereo sep), Playlist (clips de pattern, áudio e automação, arranjos, markers), Channel Settings, Audio Settings (F10), gravação, toolbar com CPU, polifonia e osciloscópio reais, Export WAV/MIDI.
-- **Contagem atual da matriz:** 192 itens: 73 ✅, 58 🟡, 59 ⬜, 2 ⛔ (recontada pelo script depois de `bd29c10`).
+- **Contagem atual da matriz:** 192 itens: 77 ✅, 56 🟡, 57 ⬜, 2 ⛔.
 
 ## 3. Testes realizados e resultados reais
 
@@ -98,13 +103,13 @@ O corpus de texto do manual fica na scratchpad da sessão (`flman/*.txt`). Ele n
 
 ## 5. Recursos pendentes (por prioridade, respeitando dependências)
 
-Feitos nesta etapa (além dos anteriores): ferramentas e zoom da Playlist (PL-005, PL-011), página INS do Sampler (SMP-008), settings e LFO das Automation Clips (AUT-001).
+Feitos desde a última atualização: seleção de canais e roteamento (MX-017), seção Time (SMP-010), samples ausentes (CR-030), abas MIDI/File do F10 (GLB-021, MIDI-001, FILE-003), menus (GLB-001), Select unused channels (CR-025).
 
-1. **Seleção múltipla de canais no Channel rack** e Ctrl+L para todos (MX-017); Ctrl+Shift+L.
-2. **Efeitos que faltam:** stereo shaper (FX-010), pitch shifter (FX-012), analisadores (FX-013).
-3. **Gravação de automação** (AUT-002) e mais alvos (EQ da faixa, parâmetros dos efeitos).
+1. **Efeitos que faltam:** stereo shaper (FX-010), analisadores (FX-013), pitch shifter (FX-012).
+2. **Gravação de automação** (AUT-002) e mais alvos de automação (EQ da faixa, parâmetros dos efeitos).
+3. **Ghost notes** (PR-016); Merge de arranjos (PL-008); Marker loop/skip/pause (PL-009).
 4. **Hospedagem de plugins** (PLG-001/002) em crate FFI isolado; o VST3 está sob MIT desde a 3.8; CLAP é MIT.
-5. **Outras abas de configurações** (GLB-021), modos de autosave (FILE-003), Ghost notes (PR-016), Merge de arranjos (PL-008), Marker loop/skip/pause (PL-009), Gate/Shift do canal (SMP-010), Arpeggiator do canal (SMP-011).
+5. **Itens que dependem de capturas do FL** para sair de hipótese: curvas de volume do canal e do fader (CR-009, MX-002, H-VOL-1, H-MIX-1).
 
 ## 6. Dependências técnicas
 
@@ -115,10 +120,10 @@ Feitos nesta etapa (além dos anteriores): ferramentas e zoom da Playlist (PL-00
 
 ## 7. Próxima tarefa
 
-**Seleção múltipla de canais e Ctrl+L para vários (MX-017).** Ainda não começou no código. Plano:
-1. Releia `flman/channelrack.txt` (seletores de canal, seleção com Shift/Ctrl, "Route selected channels") e `flman/mixer.txt` (Ctrl+L, Ctrl+Shift+L).
-2. `RackState`: conjunto de canais selecionados (clique no seletor/LED verde: seleciona; Ctrl+clique: adiciona); comando `channel.mixer_target.free_many {ids}` que roteia cada canal selecionado para um insert livre (Ctrl+L) ou todos para o mesmo insert a partir do selecionado no mixer (Ctrl+Shift+L, conforme o manual).
-3. Testes de engine e de UI.
+**Efeitos: stereo shaper (FX-010) e analisador de espectro (FX-013).** Ainda não começou no código. Plano:
+1. Releia o inventário (FX-010, FX-013) e escreva o comportamento esperado; o FL tem Fruity Stereo Shaper e Wave Candy, que não podem ser clonados: implemente efeitos próprios (balanço/largura/delay entre lados; espectro por FFT no medidor).
+2. `jet-dsp/src/fx.rs`: novo `FxKind`, `build()` e parâmetros; testes de DSP medindo a saída.
+3. Mixer: parâmetros no inspector (já genérico via `fx_params`).
 
 Depois disso, siga a lista do §5 a partir do item 2.
 
