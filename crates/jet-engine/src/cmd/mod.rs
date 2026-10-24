@@ -411,7 +411,7 @@ static SPECS: &[CommandSpec] = &[
         "Polyphony",
         "",
         None,
-        "{id:uint,max:uint,mono:bool}",
+        "{id:uint,max:uint,mono:bool,porta?:bool,slide_ms?:uint}",
         Step
     ),
     spec!(

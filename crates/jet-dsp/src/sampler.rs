@@ -8,6 +8,7 @@
 //! note-off [Manual: chansettings_sampler, "Playback"].
 
 use crate::env::Adsr;
+use crate::glide::Glide;
 use crate::sample::SampleData;
 use std::sync::Arc;
 
@@ -66,6 +67,7 @@ pub struct SamplerVoice {
     released: bool,
     options: SamplerOptions,
     env: Adsr,
+    pub glide: Glide,
 }
 
 impl SamplerVoice {
@@ -91,6 +93,7 @@ impl SamplerVoice {
         self.cutting = false;
         self.released = false;
         self.options = options;
+        self.glide = Glide::default();
         if let Some((a, d, s, r)) = options.envelope {
             self.env.configure(a, d, s, r, rate as f32);
             self.env.trigger();
@@ -185,7 +188,7 @@ impl SamplerVoice {
             let (sl, sr) = sample.read(physical);
             *l += sl * gain_l * amp;
             *r += sr * gain_r * amp;
-            self.position += self.increment * self.direction;
+            self.position += self.increment * self.glide.tick() * self.direction;
         }
         if !alive {
             self.sample = None;

@@ -32,8 +32,11 @@ pub struct NoteEvent {
     pub release: u8,
     pub mod_x: u8,
     pub mod_y: u8,
+    /// Slide note: silent; bends overlapping notes of the same color [Manual: pianoroll].
     pub slide: bool,
     pub porta: bool,
+    /// Note color group 0..=15; slides and Mono act per group [Manual: pianoroll, "Color Groups"].
+    pub color: u8,
     /// Audio Clip: the voice starts `audio_offset` ticks into the sample and is cut (with the
     /// declick) at the end of `length` instead of being released.
     pub audio: bool,
@@ -156,6 +159,7 @@ pub fn pattern_events(project: &Project, pattern: &Pattern, out: &mut Vec<NoteEv
                     mod_y: note.mod_y,
                     slide: note.slide,
                     porta: note.porta,
+                    color: note.color,
                     audio: false,
                     audio_offset: 0,
                 });
@@ -185,6 +189,7 @@ pub fn pattern_events(project: &Project, pattern: &Pattern, out: &mut Vec<NoteEv
                 mod_y: cell.props.mod_y,
                 slide: false,
                 porta: false,
+                color: 0,
                 audio: false,
                 audio_offset: 0,
             });
@@ -252,6 +257,7 @@ pub fn compile(project: &Project, source: Source) -> Sequence {
                                     mod_y: 0,
                                     slide: false,
                                     porta: false,
+                                    color: 0,
                                     audio: true,
                                     audio_offset: clip.offset.0,
                                 });
@@ -279,7 +285,8 @@ pub fn compile(project: &Project, source: Source) -> Sequence {
             song_length(project)
         }
     };
-    events.sort_by_key(|event| (event.tick, event.channel, event.key));
+    // Slide notes follow the notes that start with them, so they can bend those notes.
+    events.sort_by_key(|event| (event.tick, event.channel, event.slide, event.key));
     Sequence {
         events,
         length: length.max(1),

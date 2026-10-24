@@ -303,11 +303,37 @@ impl SamplerSettings {
 
 /// [Manual: chansettings_misc, "Polyphony"]: "MAX ... If the LCD displays dashes, it indicates
 /// that polyphony is unrestricted"; "Mono mode overrides the 'Max poly' option".
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Polyphony {
     /// Zero means unrestricted.
     pub max: u16,
     pub mono: bool,
+    /// "Porta - ... sliding the pitch from note to note".
+    #[serde(default)]
+    pub porta: bool,
+    /// "SLIDE - Portamento Time ... the slide length when portamento is turned on. Also used for
+    /// overlapping notes in monophonic mode." Hypothesis H-SMP-1: the manual gives no unit or
+    /// range; we use 0..=MAX_SLIDE_MS milliseconds.
+    #[serde(default = "default_slide_ms")]
+    pub slide_ms: u16,
+}
+
+pub const MAX_SLIDE_MS: u16 = 2000;
+pub const DEFAULT_SLIDE_MS: u16 = 100;
+
+fn default_slide_ms() -> u16 {
+    DEFAULT_SLIDE_MS
+}
+
+impl Default for Polyphony {
+    fn default() -> Self {
+        Self {
+            max: 0,
+            mono: false,
+            porta: false,
+            slide_ms: DEFAULT_SLIDE_MS,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1584,6 +1610,20 @@ pub enum ModelError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polyphony_from_older_files_gets_porta_off_and_the_default_slide_time() {
+        let old: Polyphony = serde_json::from_str(r#"{"max":4,"mono":true}"#).unwrap();
+        assert_eq!(
+            old,
+            Polyphony {
+                max: 4,
+                mono: true,
+                porta: false,
+                slide_ms: DEFAULT_SLIDE_MS,
+            }
+        );
+    }
 
     #[test]
     fn project_starts_valid_and_ids_are_monotonic() {

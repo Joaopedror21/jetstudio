@@ -86,6 +86,11 @@ struct PolyParams {
     id: u64,
     max: u16,
     mono: bool,
+    /// Absent keeps the current value.
+    #[serde(default)]
+    porta: Option<bool>,
+    #[serde(default)]
+    slide_ms: Option<u16>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -369,11 +374,19 @@ pub(super) fn run(session: &mut Session, id: &str, params: Value) -> Result<bool
             if p.max > 256 {
                 return Err(invalid(id, "max polyphony must be 0 (unrestricted)..=256"));
             }
+            if p.slide_ms.is_some_and(|ms| ms > jet_model::MAX_SLIDE_MS) {
+                return Err(invalid(id, "slide_ms must be 0..=2000"));
+            }
             session.edit_project(|project| {
-                channel_mut(project, p.id)?.polyphony = jet_model::Polyphony {
-                    max: p.max,
-                    mono: p.mono,
-                };
+                let polyphony = &mut channel_mut(project, p.id)?.polyphony;
+                polyphony.max = p.max;
+                polyphony.mono = p.mono;
+                if let Some(porta) = p.porta {
+                    polyphony.porta = porta;
+                }
+                if let Some(ms) = p.slide_ms {
+                    polyphony.slide_ms = ms;
+                }
                 Ok(())
             })
         }

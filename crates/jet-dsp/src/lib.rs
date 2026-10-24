@@ -7,6 +7,7 @@
 pub mod env;
 pub mod filter;
 pub mod fx;
+pub mod glide;
 pub mod level;
 pub mod sample;
 pub mod sampler;

@@ -37,6 +37,9 @@ pub struct ChannelPlan {
     pub cut_by: u8,
     pub sampler: jet_dsp::sampler::SamplerOptions,
     pub polyphony: jet_model::Polyphony,
+    /// Pitch of the last note started on the channel, in cents (key x 100 + fine pitch + any
+    /// slide offset): where portamento glides from. Runtime state carried across plan swaps.
+    pub last_cents: Option<f64>,
 }
 
 pub struct FxInstance {
@@ -117,6 +120,13 @@ impl RenderPlan {
             .binary_search_by_key(&id, |(key, _)| *key)
             .ok()
             .and_then(|i| self.channels.get(self.channel_index[i].1))
+    }
+
+    pub fn channel_mut(&mut self, id: ChannelId) -> Option<&mut ChannelPlan> {
+        self.channel_index
+            .binary_search_by_key(&id, |(key, _)| *key)
+            .ok()
+            .and_then(|i| self.channels.get_mut(self.channel_index[i].1))
     }
 }
 
@@ -292,6 +302,7 @@ pub fn build_plan(
             cut_by: channel.cut_by,
             sampler: sampler_options(&channel.sampler),
             polyphony: channel.polyphony,
+            last_cents: None,
         })
         .collect();
     let mut channel_index: Vec<(ChannelId, usize)> = channels

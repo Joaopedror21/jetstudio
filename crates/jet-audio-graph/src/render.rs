@@ -2,6 +2,7 @@
 
 use crate::plan::{AutoApply, Instrument, RenderPlan, TRACK_COUNT};
 use crate::{MAX_BLOCK, Meters};
+use jet_dsp::glide::Glide;
 use jet_dsp::sampler::SamplerVoice;
 use jet_dsp::synth::SynthVoice;
 use jet_dsp::{cents_ratio, key_hz, pan_gains, velocity_gain};
@@ -29,11 +30,29 @@ enum VoiceKind {
     Synth(SynthVoice),
 }
 
+/// A change to a sounding voice due at `frame` (mono legato or a slide note): glide to
+/// `cents` over `frames`; mono legato also takes the new note's velocity and pan.
+#[derive(Clone, Copy, Debug)]
+struct Pending {
+    frame: u64,
+    cents: f64,
+    frames: u32,
+    velocity: Option<f32>,
+    pan: Option<i16>,
+}
+
 #[derive(Clone, Debug, Default)]
 struct Voice {
     kind: VoiceKind,
     channel: ChannelId,
+    /// Key the voice was started at; its pitch is this plus the glide offset.
     key: u8,
+    /// Key of the note now driving the voice (differs from `key` after a mono legato), used to
+    /// match live note-offs.
+    note_key: u8,
+    fine_pitch: i16,
+    color: u8,
+    pending: Option<Pending>,
     /// Started by a live note-on rather than the sequence.
     live: bool,
     pan: i16,
@@ -54,6 +73,37 @@ struct Voice {
 impl Voice {
     fn active(&self) -> bool {
         !matches!(self.kind, VoiceKind::Idle)
+    }
+
+    fn glide_mut(&mut self) -> Option<&mut Glide> {
+        match &mut self.kind {
+            VoiceKind::Sampler(v) => Some(&mut v.glide),
+            VoiceKind::Synth(v) => Some(&mut v.glide),
+            VoiceKind::Idle => None,
+        }
+    }
+
+    /// The pitch the voice is heading to, in cents (key x 100 + fine pitch + glide target).
+    fn target_cents(&self) -> f64 {
+        let offset = self.pending.map_or_else(
+            || match &self.kind {
+                VoiceKind::Sampler(v) => v.glide.target(),
+                VoiceKind::Synth(v) => v.glide.target(),
+                VoiceKind::Idle => 0.0,
+            },
+            |p| p.cents,
+        );
+        f64::from(self.key) * 100.0 + f64::from(self.fine_pitch) + offset
+    }
+
+    /// Held (not released) at `frame` on the channel and color group.
+    fn holds(&self, channel: ChannelId, color: u8, frame: u64) -> bool {
+        self.active()
+            && self.channel == channel
+            && self.color == color
+            && !self.released
+            && self.start_frame <= frame
+            && self.release_frame > frame
     }
 }
 
@@ -129,6 +179,9 @@ impl Renderer {
                 }
             }
         }
+        for channel in &mut next.channels {
+            channel.last_cents = self.plan.channel(channel.id).and_then(|c| c.last_cents);
+        }
         std::mem::replace(&mut self.plan, next)
     }
 
@@ -142,6 +195,9 @@ impl Renderer {
         // A sync anchored in the past still fires the events since its anchor.
         self.next_tick = sync.anchor_tick;
         if sync.playing && !was_playing {
+            for channel in &mut self.plan.channels {
+                channel.last_cents = None;
+            }
             self.start_audio_in_progress(sync.anchor_tick);
         }
         if !sync.playing && was_playing {
@@ -189,6 +245,19 @@ impl Renderer {
 
     pub fn active_voices(&self) -> usize {
         self.voices.iter().filter(|v| v.active()).count()
+    }
+
+    /// Pitch targets of the voices not yet released, in cents, ascending (tests).
+    #[cfg(test)]
+    pub(crate) fn held_cents(&self) -> Vec<f64> {
+        let mut cents: Vec<f64> = self
+            .voices
+            .iter()
+            .filter(|v| v.active() && !v.released)
+            .map(Voice::target_cents)
+            .collect();
+        cents.sort_by(f64::total_cmp);
+        cents
     }
 
     /// k = ticks per frame as a rational: (tempo·ppq) / (rate·60000).
@@ -303,6 +372,7 @@ impl Renderer {
             mod_y: 0,
             slide: false,
             porta: false,
+            color: 0,
             audio: false,
             audio_offset: 0,
         };
@@ -313,7 +383,7 @@ impl Renderer {
     pub fn live_note_off(&mut self, channel: ChannelId, key: u8) {
         let frame = self.frame;
         for voice in &mut self.voices {
-            if voice.live && voice.channel == channel && voice.key == key && !voice.released {
+            if voice.live && voice.channel == channel && voice.note_key == key && !voice.released {
                 voice.release_frame = frame;
             }
         }
@@ -324,6 +394,19 @@ impl Renderer {
             return;
         };
         let rate = self.plan.rate;
+        let polyphony = channel.polyphony;
+        let last_cents = channel.last_cents;
+        let cents = f64::from(event.key) * 100.0 + f64::from(event.fine_pitch);
+        let slide_frames = (u64::from(polyphony.slide_ms) * u64::from(rate) / 1000) as u32;
+        if !event.audio && self.glide_existing(event, cents, start_frame, release_frame, live) {
+            if let Some(channel) = self.plan.channel_mut(event.channel) {
+                channel.last_cents = Some(cents);
+            }
+            return;
+        }
+        let Some(channel) = self.plan.channel(event.channel) else {
+            return;
+        };
         let kind = match &channel.instrument {
             Instrument::Sampler(None) => return,
             Instrument::Sampler(Some(sample)) => {
@@ -364,7 +447,28 @@ impl Renderer {
         };
         let cut = channel.cut;
         let cut_by = channel.cut_by;
-        let polyphony = channel.polyphony;
+        // "The portamento flag causes a short slide in pitch from the end of one note to the note
+        // with the portamento flag"; the channel's Porta button does it for every note; the time
+        // is the SLIDE knob [Manual: pianoroll, "Slide & Portamento"; chansettings_misc].
+        let mut kind = kind;
+        if (polyphony.porta || event.porta)
+            && !event.audio
+            && let Some(from) = last_cents
+        {
+            let glide = match &mut kind {
+                VoiceKind::Sampler(v) => Some(&mut v.glide),
+                VoiceKind::Synth(v) => Some(&mut v.glide),
+                VoiceKind::Idle => None,
+            };
+            if let Some(glide) = glide {
+                glide.set(from - cents, 0.0, slide_frames);
+            }
+        }
+        if !event.audio
+            && let Some(channel) = self.plan.channel_mut(event.channel)
+        {
+            channel.last_cents = Some(cents);
+        }
         // Mono "triggers the current release state of notes"; Max poly "causes a forced
         // 'release' of oldest notes over the poly limit. Notes stop playing immediately"
         // [Manual: chansettings_misc, "Polyphony"].
@@ -433,6 +537,10 @@ impl Renderer {
             kind,
             channel: event.channel,
             key: event.key,
+            note_key: event.key,
+            fine_pitch: event.fine_pitch,
+            color: event.color,
+            pending: None,
             live,
             pan: event.pan,
             velocity: velocity_gain(event.velocity) as f32,
@@ -444,6 +552,80 @@ impl Renderer {
             cut_by,
             age: self.age,
         };
+    }
+
+    /// Slide notes and mono legato change voices that are already sounding instead of starting
+    /// one. Returns `true` when the event was consumed.
+    fn glide_existing(
+        &mut self,
+        event: &NoteEvent,
+        cents: f64,
+        start_frame: u64,
+        release_frame: u64,
+        live: bool,
+    ) -> bool {
+        let Some(polyphony) = self.plan.channel(event.channel).map(|c| c.polyphony) else {
+            return false;
+        };
+        let rate = u64::from(self.plan.rate);
+        if event.slide {
+            // "When the slide note is reached the pitch of the original (standard) note will
+            // start sliding toward the slide notes pitch, reaching the same pitch at the end of
+            // the slide note event"; in a chord "the topmost note is used as the reference" and
+            // all notes move the same interval; only notes of the slide's color are affected;
+            // "Slides themselves do NOT produce sound" [Manual: pianoroll, "How slide notes work"].
+            let length = release_frame
+                .saturating_sub(start_frame)
+                .min(u64::from(u32::MAX)) as u32;
+            let top = self
+                .voices
+                .iter()
+                .filter(|v| v.holds(event.channel, event.color, start_frame))
+                .map(Voice::target_cents)
+                .fold(f64::NEG_INFINITY, f64::max);
+            if top.is_finite() {
+                let delta = cents - top;
+                for voice in &mut self.voices {
+                    if voice.holds(event.channel, event.color, start_frame) {
+                        let base = f64::from(voice.key) * 100.0 + f64::from(voice.fine_pitch);
+                        voice.pending = Some(Pending {
+                            frame: start_frame,
+                            cents: voice.target_cents() + delta - base,
+                            frames: length,
+                            velocity: None,
+                            pan: None,
+                        });
+                    }
+                }
+            }
+            return true;
+        }
+        // Mono: "when two notes overlap ... they will 'slide' one to another ... You can set the
+        // transition length with the Portamento Time (SLIDE) knob"; "Mono mode applies to each
+        // color group separately" [Manual: chansettings_misc; pianoroll, "Color Groups"].
+        if !polyphony.mono {
+            return false;
+        }
+        let Some(voice) = self
+            .voices
+            .iter_mut()
+            .filter(|v| v.holds(event.channel, event.color, start_frame))
+            .max_by_key(|v| v.age)
+        else {
+            return false;
+        };
+        let base = f64::from(voice.key) * 100.0 + f64::from(voice.fine_pitch);
+        voice.pending = Some(Pending {
+            frame: start_frame,
+            cents: cents - base,
+            frames: (u64::from(polyphony.slide_ms) * rate / 1000) as u32,
+            velocity: Some(velocity_gain(event.velocity) as f32),
+            pan: Some(event.pan),
+        });
+        voice.note_key = event.key;
+        voice.release_frame = release_frame;
+        voice.live = live;
+        true
     }
 
     /// Evaluate the automation lanes at the block start (block-rate control, our choice; FL's
@@ -633,40 +815,53 @@ impl Renderer {
                 continue;
             };
             let channel = &plan.channels[index];
-            let channel_pan = channel.auto_pan.unwrap_or(channel.pan);
-            let pan = (i32::from(channel_pan) + i32::from(voice.pan)).clamp(-1000, 1000) as i16;
-            let (pl, pr) = pan_gains(pan, pan_law);
-            let gain = channel.auto_gain.unwrap_or(channel.gain) * voice.velocity;
-            let (gl, gr) = (gain * pl as f32, gain * pr as f32);
             let track = &mut plan.tracks[channel.track_slot];
-            let begin = voice.start_frame.saturating_sub(block_start) as usize;
-            // Split at note-off so the release starts on its exact frame.
-            let split = if !voice.released && voice.release_frame < block_end {
-                voice
-                    .release_frame
-                    .saturating_sub(block_start)
-                    .max(begin as u64) as usize
-            } else {
-                frames
-            };
+            // Split the block at note-off and at pending glides so each starts on its exact frame.
+            let mut cursor = voice.start_frame.saturating_sub(block_start) as usize;
             let mut alive = true;
-            for (range_start, range_end, release_after) in
-                [(begin, split, split < frames), (split, frames, false)]
-            {
-                if range_start >= range_end || !alive {
-                    if release_after {
-                        release(voice);
-                    }
-                    continue;
+            while alive && cursor < frames {
+                let at = |frame: u64| frame.saturating_sub(block_start).max(cursor as u64) as usize;
+                let release_at = (!voice.released && voice.release_frame < block_end)
+                    .then(|| at(voice.release_frame));
+                let pending_at = voice
+                    .pending
+                    .filter(|p| p.frame < block_end)
+                    .map(|p| at(p.frame));
+                let next = release_at
+                    .into_iter()
+                    .chain(pending_at)
+                    .min()
+                    .unwrap_or(frames);
+                if next > cursor {
+                    let channel_pan = channel.auto_pan.unwrap_or(channel.pan);
+                    let pan =
+                        (i32::from(channel_pan) + i32::from(voice.pan)).clamp(-1000, 1000) as i16;
+                    let (pl, pr) = pan_gains(pan, pan_law);
+                    let gain = channel.auto_gain.unwrap_or(channel.gain) * voice.velocity;
+                    let (gl, gr) = (gain * pl as f32, gain * pr as f32);
+                    let l = &mut track.left[cursor..next];
+                    let r = &mut track.right[cursor..next];
+                    alive = match &mut voice.kind {
+                        VoiceKind::Sampler(v) => v.render(l, r, gl, gr),
+                        VoiceKind::Synth(v) => v.render(l, r, gl, gr),
+                        VoiceKind::Idle => false,
+                    };
+                    cursor = next;
                 }
-                let l = &mut track.left[range_start..range_end];
-                let r = &mut track.right[range_start..range_end];
-                alive = match &mut voice.kind {
-                    VoiceKind::Sampler(v) => v.render(l, r, gl, gr),
-                    VoiceKind::Synth(v) => v.render(l, r, gl, gr),
-                    VoiceKind::Idle => false,
-                };
-                if release_after {
+                if pending_at == Some(next)
+                    && let Some(p) = voice.pending.take()
+                {
+                    if let Some(glide) = voice.glide_mut() {
+                        glide.to(p.cents, p.frames);
+                    }
+                    if let Some(velocity) = p.velocity {
+                        voice.velocity = velocity;
+                    }
+                    if let Some(pan) = p.pan {
+                        voice.pan = pan;
+                    }
+                }
+                if release_at == Some(next) {
                     release(voice);
                 }
             }

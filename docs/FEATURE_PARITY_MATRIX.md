@@ -12,7 +12,7 @@ Legenda: ✅ disponível e testado · 🟡 parcial (o que falta está ao lado) �
 | Interface e controles globais (GLB) | 23 | 7 | 9 | 7 | 0 |
 | Channel Rack e Step Sequencer (CR) | 33 | 14 | 9 | 9 | 1 |
 | Sampler e instrumentos (SMP/INS) | 20 | 8 | 3 | 9 | 0 |
-| Piano Roll (PR) | 27 | 9 | 11 | 7 | 0 |
+| Piano Roll (PR) | 27 | 9 | 12 | 6 | 0 |
 | Playlist (PL) | 17 | 5 | 8 | 4 | 0 |
 | Mixer (MX) | 17 | 8 | 5 | 4 | 0 |
 | Motor de áudio (AE) | 15 | 9 | 2 | 4 | 0 |
@@ -20,7 +20,7 @@ Legenda: ✅ disponível e testado · 🟡 parcial (o que falta está ao lado) �
 | Plugins externos (PLG) | 4 | 0 | 0 | 4 | 0 |
 | Browser e arquivos (BR/FILE) | 12 | 2 | 4 | 5 | 1 |
 | Automação, MIDI, gravação (AUT/MIDI/REC) | 10 | 0 | 3 | 7 | 0 |
-| **Total** | **192** | **71** | **55** | **64** | **2** |
+| **Total** | **192** | **71** | **56** | **63** | **2** |
 
 As contagens foram geradas por script a partir da coluna Estado do inventário: ✅ = Testado; 🟡 = Implementado ou Parcialmente compatível; ⬜ = Pesquisado ou Especificado; ⛔ = Bloqueado. 
 
@@ -45,7 +45,8 @@ As contagens foram geradas por script a partir da coluna Estado do inventário: 
 | Cut groups / cut itself | engine e menu | ✅ | `cut_groups_choke_the_cut_by_channel` |
 | Sampler: carregar wav/mp3/ogg/flac | decodificação Symphonia | ✅ | `wav_round_trips_through_the_decoder` |
 | Sampler: nível padrão −8,2 dB | medido no render | ✅ | `default_sampler_plays_8_2_db_under_the_recorded_level` |
-| Sampler: loop points, start offset, envelopes | Channel Settings | 🟡 | SMP-005 ✅; SMP-008 só envelope de volume; falta LFO, Porta e Slide |
+| Sampler: loop points, start offset, envelopes | Channel Settings | 🟡 | SMP-005 ✅; SMP-008 só envelope de volume; falta LFO |
+| Mono, Porta, slide notes | glide de pitch exato por amostra | 🟡 | SMP-009 / PR-015: `slide_notes_bend_...`, `porta_glides_...`, `mono_overlapping_...`; tempo SLIDE é H-SMP-1 |
 | Sintetizador | próprio (2 osc, ADSR, SVF) | ✅ | `sine_voice_plays_the_requested_frequency` |
 | Piano roll: Draw/Paint/Delete/Mute/Select | sim | ✅ | `piano_roll_click_adds_a_note...` |
 | Piano roll: mover/redimensionar/snap | sim | ✅ | `piano_roll_editing_tools` (engine) |

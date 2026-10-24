@@ -117,6 +117,10 @@ pub struct PianoRollState {
     pub scale: Option<(u8, usize)>,
     /// Chord stamp shape (index into `CHORDS`) [Manual: pianoroll, "Chord Stamp"].
     pub stamp: Option<usize>,
+    /// New notes become slide notes (S) or portamento notes (O) [Manual: pianoroll,
+    /// "Slide & Portamento - These are flags that can be set per-note"].
+    pub slide_mode: bool,
+    pub porta_mode: bool,
     tools_menu: Option<egui::Pos2>,
 }
 
@@ -156,6 +160,8 @@ impl Default for PianoRollState {
             file_request: None,
             scale: None,
             stamp: None,
+            slide_mode: false,
+            porta_mode: false,
             tools_menu: None,
         }
     }
@@ -168,6 +174,8 @@ pub struct NoteView {
     pub key: u8,
     pub velocity: u8,
     pub muted: bool,
+    pub slide: bool,
+    pub porta: bool,
 }
 
 pub struct PianoRollView {
@@ -456,6 +464,33 @@ pub fn paint_piano_roll(
             base
         };
         note_painter.rect_filled(r, 2.0, fill);
+        // "Slides are shown as horizontal bars with a small triangle drawn in the right side";
+        // portamento notes carry a flag (ours: a small triangle at the left edge, pointing in).
+        let mark = theme::shade(base, 0.45);
+        if note.slide && r.width() > 6.0 {
+            let h = r.height() * 0.8;
+            note_painter.add(egui::Shape::convex_polygon(
+                vec![
+                    pos2(r.right() - 2.0, r.center().y),
+                    pos2(r.right() - 2.0 - h * 0.7, r.center().y - h / 2.0),
+                    pos2(r.right() - 2.0 - h * 0.7, r.center().y + h / 2.0),
+                ],
+                mark,
+                Stroke::NONE,
+            ));
+        }
+        if note.porta && r.width() > 6.0 {
+            let h = r.height() * 0.6;
+            note_painter.add(egui::Shape::convex_polygon(
+                vec![
+                    pos2(r.left() + 2.0, r.top() + 2.0),
+                    pos2(r.left() + 2.0 + h, r.top() + 2.0),
+                    pos2(r.left() + 2.0, r.top() + 2.0 + h),
+                ],
+                mark,
+                Stroke::NONE,
+            ));
+        }
         note_painter.rect_stroke(
             r,
             2.0,
@@ -926,6 +961,28 @@ fn paint_toolbar(
             Some(i) => Some(i + 1),
         };
     }
+    bx += 134.0;
+    let slide_button = Rect::from_min_size(pos2(bx, row2 + 3.0), vec2(56.0, ROW_H - 6.0));
+    if paint.toggle(
+        "piano-roll.slide",
+        slide_button,
+        "Slide",
+        state.slide_mode,
+        "Slide toggle (S): new notes are slide notes, which bend the notes they overlap",
+    ) {
+        state.slide_mode = !state.slide_mode;
+    }
+    bx += 60.0;
+    let porta_button = Rect::from_min_size(pos2(bx, row2 + 3.0), vec2(56.0, ROW_H - 6.0));
+    if paint.toggle(
+        "piano-roll.porta",
+        porta_button,
+        "Porta",
+        state.porta_mode,
+        "Portamento toggle (O): new notes slide in pitch from the previous note",
+    ) {
+        state.porta_mode = !state.porta_mode;
+    }
     let channel = view
         .channel
         .as_ref()
@@ -1271,6 +1328,9 @@ fn keyboard(
             Key::D if only(m(false, true, false)) => {
                 actions.push(PianoAction::DiscardLengths { indices: sel, grid })
             }
+            // "Portamento Toggle ( O )", "Slide Toggle ( S )" [Manual: pianoroll].
+            Key::S if plain && !view.typing => state.slide_mode = !state.slide_mode,
+            Key::O if plain && !view.typing => state.porta_mode = !state.porta_mode,
             _ if plain && !view.typing => {
                 if let Some((tool, ..)) = Tool::ALL.iter().find(|(_, _, _, k)| *k == key) {
                     state.tool = *tool;

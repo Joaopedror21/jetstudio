@@ -415,3 +415,158 @@ fn starting_inside_an_audio_clip_plays_from_that_point() {
         out[2 * 10]
     );
 }
+
+/// A pure sine synth (no detune, flat envelope, open filter) playing `notes`.
+fn sine_project(notes: Vec<jet_model::Note>, polyphony: jet_model::Polyphony) -> Project {
+    let mut project = Project::new();
+    project.settings.tempo = Tempo(120_000);
+    let id = project.ids.channel();
+    let mut channel = Channel::synth(id, "Sine");
+    channel.kind = ChannelKind::Synth(jet_model::SynthParams {
+        waveform: jet_model::Waveform::Sine,
+        attack_ms: 0,
+        decay_ms: 0,
+        sustain: 1000,
+        release_ms: 10,
+        cutoff_hz: 20_000,
+        resonance: 0,
+        detune_cents: 0,
+    });
+    channel.polyphony = polyphony;
+    project.channels.push(channel);
+    project.patterns[0].notes.insert(id, notes);
+    project
+}
+
+/// 96 ticks per beat at 120 BPM: one tick is 250 frames.
+fn note(start: i64, length: i64, key: u8) -> jet_model::Note {
+    jet_model::Note::new(Tick(start), Tick(length), key)
+}
+
+/// Frequency of the left channel between two frames, from rising zero crossings.
+fn hz(out: &[f32], from: usize, to: usize) -> f64 {
+    let left: Vec<f32> = out[from * 2..to * 2].iter().step_by(2).copied().collect();
+    let crossings = left
+        .windows(2)
+        .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+        .count();
+    crossings as f64 * f64::from(RATE) / (to - from) as f64
+}
+
+fn sine_plan(project: &Project) -> RenderPlan {
+    build_plan(
+        project,
+        Source::Pattern(project.patterns[0].id),
+        RATE,
+        false,
+        &|_: ResourceId| None,
+    )
+}
+
+#[test]
+fn porta_glides_from_the_previous_note_over_the_slide_time() {
+    let poly = jet_model::Polyphony {
+        slide_ms: 200,
+        ..jet_model::Polyphony::default()
+    };
+    // 220 Hz for half a second, then 440 Hz with the portamento flag.
+    let mut second = note(96, 96, 69);
+    second.porta = true;
+    let project = sine_project(vec![note(0, 96, 57), second.clone()], poly);
+    let out = run(&mut playing(sine_plan(&project)), 48_000, 256);
+    let start = hz(&out, 24_000, 26_400);
+    assert!(
+        start < 300.0,
+        "the flagged note starts near 220 Hz: {start}"
+    );
+    let settled = hz(&out, 36_000, 48_000);
+    assert!((settled - 440.0).abs() < 8.0, "{settled}");
+
+    // Without the flag (and with the channel's Porta off) the note starts at its pitch.
+    second.porta = false;
+    let project = sine_project(vec![note(0, 96, 57), second.clone()], poly);
+    let out = run(&mut playing(sine_plan(&project)), 48_000, 256);
+    let start = hz(&out, 24_000, 26_400);
+    assert!((start - 440.0).abs() < 25.0, "{start}");
+
+    // The channel's Porta button glides every note.
+    let porta = jet_model::Polyphony {
+        porta: true,
+        ..poly
+    };
+    let project = sine_project(vec![note(0, 96, 57), second], porta);
+    let out = run(&mut playing(sine_plan(&project)), 48_000, 256);
+    assert!(hz(&out, 24_000, 26_400) < 300.0);
+}
+
+#[test]
+fn mono_overlapping_notes_glide_on_one_voice() {
+    let mono = jet_model::Polyphony {
+        mono: true,
+        slide_ms: 100,
+        ..jet_model::Polyphony::default()
+    };
+    // A long 220 Hz note and a 440 Hz note overlapping its second half.
+    let notes = vec![note(0, 192, 57), note(96, 96, 69)];
+    let project = sine_project(notes.clone(), mono);
+    let mut renderer = playing(sine_plan(&project));
+    let first = run(&mut renderer, 30_000, 256);
+    assert_eq!(
+        renderer.held_cents(),
+        vec![6900.0],
+        "one voice, now at the new key"
+    );
+    let rest = run(&mut renderer, 18_000, 256);
+    assert!((hz(&first, 2_000, 22_000) - 220.0).abs() < 8.0);
+    assert!((hz(&rest, 4_000, 16_000) - 440.0).abs() < 8.0);
+
+    // Polyphonic: both notes sound.
+    let project = sine_project(notes, jet_model::Polyphony::default());
+    let mut renderer = playing(sine_plan(&project));
+    run(&mut renderer, 30_000, 256);
+    assert_eq!(renderer.held_cents(), vec![5700.0, 6900.0]);
+}
+
+#[test]
+fn slide_notes_bend_overlapping_notes_of_their_color_and_are_silent() {
+    // A 220 Hz note slid up an octave by a slide note over its second quarter.
+    let mut slide = note(48, 48, 69);
+    slide.slide = true;
+    let project = sine_project(
+        vec![note(0, 192, 57), slide.clone()],
+        jet_model::Polyphony::default(),
+    );
+    let out = run(&mut playing(sine_plan(&project)), 48_000, 256);
+    let odd_blocks = run(&mut playing(sine_plan(&project)), 48_000, 61);
+    assert_eq!(
+        out, odd_blocks,
+        "the slide starts on its frame whatever the block size"
+    );
+    assert!(
+        (hz(&out, 1_000, 11_000) - 220.0).abs() < 8.0,
+        "before the slide"
+    );
+    assert!(
+        (hz(&out, 26_000, 46_000) - 440.0).abs() < 8.0,
+        "after it, the pitch stays"
+    );
+
+    // A slide note alone makes no sound.
+    let project = sine_project(vec![slide], jet_model::Polyphony::default());
+    let out = run(&mut playing(sine_plan(&project)), 48_000, 256);
+    assert!(out.iter().all(|v| *v == 0.0));
+
+    // Chord: the topmost note (64) reaches the slide pitch (67), the others move the same
+    // interval; a note of another color is ignored.
+    let mut other = note(0, 192, 48);
+    other.color = 1;
+    let mut slide = note(48, 24, 67);
+    slide.slide = true;
+    let project = sine_project(
+        vec![note(0, 192, 60), note(0, 192, 64), other, slide],
+        jet_model::Polyphony::default(),
+    );
+    let mut renderer = playing(sine_plan(&project));
+    run(&mut renderer, 24_000, 256);
+    assert_eq!(renderer.held_cents(), vec![4800.0, 6300.0, 6700.0]);
+}

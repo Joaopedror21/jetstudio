@@ -634,9 +634,16 @@ impl JetApp {
         };
         match action {
             PianoAction::Add { start, length, key } => {
+                let (slide, porta) = (self.piano.slide_mode, self.piano.porta_mode);
                 self.execute(
                     "note.add",
-                    base(json!({"start": start, "length": length, "key": key})),
+                    base(json!({
+                        "start": start,
+                        "length": length,
+                        "key": key,
+                        "slide": slide,
+                        "porta": porta,
+                    })),
                 );
             }
             PianoAction::Delete(indices) => {
@@ -1659,6 +1666,8 @@ impl JetApp {
             mixer_target: channel.mixer_target,
             poly_max: channel.polyphony.max,
             mono: channel.polyphony.mono,
+            porta: channel.polyphony.porta,
+            slide_ms: channel.polyphony.slide_ms,
             sampler: channel.sampler,
             synth: match &channel.kind {
                 ChannelKind::Synth(params) => Some(params.clone()),
@@ -1688,6 +1697,8 @@ impl JetApp {
                         key: n.key,
                         velocity: n.velocity,
                         muted: n.muted,
+                        slide: n.slide,
+                        porta: n.porta,
                     })
                     .collect()
             })
@@ -2925,6 +2936,20 @@ mod tests {
         let mono = app.probe().entries()["channel-settings.mono"].rect;
         click(&mut app, &ctx, mono);
         assert!(app.session.project().channels[0].polyphony.mono);
+        let porta = app.probe().entries()["channel-settings.porta"].rect;
+        click(&mut app, &ctx, porta);
+        assert!(app.session.project().channels[0].polyphony.porta);
+        let slide = app.probe().entries()["channel-settings.slide"].rect;
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(pos2(slide.left() + 1.0, slide.center().y), vec2(1.0, 1.0)),
+        );
+        assert!(app.session.project().channels[0].polyphony.slide_ms < 30);
+        assert!(
+            app.session.project().channels[0].polyphony.mono,
+            "the slide time keeps the other polyphony settings"
+        );
         // Volume envelope toggle on the Sampler.
         let envelope = app.probe().entries()["channel-settings.envelope"].rect;
         click(&mut app, &ctx, envelope);
@@ -3273,6 +3298,31 @@ mod tests {
                 .pan,
             1000
         );
+    }
+
+    #[test]
+    fn slide_toggle_adds_slide_notes() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("channel.add", json!({"name": "Bass", "kind": "synth"}));
+        toggle(&mut app, &ctx, Key::F7);
+        let grid = app.probe().entries()["piano-roll.grid"].rect;
+        // Focus the Piano roll, then S turns the slide mode on.
+        run_frame(&mut app, &ctx, vec![Event::PointerMoved(grid.center())]);
+        toggle(&mut app, &ctx, Key::S);
+        assert!(app.piano.slide_mode);
+        click(
+            &mut app,
+            &ctx,
+            Rect::from_center_size(grid.left_top() + vec2(30.0, 40.0), vec2(2.0, 2.0)),
+        );
+        let notes = &app.session.project().patterns[0].notes[&ChannelId(1)];
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].slide && !notes[0].porta);
+        let porta = app.probe().entries()["piano-roll.porta"].rect;
+        click(&mut app, &ctx, porta);
+        assert!(app.piano.porta_mode);
     }
 
     #[test]

@@ -28,6 +28,8 @@ pub struct ChannelSettingsData {
     pub mixer_target: u16,
     pub poly_max: u16,
     pub mono: bool,
+    pub porta: bool,
+    pub slide_ms: u16,
     pub sampler: SamplerSettings,
     pub synth: Option<SynthParams>,
 }
@@ -246,17 +248,43 @@ pub fn paint_channel_settings(
         "channel.polyphony.set",
         &|v| json!({"id": id, "max": v, "mono": mono}),
     );
+    let (max, mono) = (c.poly_max, c.mono);
+    edit(
+        paint,
+        row(ROW_H),
+        "slide",
+        "Slide time",
+        i32::from(c.slide_ms),
+        0,
+        i32::from(jet_model::MAX_SLIDE_MS),
+        format!("{} ms", c.slide_ms),
+        "channel.polyphony.set",
+        &|v| json!({"id": id, "max": max, "mono": mono, "slide_ms": v}),
+    );
     let r = row(ROW_H);
     if paint.toggle(
         "channel-settings.mono",
         Rect::from_min_size(r.min, vec2(70.0, r.height())),
         "Mono",
         c.mono,
-        "Mono: one note at a time",
+        "Mono: one note at a time; overlapping notes slide one to another",
     ) {
         actions.push(SettingsAction::Engine {
             id: "channel.polyphony.set",
             params: json!({"id": id, "max": c.poly_max, "mono": !c.mono}),
+            gesture: None,
+        });
+    }
+    if paint.toggle(
+        "channel-settings.porta",
+        Rect::from_min_size(r.min + vec2(76.0, 0.0), vec2(70.0, r.height())),
+        "Porta",
+        c.porta,
+        "Porta: every note slides in pitch from the previous one",
+    ) {
+        actions.push(SettingsAction::Engine {
+            id: "channel.polyphony.set",
+            params: json!({"id": id, "max": c.poly_max, "mono": c.mono, "porta": !c.porta}),
             gesture: None,
         });
     }

@@ -3,6 +3,7 @@
 
 use crate::env::Adsr;
 use crate::filter::Svf;
+use crate::glide::Glide;
 use jet_model::{SynthParams, Waveform};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -28,9 +29,9 @@ fn poly_blep(t: f64, dt: f64) -> f64 {
 
 impl Osc {
     #[inline]
-    fn next(&mut self, waveform: Waveform, noise: &mut u32) -> f64 {
+    fn next(&mut self, waveform: Waveform, noise: &mut u32, ratio: f64) -> f64 {
         let t = self.phase;
-        let dt = self.increment;
+        let dt = (self.increment * ratio).min(0.49);
         let value = match waveform {
             Waveform::Sine => (t * std::f64::consts::TAU).sin(),
             Waveform::Saw => 2.0 * t - 1.0 - poly_blep(t, dt),
@@ -71,6 +72,7 @@ pub struct SynthVoice {
     filter: [Svf; 1],
     noise: u32,
     active: bool,
+    pub glide: Glide,
 }
 
 impl SynthVoice {
@@ -105,6 +107,7 @@ impl SynthVoice {
         );
         self.noise = seed | 1;
         self.active = true;
+        self.glide = Glide::default();
     }
 
     pub fn release(&mut self) {
@@ -138,9 +141,10 @@ impl SynthVoice {
         }
         let mix = if self.second { 0.5 } else { 1.0 };
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let mut value = self.osc[0].next(self.waveform, &mut self.noise);
+            let ratio = self.glide.tick();
+            let mut value = self.osc[0].next(self.waveform, &mut self.noise, ratio);
             if self.second {
-                value += self.osc[1].next(self.waveform, &mut self.noise);
+                value += self.osc[1].next(self.waveform, &mut self.noise, ratio);
             }
             let filtered = self.filter[0].lowpass((value * mix) as f32);
             let amp = self.env.tick();
