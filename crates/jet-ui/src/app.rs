@@ -979,6 +979,11 @@ impl JetApp {
                 "note.stamp",
                 base(json!({"start": start, "length": length, "root": root, "chord": chord})),
             ),
+            PianoAction::SwitchChannel(id) => {
+                self.rack.selected_channel = Some(id);
+                self.rack.selection = [id].into();
+                self.execute("channel.select", json!({"id": id}));
+            }
             PianoAction::KeyDown(key) => {
                 if let Some(host) = &mut self.audio {
                     host.output
@@ -2342,6 +2347,38 @@ impl JetApp {
         })
     }
 
+    /// Notes of the other channels in the selected pattern (steps count as one-step notes).
+    fn ghost_notes(&self) -> Vec<(u64, i64, i64, u8)> {
+        let project = self.session.project();
+        let current = self.selected_channel_id();
+        let step = project.settings.step_ticks().unwrap_or(24);
+        let Some(pattern) = self.selected_pattern() else {
+            return Vec::new();
+        };
+        let mut ghosts = Vec::new();
+        for channel in project.channels.iter().filter(|c| Some(c.id.0) != current) {
+            match pattern.notes.get(&channel.id).filter(|n| !n.is_empty()) {
+                Some(notes) => ghosts.extend(
+                    notes
+                        .iter()
+                        .map(|n| (channel.id.0, n.start.0, n.length.0.max(1), n.key)),
+                ),
+                None => {
+                    if let Some(seq) = pattern.steps.get(&channel.id) {
+                        ghosts.extend(
+                            seq.cells
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, c)| c.on)
+                                .map(|(i, c)| (channel.id.0, i as i64 * step, step, c.props.note)),
+                        );
+                    }
+                }
+            }
+        }
+        ghosts
+    }
+
     fn piano_view(&self) -> PianoRollView {
         let project = self.session.project();
         let channel = self
@@ -2382,6 +2419,7 @@ impl JetApp {
             beat_ticks: project.settings.beat_ticks().unwrap_or(96),
             bar_ticks: project.settings.bar_ticks().unwrap_or(384),
             global_snap: self.global_snap,
+            ghosts: self.ghost_notes(),
             typing: self.typing,
             playhead: (snapshot.mode == PlayMode::Pattern
                 && snapshot.state != TransportState::Stopped)
@@ -5053,6 +5091,54 @@ mod tests {
                 .as_deref()
                 .is_some_and(|s| s.contains("JetStudio"))
         );
+    }
+
+    #[test]
+    fn ghost_notes_show_other_channels_and_switch_on_double_right_click() {
+        let ctx = egui::Context::default();
+        let mut app = JetApp::default();
+        run_frame(&mut app, &ctx, Vec::new());
+        app.execute("channel.add", json!({"name": "Bass", "kind": "synth"}));
+        app.execute("channel.add", json!({"name": "Keys", "kind": "synth"}));
+        // Bass has a note at the very start; Keys is the selected channel.
+        app.execute(
+            "note.add",
+            json!({"pattern": 1, "channel": 1, "start": 0, "length": 96, "key": 72}),
+        );
+        app.rack.selected_channel = Some(2);
+        app.execute("channel.select", json!({"id": 2}));
+        toggle(&mut app, &ctx, Key::F7);
+        assert_eq!(app.piano_view().ghosts, vec![(1, 0, 96, 72)]);
+        let grid = app.probe().entries()["piano-roll.grid"].rect;
+        // Bring the ghost's key into view, then double right-click it.
+        app.piano.top_key = 76.0;
+        run_frame(&mut app, &ctx, Vec::new());
+        let y = grid.top() + (app.piano.top_key - 72.0 + 0.5) * app.piano.key_h;
+        let x = grid.left() + (10.0 - app.piano.scroll_ticks) * app.piano.px_per_tick;
+        let spot = Rect::from_center_size(pos2(x, y), vec2(1.0, 1.0));
+        click_button(&mut app, &ctx, spot, PointerButton::Secondary);
+        click_button(&mut app, &ctx, spot, PointerButton::Secondary);
+        assert_eq!(
+            app.selected_channel_id(),
+            Some(1),
+            "switched to the ghost's channel"
+        );
+        // Alt+V hides the ghosts.
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(alt), key(Key::V, true, alt)],
+        );
+        run_frame(
+            &mut app,
+            &ctx,
+            vec![Event::ModifiersChanged(Modifiers::default())],
+        );
+        assert!(!app.piano.ghosts_on);
     }
 
     #[test]

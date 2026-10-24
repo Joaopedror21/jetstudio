@@ -90,6 +90,10 @@ pub struct PianoRollState {
     pub slide_mode: bool,
     pub porta_mode: bool,
     pub lane_target: LaneTarget,
+    /// "Ghost channels (Alt+V)" [Manual: pianoroll_menu, "View"].
+    pub ghosts_on: bool,
+    /// Last right-click on a ghost note (channel, time), for double right-clicks.
+    last_ghost_click: Option<(u64, f64)>,
     snap_menu: Option<egui::Pos2>,
     tools_menu: Option<egui::Pos2>,
 }
@@ -133,13 +137,15 @@ impl Default for PianoRollState {
             slide_mode: false,
             porta_mode: false,
             lane_target: LaneTarget::Velocity,
+            ghosts_on: true,
+            last_ghost_click: None,
             snap_menu: None,
             tools_menu: None,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct NoteView {
     pub start: i64,
     pub length: i64,
@@ -163,12 +169,16 @@ pub struct PianoRollView {
     pub bar_ticks: i64,
     /// The toolbar's Global snap, used when the local snap is Main.
     pub global_snap: SnapValue,
+    /// Notes of the other channels in the pattern: (channel, start, length, key).
+    pub ghosts: Vec<(u64, i64, i64, u8)>,
     pub playhead: Option<i64>,
     /// Typing keyboard to piano is on: plain letter keys play notes instead of tools.
     pub typing: bool,
 }
 
 pub enum PianoAction {
+    /// "Double Right-Click Ghost Notes to swap to their Channel".
+    SwitchChannel(u64),
     Add {
         start: i64,
         length: i64,
@@ -429,6 +439,31 @@ pub fn paint_piano_roll(
         _ => (0, 0, 0),
     };
     let note_painter = painter.with_clip_rect(grid);
+    // "The Piano roll shows Notes from all channels in the selected Pattern as grey
+    // semi-transparent Notes" [Manual: pianoroll_menu, "Ghost channels"].
+    let ghost_rects: Vec<(u64, Rect)> = if state.ghosts_on {
+        view.ghosts
+            .iter()
+            .map(|(channel, start, length, key)| {
+                let ghost = NoteView {
+                    start: *start,
+                    length: *length,
+                    key: *key,
+                    ..NoteView::default()
+                };
+                (*channel, note_rect(&geo, state, &ghost))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    for (_, r) in &ghost_rects {
+        note_painter.rect_filled(
+            *r,
+            2.0,
+            egui::Color32::from_rgba_unmultiplied(200, 200, 200, 45),
+        );
+    }
     for (index, note) in view.notes.iter().enumerate() {
         let selected = state.selection.contains(&index);
         let mut shown = *note;
@@ -513,6 +548,27 @@ pub fn paint_piano_roll(
         let tick = geo.tick_at(state, p.x).max(0);
         let key = geo.key_at(state, p.y).clamp(0, 131) as u8;
         let selecting = state.tool == Tool::Select || (modifiers.ctrl && primary);
+        // A double right-click on a ghost note (away from the channel's own notes) switches to
+        // the ghost's channel.
+        let ghost = ghost_rects
+            .iter()
+            .find(|(_, r)| r.contains(p))
+            .map(|(channel, _)| *channel);
+        if grid_response.secondary_clicked()
+            && hovered_note.is_none()
+            && let Some(channel) = ghost
+        {
+            let now = paint.ui.input(|i| i.time);
+            if state
+                .last_ghost_click
+                .is_some_and(|(c, at)| c == channel && now - at <= 0.3)
+            {
+                state.last_ghost_click = None;
+                actions.push(PianoAction::SwitchChannel(channel));
+            } else {
+                state.last_ghost_click = Some((channel, now));
+            }
+        }
         if secondary
             && matches!(
                 state.tool,
@@ -1487,6 +1543,7 @@ fn keyboard(
                 actions.push(PianoAction::Cut(sel));
                 state.selection.clear();
             }
+            Key::V if only(m(false, false, true)) => state.ghosts_on = !state.ghosts_on,
             Key::V if only(m(true, false, false)) => {
                 let bar = view.bar_ticks.max(1);
                 let first_visible = (state.scroll_ticks as i64 + bar - 1) / bar * bar;
