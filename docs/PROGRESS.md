@@ -3,7 +3,7 @@
 > Atualizado continuamente. Esta é a primeira coisa a ler ao retomar o trabalho noutra sessão.
 > Inventário: [FL_STUDIO_COMPLETE_FEATURES.md](FL_STUDIO_COMPLETE_FEATURES.md) · Matriz: [FEATURE_PARITY_MATRIX.md](FEATURE_PARITY_MATRIX.md)
 
-## Estado atual (24/10/2026)
+## Estado atual (24/10/2026, fim da sessão)
 
 - **Branch:** `claude/M1-visual-fidelity` (criada de `codex/M1-interface`). Nada foi enviado ao remoto.
 - **Portas:** `cargo xtask ci` passa (fmt, clippy `-D warnings`, todos os testes, camadas, assets).
@@ -18,6 +18,13 @@
 | `1e3c802` | Camada visual medida contra a captura W (trabalho anterior, agora commitado) |
 | `d811f0d` | Motor de áudio: `jet-seq`, `jet-dsp`, `jet-media`, `jet-audio-graph`, `jet-playback`; modelo estendido; comandos de canal, step, nota, mixer, projeto e exportação; testes de integração |
 | `710b912` | UI: áudio real, janelas Piano roll e Mixer, Channel rack interativo, Browser com preview e arraste, export WAV, `jet-cli play` |
+| `2c763c5` | Playlist: mover/redimensionar/apagar/mutar clips, solo de faixa, seek no ruler; rack: swing e comprimento do pattern |
+| `9e97e44` | Automation Clips (modelo, 10 curvas, aplicação no áudio, criação pelo menu do knob, edição de pontos) |
+| `e394e5a` | Sampler: start, loops, reverse, envelope, polifonia; janela Channel Settings |
+| `1dc8d64` | MIDI de entrada (midir), teclado de digitação (Ctrl+T), metrônomo (Ctrl+M) |
+| `6b5fb18` | Audio Clips (canal AudioClip, soltar arquivo na Playlist, waveform) |
+| `49ae904` | MIDI files (export/import), clipboard de notas, autosave/revert |
+| `e84a417` | Efeitos Flanger, Phaser e Filter |
 
 ## 1. Funcionalidades pesquisadas
 
@@ -89,7 +96,11 @@ O corpus de texto do manual fica na scratchpad da sessão (`flman/*.txt`). Ele n
 
 ## 7. Próxima tarefa
 
-**Playlist completa (PL-005):** ferramentas de clip na UI (mover e redimensionar com snap, apagar com o botão direito, mute de clip) e playhead arrastável, usando os comandos `playlist.clip.*` que já existem e têm teste. Depois: knob de swing e comprimento do pattern no Channel rack.
+**Janela de configurações de áudio (F10; GLB-021/AE-004).** Ainda não começou no código. Plano:
+1. Em `jet-playback`: adicionar `output_devices()` e o campo `device: Option<String>` em `OutputRequest`, escolhendo o dispositivo pelo nome (hoje `crates/jet-playback/src/lib.rs` usa `default_output_device()`). Se a taxa pedida falhar (WASAPI shared), voltar à configuração padrão.
+2. Em `jet-ui`: `WindowKind::Settings` (F10, OPTIONS) com lista de dispositivos, taxa, buffer (128 a 2048, mostrando a latência em ms) e status (callbacks, callbacks atrasados). Ao aplicar, reabrir o `AudioOutput`, passar o graveyard para o host novo, chamar `set_clock` e reabrir o MIDI. Guardar em `Documentos/JetStudio/settings.json`.
+
+Depois disso: gravação de áudio (REC-001, entrada cpal → WAV → Audio Clip), controles de stereo sep/invert/swap no Mixer, arranjos múltiplos e marcadores (PL-008/009), Graph editor visual (CR-016), ferramentas do Piano roll (PR-017/018/019), hospedagem de plugins (PLG).
 
 ## 8. Como continuar noutra sessão
 
